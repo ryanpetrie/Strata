@@ -1849,9 +1849,19 @@ def find_nvcc(below=None):
     return best
 
 
+def vs2026_allowed() -> bool:
+    """STRATA_ALLOW_VS2026=1: also take Visual Studio 2026 (version 18) with a CUDA toolkit older than 13.3.
+
+    CUDA 13.0-13.2 officially accept Visual Studio 2019 and 2022 only, so setup excludes a newer VS by
+    default ("unsupported Microsoft Visual Studio version" from nvcc).  The opt-in is for a PC whose only
+    C++ tools are VS 2026: the build is then tried with it, and nvcc may still refuse it."""
+    return (os.environ.get("STRATA_ALLOW_VS2026") or "").strip() == "1"
+
+
 def find_vcvars(cuda_v=None):
     """Visual Studio's vcvars64.bat.  #985: CUDA 13.0-13.2 accept Visual Studio 2019 and 2022 only, so a newer one
-    (2026 = version 18) is taken only with CUDA 13.3 or newer (`cuda_v`, the toolkit's (major, minor)).
+    (2026 = version 18) is taken only with CUDA 13.3 or newer (`cuda_v`, the toolkit's (major, minor)),
+    or with STRATA_ALLOW_VS2026=1 (tried anyway; nvcc may still refuse it).
 
     The version range is CUDA's requirement alone, so a caller with no CUDA (`cuda_v is None`) asks vswhere for no
     range at all: the CPU image encoder is built by MSVC, which is happy with any version (tools/hip/build_windows.bat
@@ -1865,11 +1875,12 @@ def find_vcvars(cuda_v=None):
     vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio/Installer/vswhere.exe"
     if not vswhere.exists():
         return None
-    # CUDA 13 accepts Visual Studio 2019 and 2022 only: a newer one (2026 = version 18) installed next to them
-    # must not be picked ("unsupported Microsoft Visual Studio version"); with only a newer one there is none
+    # CUDA 13.0-13.2 accept Visual Studio 2019 and 2022 only: a newer one (2026 = version 18) installed
+    # next to them must not be picked ("unsupported Microsoft Visual Studio version"); with only a newer one
+    # there is none.  STRATA_ALLOW_VS2026=1 takes it anyway (the build may still fail in nvcc).
     args = [str(vswhere), "-latest", "-products", "*"]
     if cuda_v is not None:
-        upper = "19.0" if tuple(cuda_v) >= (13, 3) else "18.0"
+        upper = "19.0" if tuple(cuda_v) >= (13, 3) or vs2026_allowed() else "18.0"
         args += ["-version", f"[16.0,{upper})"]
     args += ["-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"]
     p = out(args).strip()
@@ -3851,10 +3862,10 @@ def build_engine_hip(gpu, llama, vision="none") -> Path:
     cmake_build(ROOT, ROOT / "build-hip", "strata",
                 ["-DSTRATA_ENABLE_HIP=ON", "-DSTRATA_ENABLE_CUDA=OFF", "-DSTRATA_BUILD_TESTS=OFF",
                  "-DSTRATA_PREFILL_MMQ=ON", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON", "-DCMAKE_HIP_ARCHITECTURES=" + ";".join(archs),
-                 f"-DCMAKE_HIP_COMPILER={root / 'llvm' / 'bin' / 'clang++'}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={root}",
-                 "-DCMAKE_PREFIX_PATH=" + ";".join([str(root), *libs]),
-                 f"-DCMAKE_HIP_FLAGS=--rocm-path={root} --rocm-device-lib-path={bitcode}",
-                 f"-DSTRATA_GGML_DIR={llama}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
+                 f"-DCMAKE_HIP_COMPILER={cmake_path(root / 'llvm' / 'bin' / 'clang++')}", f"-DCMAKE_HIP_COMPILER_ROCM_ROOT={cmake_path(root)}",
+                 "-DCMAKE_PREFIX_PATH=" + ";".join([cmake_path(root), *[cmake_path(x) for x in libs]]),
+                 f"-DCMAKE_HIP_FLAGS=--rocm-path={cmake_path(root)} --rocm-device-lib-path={cmake_path(bitcode)}",
+                 f"-DSTRATA_GGML_DIR={cmake_path(llama)}", *isa_floor_defs(floor, ROOT / "build-hip", meta)], None, "")
     if stale_binary(ROOT / "build-hip" / EXE):            # #2054: no stamp for a binary of another version
         fail(f"the engine build finished without a new engine ({EXE} is version "
              f"{binary_engine_version(ROOT / 'build-hip' / EXE)}, this source is {source_version()}): "
@@ -4055,7 +4066,7 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
                  "install it from https://developer.nvidia.com/cuda-downloads and run setup again "
                  "(or --image-backend vulkan / cpu)")
         root = Path(nvcc).resolve().parent.parent
-        defs = QI.cmake_defs("cuda", arch=arch, cuda_root=root) + [f"-DCMAKE_CUDA_COMPILER={nvcc}"] + \
+        defs = QI.cmake_defs("cuda", arch=arch, cuda_root=root) + [f"-DCMAKE_CUDA_COMPILER={cmake_path(nvcc)}"] + \
             host_compiler_defs(True)
         vcvars = find_vcvars(cuda_v) if WIN else None
         lib_dirs = [str(root / "bin")] if WIN else [str(d) for d in (root / "lib64", root / "lib") if d.is_dir()]
@@ -4071,8 +4082,8 @@ def build_image_engine(backend: str, gpu: dict) -> tuple[Path, list[str]]:
         vcvars = find_vcvars() if WIN else None
         if sdk is not None:                          # the SDK's loader (lib/VulkanLoader): CMake does not look there
             loader = sdk / "lib" / "VulkanLoader" / "lib"
-            defs += [f"-DVulkan_LIBRARY={loader / 'libvulkan.so'}", f"-DVulkan_INCLUDE_DIR={sdk / 'include'}",
-                     f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'bin' / 'glslc'}"]
+            defs += [f"-DVulkan_LIBRARY={cmake_path(loader / 'libvulkan.so')}", f"-DVulkan_INCLUDE_DIR={cmake_path(sdk / 'include')}",
+                     f"-DVulkan_GLSLC_EXECUTABLE={cmake_path(sdk / 'bin' / 'glslc')}"]
             import ctypes.util
             if not ctypes.util.find_library("vulkan"):
                 lib_dirs = [str(loader)]             # no system Vulkan loader to run with: the SDK's
@@ -4694,6 +4705,21 @@ def install_build_tools(gpu, yes):
     # RTX 50 (sm_120): CUDA 13.0 - an engine built with 12.8 crashed in the prompt path on Linux (#220)
     need_cuda = need12 if old else (13, 0) if max(archs) >= 120 else (12, 0)
     vcvars = find_vcvars(cuda_v) if WIN else None
+    if WIN and vcvars is not None and cuda_v is not None and tuple(cuda_v) < (13, 3) and vs2026_allowed():
+        warn(f"using Visual Studio 2026 with CUDA {cuda_v[0]}.{cuda_v[1]} (STRATA_ALLOW_VS2026=1): CUDA 13.0-13.2 "
+             "officially take Visual Studio 2019 and 2022 only - nvcc may refuse it "
+             '("unsupported Microsoft Visual Studio version"). CUDA 13.3 or newer supports VS 2026, '
+             "or install the VS 2022 Build Tools next to it.")
+    if WIN and vcvars is None and cuda_v is not None and tuple(cuda_v) < (13, 3) and not vs2026_allowed():
+        any_vs = find_vcvars(None)
+        if any_vs is not None:
+            say("  Found Visual Studio 2026, but CUDA "
+                f"{cuda_v[0]}.{cuda_v[1]} officially takes Visual Studio 2019 and 2022 only (CUDA 13.3 or newer "
+                "takes 2026): setup skips it, so it still asks for the VS 2022 Build Tools.")
+            say("  To try the VS 2026 you already have instead: run it again as "
+                "set STRATA_ALLOW_VS2026=1 & START-HERE.bat --setup (nvcc may still refuse it), "
+                "or point STRATA_VCVARS at its vcvars64.bat. To keep the supported setup, let it install the "
+                "VS 2022 Build Tools next to 2026.")
     have_cc = vcvars is not None if WIN else shutil.which("g++") is not None
     missing = []
     if not have_cc:
@@ -4772,7 +4798,7 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     cmake, ninja = find_tool("cmake"), find_tool("ninja")
     if cmake is None or ninja is None:
         fail("cmake / ninja not found after installing them", "run: .venv python -m pip install -r requirements-build.txt")
-    conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}", "-S", str(src), "-B", str(bdir),
+    conf = [cmake, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={cmake_path(ninja)}", "-S", str(src), "-B", str(bdir),
             "-DCMAKE_BUILD_TYPE=Release", *defs]
     build = [cmake, "--build", str(bdir), "--target", target, "-j", str(max(2, (os.cpu_count() or 4) // 2))]
     # A failed build is tried once more: CUDA 13.0's ptxas now and then fails to parse a PTX file it just wrote, and
@@ -4780,7 +4806,8 @@ def cmake_build(src, bdir, target, defs, vcvars, bat_name):
     if WIN:
         if vcvars is None:                             # #881: the build needs MSVC's environment
             fail("the Visual Studio C++ build tools were not found",
-                 "install them (Visual Studio 2019 or 2022, workload 'Desktop development with C++') and run setup again")
+                 "install them (Visual Studio 2019 or 2022, workload 'Desktop development with C++'; 2026 takes "
+                 "CUDA 13.3 or newer, or STRATA_ALLOW_VS2026=1 to try it with an older CUDA) and run setup again")
         bat = ROOT / bat_name
         q = lambda c: " ".join(f'"{x}"' if " " in str(x) else str(x) for x in c)  # noqa: E731
         bat.write_text(f'@echo off\r\ncall "{vcvars}" >nul\r\n{q(conf)} || exit /b 1\r\n{q(build)} && exit /b 0\r\n'
@@ -4817,6 +4844,12 @@ def isa_floor_defs(floor: str, bdir: Path, meta: dict) -> list:
     return [f"-DSTRATA_ISA_FLOOR={floor}"] if floor else []
 
 
+def cmake_path(p) -> str:
+    """A filesystem path for a CMake -D definition: forward slashes, so a Windows path (C:\\...) is not parsed
+    as CMake escapes (\\P) when CMake writes it into CMakeCache / CMakeCUDACompiler.cmake."""
+    return p.as_posix() if isinstance(p, Path) else str(p).replace("\\", "/")
+
+
 def host_compiler_defs(cuda: bool) -> list:
     """CC / CXX / CUDAHOSTCXX pick the host compilers of a build - as -D definitions, so an existing build folder
     takes them too (the environment reaches CMake only on a folder's first configure, which is why CXX=g++-14 alone
@@ -4826,9 +4859,9 @@ def host_compiler_defs(cuda: bool) -> list:
     cc = os.environ.get("CC", "").strip()
     cxx = os.environ.get("CXX", "").strip()
     hostcxx = os.environ.get("CUDAHOSTCXX", "").strip() or cxx
-    return ([f"-DCMAKE_C_COMPILER={cc}"] if cc else []) + \
-           ([f"-DCMAKE_CXX_COMPILER={cxx}"] if cxx else []) + \
-           ([f"-DCMAKE_CUDA_HOST_COMPILER={hostcxx}"] if cuda and hostcxx else [])
+    return ([f"-DCMAKE_C_COMPILER={cmake_path(cc)}"] if cc else []) + \
+           ([f"-DCMAKE_CXX_COMPILER={cmake_path(cxx)}"] if cxx else []) + \
+           ([f"-DCMAKE_CUDA_HOST_COMPILER={cmake_path(hostcxx)}"] if cuda and hostcxx else [])
 
 
 def toolkit_root_defs(nvcc) -> list:
@@ -4837,7 +4870,7 @@ def toolkit_root_defs(nvcc) -> list:
     12.0 (nvidia-cuda-toolkit), the engine was compiled with the 13.0 headers but linked libcudart.so.12 from
     /usr/lib/x86_64-linux-gnu.  The distribution's own nvcc (/usr/bin) keeps CMake's search as before."""
     root = Path(nvcc).resolve().parent.parent
-    return [] if root == Path("/usr") else [f"-DCUDAToolkit_ROOT={root}"]
+    return [] if root == Path("/usr") else [f"-DCUDAToolkit_ROOT={cmake_path(root)}"]
 
 
 def engine_defs(archs, toolkit=13) -> list:
@@ -4901,7 +4934,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
         cmake_build(ROOT, bdir, "strata",
                     ["-DSTRATA_ENABLE_CUDA=ON", "-DSTRATA_BUILD_TESTS=OFF", "-DSTRATA_Q6K_EXPERTS=ON", "-DSTRATA_MMQ_KQUANTS=ON",
                      f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}",
-                     f"-DCMAKE_CUDA_COMPILER={nvcc}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={llama}",
+                     f"-DCMAKE_CUDA_COMPILER={cmake_path(nvcc)}", *toolkit_root_defs(nvcc), f"-DSTRATA_GGML_DIR={cmake_path(llama)}",
                      *host_compiler_defs(True), *engine_defs(archs, toolkit),
                      *isa_floor_defs(floor, bdir, meta)],
                     vcvars, "build-strata-cuda12.bat" if t12 else "build-strata.bat")
@@ -4916,10 +4949,10 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
             (eng / KQ_LIB).unlink()
     if not vision_ok:
         say("  Compiling the image encoder" + (" with CUDA (10-20 minutes, once) ..." if vision == "gpu" else " ..."))
-        defs = [f"-DLLAMA_DIR={llama}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
+        defs = [f"-DLLAMA_DIR={cmake_path(llama)}", f"-DSTRATA_VISION_CUDA={'ON' if vision == 'gpu' else 'OFF'}",
                 "-DSTRATA_PORTABLE=OFF", *host_compiler_defs(vision == "gpu")]   # native, like the engine
         if vision == "gpu":
-            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={nvcc}",
+            defs += [f"-DCMAKE_CUDA_ARCHITECTURES={cuda_archs}", f"-DCMAKE_CUDA_COMPILER={cmake_path(nvcc)}",
                      *toolkit_root_defs(nvcc)]
         cmake_build(ROOT / "tools" / "vision", vdir, "strata-vision", defs, vcvars,
                     "build-vision-cuda12.bat" if t12 else "build-vision.bat")

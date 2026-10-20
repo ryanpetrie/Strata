@@ -11930,6 +11930,23 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 continue;
             }
+            // LOGITS <k> <id,id,...>: the top-k logits at the answer position (the prompt's last token's prediction),
+            // for a caller that needs the distribution rather than a sampled token (the server's first-token
+            // probabilities).  It runs as a GEN request with max_new 1 whose first window prints its row as
+            // `L <token_id> <logit>` lines in descending order and emits no token, so DONE reports 0 generated.
+            // Opt-in and per request: every other line, and every GEN/GENI request, is untouched.
+            int req_logits_k = 0;
+            if (line.rfind("LOGITS ", 0) == 0) {
+                char* lk_end = nullptr;
+                const long lk = std::strtol(line.c_str() + 7, &lk_end, 10);
+                if (lk_end == line.c_str() + 7 || lk < 1 || lk > 1024 || *lk_end != ' ') {
+                    std::printf("ERR expected: LOGITS <k 1..1024> <id,id,...>\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                req_logits_k = (int) lk;
+                line = std::string("GEN 1") + lk_end;
+            }
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
                 std::printf("ERR expected: GEN <max_new> <id,id,...> or GENI <max_new> <file> <id,id,...>\n");
@@ -13817,6 +13834,7 @@ int main(int argc, char** argv) {
                 for (int64_t t : ids) { const int32_t t32 = (int32_t) t; extra_sources_append(&t32, 1); }
             }
             bool first_window = true;
+            bool logits_answer = false;   // LOGITS: the answer position's row is sent, this request ends after it
             int64_t produced_n = 0, sfx_windows = 0, sfx_drafts = 0, sfx_ok = 0;
             int64_t chain_windows = 0, chain_drafts = 0, chain_ok = 0;   // --lookup-chain's own counts
             int64_t t2_rej[8] = {}, t2_hit[8] = {};   // STRATA_MTP_TOP2: rejections inside the MTP drafts by depth, runner-up hits
@@ -13864,7 +13882,8 @@ int main(int argc, char** argv) {
             // and a window row computes what it would in any other window, so every emitted token is the serial loop's
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
             bool pl_ran = false;
-            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
+            // (a LOGITS request decodes serially: its answer row is read from `ver`, the serial loop's verifier)
+            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok && req_logits_k == 0;
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
@@ -14736,6 +14755,37 @@ int main(int argc, char** argv) {
                         if (f) std::fclose(f);
                     }
                 }
+                // LOGITS: this window is the answer position - the prompt's last token alone (a merged window's last row
+                // is the prompt's last token, its output the first generated token) - so its row is the next-token
+                // distribution every decode path would sample from.  The top k go out as `L <token_id> <logit>` lines,
+                // in descending logit order (ties by id, lower first), from the row the head has just written.
+                if (first_window && req_logits_k > 0) {
+                    std::vector<float> row((size_t) ver.vocab());
+                    if (!ver.copy_logits(merged ? T - 1 : 0, row.data())) {
+                        std::printf("ERR reading the logits back failed\n");
+                        return 1;
+                    }
+                    int nbad = 0;
+                    for (float v : row) if (!std::isfinite(v)) ++nbad;
+                    if (nbad != 0) {   // #879: the ordinary check below ends this request with DONE nonfinite
+                        std::fprintf(stderr, "strata serve: %d of %zu logits are not finite at the answer position\n",
+                                     nbad, row.size());
+                    } else {
+                        const size_t kn = std::min<size_t>((size_t) req_logits_k, row.size());
+                        std::vector<int32_t> pick(row.size());
+                        for (size_t i = 0; i < pick.size(); ++i) pick[i] = (int32_t) i;
+                        const auto better = [&](int32_t i0, int32_t i1) {
+                            return row[(size_t) i0] != row[(size_t) i1] ? row[(size_t) i0] > row[(size_t) i1]
+                                                                        : i0 < i1;
+                        };
+                        std::partial_sort(pick.begin(), pick.begin() + (std::ptrdiff_t) kn, pick.end(), better);
+                        for (size_t i = 0; i < kn; ++i)
+                            std::printf("L %d %.9g\n", (int) pick[i], (double) row[(size_t) pick[i]]);
+                        std::fflush(stdout);
+                    }
+                    strata::core::progress_beat();   // a step, as each emitted token is for the watchdog
+                    logits_answer = true;
+                }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
@@ -14779,6 +14829,9 @@ int main(int argc, char** argv) {
                     draft_accepted += a;
                 }
                 first_window = false;
+                // LOGITS: the answer row is sent and no token is emitted; the request ends here, as a DONE with
+                // 0 generated (the session has the prompt's last token committed, as a one-token GEN would)
+                if (logits_answer) break;
                 bool eos = false;
                 for (int i = merged ? a : 0; i <= a && produced_n < max_new && !eos; ++i) {   // (merged: row T-1 only)
                     std::printf("T %d\n", (int) outv[(size_t) i]);

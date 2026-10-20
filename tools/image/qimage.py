@@ -113,6 +113,12 @@ def local_path(models_dir: Path, name: str) -> Path:
     return Path(models_dir) / MODEL_DIR / Path(FILES[name][1]).name
 
 
+def _cmake_path(p) -> str:
+    """A path for a CMake -D definition: forward slashes, so a Windows path is not parsed as escapes."""
+    from pathlib import Path as _Path
+    return p.as_posix() if isinstance(p, _Path) else str(p).replace("\\", "/")
+
+
 def cmake_defs(backend: str, arch=None, rocm: Path | None = None, cuda_root: Path | None = None) -> list[str]:
     """CMake definitions for sd-cli on `backend`: arch = the CUDA compute capability ("86") or the gfx target."""
     defs = ["-DSD_BUILD_EXAMPLES=ON", "-DSD_WEBP=OFF", "-DSD_WEBM=OFF", "-DSD_BUILD_SHARED_LIBS=OFF",
@@ -120,7 +126,7 @@ def cmake_defs(backend: str, arch=None, rocm: Path | None = None, cuda_root: Pat
     if backend == "cuda":
         defs += ["-DSD_CUDA=ON"] + ([f"-DCMAKE_CUDA_ARCHITECTURES={arch}"] if arch else [])
         if cuda_root:
-            defs += [f"-DCUDAToolkit_ROOT={cuda_root}"]
+            defs += [f"-DCUDAToolkit_ROOT={_cmake_path(cuda_root)}"]
     elif backend == "hip":
         if not rocm:
             raise ValueError("the HIP build needs the ROCm folder")
@@ -129,10 +135,10 @@ def cmake_defs(backend: str, arch=None, rocm: Path | None = None, cuda_root: Pat
         bitcode = next((p for p in (llvm / "amdgcn" / "bitcode", rocm / "amdgcn" / "bitcode") if p.is_dir()),
                        llvm / "amdgcn" / "bitcode")
         defs += ["-DSD_HIPBLAS=ON", f"-DGPU_TARGETS={gfx}", f"-DAMDGPU_TARGETS={gfx}",
-                 f"-DCMAKE_C_COMPILER={llvm / 'bin' / 'clang'}", f"-DCMAKE_CXX_COMPILER={llvm / 'bin' / 'clang++'}",
-                 f"-DCMAKE_HIP_COMPILER={llvm / 'bin' / 'clang++'}",
-                 f"-DCMAKE_PREFIX_PATH={rocm};{rocm / 'lib' / 'rocm_sysdeps'};{llvm}",
-                 f"-DCMAKE_HIP_FLAGS=--rocm-path={rocm} --rocm-device-lib-path={bitcode}"]
+                 f"-DCMAKE_C_COMPILER={_cmake_path(llvm / 'bin' / 'clang')}", f"-DCMAKE_CXX_COMPILER={_cmake_path(llvm / 'bin' / 'clang++')}",
+                 f"-DCMAKE_HIP_COMPILER={_cmake_path(llvm / 'bin' / 'clang++')}",
+                 f"-DCMAKE_PREFIX_PATH={_cmake_path(rocm)};{_cmake_path(rocm / 'lib' / 'rocm_sysdeps')};{_cmake_path(llvm)}",
+                 f"-DCMAKE_HIP_FLAGS=--rocm-path={_cmake_path(rocm)} --rocm-device-lib-path={_cmake_path(bitcode)}"]
     elif backend == "vulkan":
         defs += ["-DSD_VULKAN=ON"]
     elif backend != "cpu":
