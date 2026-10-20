@@ -133,6 +133,17 @@ def main() -> int:
         line += f"   decode {mean([1.0 if r['outcome']['correct'] else 0.0 for r in slow]):.3f}"
     print(line)
 
+    # --- why the decode path was used: the reasons say different things (a collision
+    #     is what the chain rule fixes; the others are not)
+    if slow:
+        reasons = {}
+        for r in slow:
+            key = (r["rec"].get("fallback_reason") or "not recorded").split(":")[0]
+            reasons[key] = reasons.get(key, 0) + 1
+        print("\nwhy the decode path was used:")
+        for key, n in sorted(reasons.items(), key=lambda kv: -kv[1]):
+            print(f"  {key:40s} {n:4d} items")
+
     # --- the two readings, over the items that took the fast path
     closed_pairs, open_pairs = [], []
     for r in fast:
@@ -144,11 +155,14 @@ def main() -> int:
     for name, pairs in (("closed", closed_pairs), ("open", open_pairs)):
         a = auc(pairs)
         e, rows_ece = ece(pairs, args.bins)
-        confs = [c for c, _ in pairs]
-        corr = [c for c, _ in pairs if c]
-        wrong = [c for c, _ in pairs if not c]
-        print(f"{name:7s} AUC {a if a is None else round(a, 4)}   ECE {e if e is None else round(e, 4)}"
-              f"   mean conf {mean(confs):.3f}   correct {mean(corr):.3f} / wrong {mean(wrong):.3f}")
+        confs = [conf for conf, _ in pairs]
+        corr = [conf for conf, ok in pairs if ok]
+        wrong = [conf for conf, ok in pairs if not ok]
+        line = (f"{name:7s} AUC {a if a is None else round(a, 4)}   "
+                f"ECE {e if e is None else round(e, 4)}   mean conf {mean(confs):.3f}")
+        if corr and wrong:
+            line += f"   correct {mean(corr):.3f} / wrong {mean(wrong):.3f}"
+        print(line)
 
     # --- the stop mass: does the weight the model put on ending the turn predict a
     #     wrong answer?  (below 0.5 means "the more it wanted to stop, the more often
@@ -176,21 +190,28 @@ def main() -> int:
     # --- yes/no: the two readings can disagree on the side
     noul = [r for r in fast if r["task"]["question"]["type"] == "noul"]
     if noul:
-        disagree = [r for r in noul
-                    if (r["rec"].get("open_probs") or {}).get("yes") is not None
-                    and ((r["rec"]["closed_confidence"] >= 0.5) !=
-                         (r["rec"]["open_probs"]["yes"] >= 0.5))]
-        sides = {}
+        def closed_yes(r):
+            """The closed reading's P(yes): the options renormalized over themselves.
+            The runlog's closed_confidence is the MAX of that distribution, not
+            P(yes), so it cannot be used for the side (it is always >= 0.5)."""
+            op = r["rec"].get("open_probs") or {}
+            if "yes" not in op or "no" not in op:
+                return None
+            total = op["yes"] + op["no"]
+            return op["yes"] / total if total > 0 else None
+        sides, disagree = {}, 0
         for r in noul:
             op = r["rec"].get("open_probs") or {}
-            if "yes" not in op:
+            cy = closed_yes(r)
+            if "yes" not in op or cy is None:
                 continue
-            for label, side in (("closed", r["rec"]["closed_confidence"] >= 0.5),
-                                ("open", op["yes"] >= 0.5)):
-                gold = r["task"]["expected"] == "yes"
+            if (cy >= 0.5) != (op["yes"] >= 0.5):
+                disagree += 1
+            gold = r["task"]["expected"] == "yes"
+            for label, side in (("closed", cy >= 0.5), ("open", op["yes"] >= 0.5)):
                 sides.setdefault(label, []).append(side == gold)
         print(f"\nyes/no items on the fast path: {len(noul)}"
-              f"   the readings disagree on the side for {len(disagree)} of them")
+              f"   the readings disagree on the side for {disagree} of them")
         for label, oks in sides.items():
             print(f"  {label:7s} accuracy on the side it answers: {mean(oks):.3f}"
                   f"   ({len(oks)} items)")

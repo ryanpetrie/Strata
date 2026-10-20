@@ -13,9 +13,13 @@ The cases are chosen so that one run is decisive:
   choice       two options with distinct first tokens              -> the fast path MUST fire
   score        two levels with distinct first tokens               -> the fast path MUST fire
   collide      two options that share their first token (" rule_1"/" rule_2")
-               -> the fast path MUST NOT fire (the first-token lookup cannot separate them)
+               -> the fast path MUST fire: the chain rule walks to the row that
+                  separates them (measured: closed 0.668, open 0.641)
+  prefix       two options of different token lengths (" rule_1"/" rule_1 bis")
+               -> the fast path MUST NOT fire: the chain rule needs the options to
+                  be the same length, so the decode path answers it
   multi        two questions in one request                        -> the fast path MUST NOT fire
-               (milestone 1 handles one question per request)
+               (the answer position is per question, so one question per request)
 
 If `noul` comes back "calibrated": false, the fast path is not reaching the logits at all:
 the most likely cause is the tokenization pairing (the answer's first token), which the
@@ -51,6 +55,10 @@ CASES = [
     ("collide", {"state": {"plan": "enterprise", "days": 41},
                  "questions": {"rule": {"type": "choice", "instructions": "Which rule applies?",
                                         "criteria": {"rule_1": None, "rule_2": None}}}},
+     True),
+    ("prefix", {"state": {"plan": "enterprise", "days": 41},
+                "questions": {"rule": {"type": "choice", "instructions": "Which rule applies?",
+                                       "criteria": {"rule_1": None, "rule_1 bis": None}}}},
      False),
     ("multi", {"state": {"plan": "enterprise", "days": 41},
                "questions": {"a": {"type": "noul", "instructions": "Is it x?"},

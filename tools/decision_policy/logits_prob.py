@@ -130,7 +130,7 @@ def decide(answers: dict[str, list[list[int]]],
 
 
 def build_response(qtype: str, answers: dict[str, list[list[int]]],
-                   distribution: dict[str, float]) -> dict:
+                   distribution: dict[str, float], confidence: float | None = None) -> dict:
     """The reference response shape (serve/systemone.py build_response) with real
     probabilities instead of degenerate 1.0/0.0.
 
@@ -141,7 +141,10 @@ def build_response(qtype: str, answers: dict[str, list[list[int]]],
                "probabilities": {str(i): ...}, "confidence": p}
 
     `answers` supplies the ordering (insertion order) that score's index and
-    legend are built from.  The caller sets the body-level "calibrated": True.
+    legend are built from.  `distribution` is the distribution over the answers (it
+    has to add up to 1: it is the shape's distribution).  `confidence` is the
+    confidence to report; None means the distribution's own maximum.  The caller
+    sets the body-level "calibrated": True.
     """
     if qtype not in ("noul", "choice", "score"):
         raise ValueError(f"build_response: unknown qtype {qtype!r}")
@@ -153,7 +156,7 @@ def build_response(qtype: str, answers: dict[str, list[list[int]]],
         if p > best:
             best = p
             pick = name
-    confidence = float(best)
+    confidence = float(best if confidence is None else confidence)
     if qtype == "choice":
         return {"type": "choice", "choice": pick,
                 "probabilities": {k: float(v) for k, v in distribution.items()},

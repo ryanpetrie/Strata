@@ -628,33 +628,47 @@ generated and decoded the end-of-turn token with them, so the collision case
 answered `"rule_2<|im_end|>"` - not one of the options, so a 502. The end token now
 ends the answer and is cut before the text is decoded, as the chat path does.
 
-The probe's six cases after the fixes (2026-10-20, the deployed engine 0.1.45.3):
+The probe's seven cases after the fixes (2026-10-20, the deployed engine 0.1.45.3):
 
 | case | expected | measured |
 | --- | --- | --- |
-| noul | fast path | fast path, closed 0.987, open 0.962 |
-| choice | fast path | fast path, closed 0.505, open 0.494 |
-| score | fast path | fast path, closed 0.950, open 0.844 |
-| collide | falls back (the options share a first token) | falls back, answered `rule_2` |
+| noul | fast path | fast path, closed 0.985, open 0.966 |
+| choice | fast path | fast path, closed 0.604, open 0.593 |
+| score | fast path | fast path, closed 0.964, open 0.933 |
+| collide | fast path (the chain rule separates them) | fast path, closed 0.602, open 0.579, answered `rule_2` |
+| prefix | falls back (the options are not the same length) | falls back, answered `rule_1` |
 | multi | falls back (one question per request) | falls back |
 | chat | unchanged | unchanged |
 
-### 10.6 The OpenDecisions run
+### 10.7 The chain rule for the options that share a first token
+
+The first-token lookup cannot separate two options that start with the same token
+("rule_1" and "rule_2" both start with " rule"; so do "Tier 0".."Tier 3"). The
+chain rule can: an option's probability is the **product** of its token
+probabilities, `P(u_1..u_L) = P(u_1) P(u_2|u_1) ... P(u_L|u_1..u_{L-1})`, so the
+row after the shared token tells the two apart.
+
+The walk needs the row at the position after the shared token. The engine's LOGITS
+command reports the row at the answer position - the last position of the prompt it
+was given - so asking again with the shared tokens appended gives the row after
+them. **No engine change:** the prompt is in the conversation cache, so the extra
+request reads the shared tokens, not the prompt.
+
+The walk stops where the options separate. In the common case they are the same
+number of tokens long and share all but the last, so one extra row separates them
+and one extra request is enough. Options of different lengths (one a prefix of
+another: "bill" and "billing") are left to the decode path: separating them
+exactly needs the probability of *not* continuing, which is a different question.
+
+The reading has the same shape as the first-token one (closed, open, stop,
+outside), so the response is built the same way and the two can be compared.
+
+### 10.8 The OpenDecisions run
 
 TBD
 
-### 10.7 What is not done
+### 10.9 What is not done
 
-- **The chain rule for multi-token options.** 92.9% of the option names in the
-  dataset are several tokens, and 29.9% of the questions have options that collide
-  on their first token. The probability of a multi-token option is the product of its
-  token probabilities, which needs the logits at *each* position of that option's
-  sequence - one extra forward pass per token. The engine's `LOGITS` command returns
-  the row at the answer position; the walk needs the server to append the option's
-  tokens and read the next row. `tools/decision_policy/logits_prob.py`'s
-  `sequence_logprob` is written for exactly this and is already unit-tested. Until
-  then, the open probability of a multi-token option is its first token's - an upper
-  bound on the sequence.
 - **The real-trajectory data** (the 60-example synthetic set is rule-labelled, so it
   measures agreement with a rule, not quality). Blocked on the user: log
   `(state, questions, answers, outcome, trajectory_id)` JSONL from the agent, freeze
@@ -665,3 +679,13 @@ TBD
   endpoint reports the model's internal probability. That is the right shape for the
   API, but the *answer* and the *probability* then come from different places - the
   argmax against the distribution.
+- **The exact probability of an option that continues past the separating token**
+  ("bill" against "billing"). The chain rule needs the probability of not
+  continuing, which the rows do not carry.
+- **The conversation cache's slots.** Measured: the minimum free VRAM during the
+  235-item run was 1072 MiB (1228 at load), against the engine's 1024 MiB warning
+  threshold - and each parked conversation costs ~240 MiB of VRAM with these long
+  prompts (484 MiB for the two slots the config has). Four slots would put the card
+  about 484 MiB *below* that threshold, which is the failure mode that kills a
+  verify window, so the slots stay at 2 until the margin is measured on a longer
+  run.

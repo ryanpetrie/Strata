@@ -331,6 +331,7 @@ class MockEngine:
         # reply, so a run looks like a model that simply chose differently.
         self.cycle = bool(cycle)
         self.last_prompt: list[int] = []
+        self.logits_turns = 0            # the chain-rule walk's requests, in order
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         self.last_prompt = list(ids)
@@ -351,8 +352,18 @@ class MockEngine:
     def logits(self, ids, k, max_new, cancel):
         """The scripted top-k logits and the generated tokens (tests): set
         `self.logits_topk = {token_id: value}`, optionally `self.logits_logz` (the
-        normalizer) and `self.logits_tokens` (the ids the request generated)."""
+        normalizer) and `self.logits_tokens` (the ids the request generated).
+
+        `self.logits_rows` scripts the ROWS of a chain-rule walk: a list of
+        (top-k, normalizer) pairs, one per request, the last one repeating.  The
+        walk asks again with the shared tokens appended, and each answer is the row
+        after them."""
         self.last_prompt = list(ids)
+        rows = getattr(self, "logits_rows", None)
+        if rows:
+            topk, logz = rows[min(self.logits_turns, len(rows) - 1)]
+            self.logits_turns += 1
+            return dict(topk), logz, list(getattr(self, "logits_tokens", []))
         return (dict(getattr(self, "logits_topk", {})),
                 getattr(self, "logits_logz", None),
                 list(getattr(self, "logits_tokens", [])))
@@ -4172,6 +4183,68 @@ class Service:
         # Several questions: one prompt answers them all, so the prefill is shared.
         return self._systemone_classic(state_text, questions, model, cancel)
 
+    def _logits_row(self, ids, cancel):
+        """-> (top-k, normalizer) at the position after the last of `ids`, or
+        (None, None) when the engine did not answer.
+
+        The engine's LOGITS command reports the row at the answer position - the last
+        position of the prompt it was given - so asking again with the shared tokens
+        appended gives the row after them.  The prompt is in the conversation cache,
+        so the extra request reads the shared tokens, not the prompt."""
+        from serve import logits_first_token as lft
+        try:
+            topk, logz, _ = self.engine.logits(ids, lft.LOGITS_TOP_K, 1, cancel)
+        except Exception:
+            return None, None
+        if not topk:
+            return None, None
+        if logz is None:
+            # the engine reported no normalizer: normalize over the tokens it sent
+            # (the tail below the top-k is not in it, so the open reading is an
+            # over-estimate - the closed one, which is normalized, is not)
+            top = max(topk.values())
+            logz = top + math.log(sum(math.exp(v - top) for v in topk.values()))
+        return topk, logz
+
+    def _systemone_chain(self, questions, topk, logz, ids, prefix, cancel):
+        """The chain rule for options that share their first token.
+
+        An option's probability is the product of its token probabilities, so the row
+        after the shared token separates two options the first-token row cannot
+        ("rule_1" and "rule_2" both start with " rule").  Each extra row is one more
+        engine request - the prompt is cached, so it reads the shared tokens.
+
+        -> (readings, requests_made).  readings is None when the walk does not apply
+        or does not finish; the caller then falls back to the decode path."""
+        from serve import logits_first_token as lft
+        name, q = questions[0]
+        options = lft.option_names_for_question(q)
+        plan = lft.chain_plan(options, self.tok, prefix)
+        if plan is None or plan["shared"] == 0:
+            return None, 0
+        rows, logzs = [topk], [logz]
+        deadline = (time.monotonic() + self.queue_timeout_s
+                    if self.queue_timeout_s is not None else None)
+        try:
+            with self._inference_fifo(deadline, cancel):
+                for i in range(1, plan["shared"] + 1):
+                    extra = list(plan["shared_tokens"][:i])
+                    row, lz = self._logits_row(list(ids) + extra, cancel)
+                    if row is None:
+                        return None, i
+                    rows.append(row)
+                    logzs.append(lz)
+        except (QueueCancelled, QueueWaitExpired):
+            raise
+        except Exception as e:
+            print(f"[strata] the decision answer's chain rule failed ({e}); "
+                  "answering it from the decode path", flush=True)
+            return None, plan["shared"]
+        readings = lft.chain_readings(q, plan["tokens"], rows, logzs, self.tok)
+        if readings is None:
+            return None, plan["shared"]
+        return {name: readings}, plan["shared"]
+
     def _systemone_classic(self, state_text, questions, model, cancel, reason=None):
         """The decode path: one prompt answers every question and the reply is the
         `name: answer` lines.  It is the fallback for a single question too, when the
@@ -4258,8 +4331,15 @@ class Service:
             except Exception:
                 pass
         readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz) if topk else None
-        usage = {"prompt_tokens": len(ids), "completion_tokens": len(tokens),
-                 "total_tokens": len(ids) + len(tokens),
+        walk = 0
+        if readings is None and topk:
+            # The options share their first token ("rule_1" and "rule_2" both start
+            # with " rule"), so the first-token row cannot separate them.  The chain
+            # rule can: an option's probability is the product of its token
+            # probabilities, and the row after the shared token tells them apart.
+            readings, walk = self._systemone_chain(questions, topk, logz, ids, prefix, cancel)
+        usage = {"prompt_tokens": len(ids) * (1 + walk), "completion_tokens": len(tokens),
+                 "total_tokens": len(ids) * (1 + walk) + len(tokens),
                  "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
         if readings is not None:
             answers = {name: lft.reading_response(r) for name, r in readings.items()}
