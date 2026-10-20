@@ -45,7 +45,7 @@ TYPES = ("noul", "choice", "score")
 
 SYSTEM = """You are a classification module. Read the state, then answer every question on its own line as `name: answer`, with no other text.
 Copy each question name exactly. Do not repeat the question, the type, or the instructions.
-- A yes/no question takes exactly `yes`, `no`, or a probability between 0 and 1 (for example `0.7`).
+- A yes/no question takes exactly `yes` or `no`.
 - A choice question takes exactly one option name, copied exactly.
 - A score question takes exactly one level name, copied exactly."""
 
@@ -197,9 +197,9 @@ def _question_lines(name: str, q: dict) -> list[str]:
         if crit:
             lines.append('  yes means "%s" ; no means "%s"'
                          % (crit.get("true", "yes"), crit.get("false", "no")))
-            lines.append("  a number between 0 and 1 answers with that probability of yes")
+            lines.append("  answer yes or no")
         else:
-            lines.append("  answer yes, no, or a number between 0 and 1")
+            lines.append("  answer yes or no")
     elif qtype == "choice":
         lines.append("  answer with exactly one of these option names")
         for opt, desc in crit.items():
@@ -231,18 +231,19 @@ def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
     return "\n".join(parts)
 
 
-def render_logits_prompt(state_text: str, name: str, q: dict) -> str:
-    """A single-question prompt that ends at the answer position (`name: `), so the
-    next-token logits are the answer's first token. The logits path
-    (serve/logits_first_token.py) reads those logits directly instead of generating
-    text. Milestone 1 handles one question per request; the multi-question prompt
-    stays on the decode path."""
+def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
+    """A single-question prompt. The answer line's prefix ("name: ") is NOT here: it
+    prefills the ASSISTANT's turn (server.py's `force`), so the next token the model
+    writes is the answer itself. Written in the user turn it would be text the model
+    reads and then answers in its own words - measured: the model's next token was
+    then the question's name, not the answer.
+
+    One question per request; the multi-question prompt stays on the decode path."""
     parts = ["State:\n" + state_text + "\n",
              "\nAnswer the question on its own line as `name: answer`, and nothing else. "
-             "Copy the question name exactly. Do not repeat the question, the type, or the instructions.\n",
+             "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
              "\nQuestions:"]
     parts.extend(_question_lines(name, q))
-    parts.append(f"\n{name}: ")
     return "\n".join(parts)
 
 
@@ -278,6 +279,13 @@ def parse_answers(text: str, questions: list[tuple[str, dict]]) -> dict:
             if low in ("yes", "no"):
                 out[name] = low == "yes"
                 continue
+            # A number is still accepted, though the prompt does not invite one: a
+            # question that asks for a probability (the calibration items) may get one,
+            # and a temp-0 transcription of a stated rate is reading, not sampling.  The
+            # prompt keeps it out because a number competes with the answer for the
+            # model's FIRST token - measured: with the number offered, the model's top
+            # token at the answer position was a digit and the answer tokens came
+            # fourth, so the logits described a distribution the model was not using.
             try:
                 num = float(value)
             except ValueError:
@@ -298,6 +306,83 @@ def parse_answers(text: str, questions: list[tuple[str, dict]]) -> dict:
                     f'/v1/systemone: question "{name}" takes one of {levels}, got {value!r}')
             out[name] = levels.index(value)
     return out
+
+
+def parse_answer_text(text: str, questions: list[tuple[str, dict]]) -> dict:
+    """The reply of a single-question request, read at the answer position.
+
+    The assistant turn was prefilled with the answer line's prefix ("name: "), so the
+    model writes the answer itself; it may also write the whole line again
+    ("name: answer").  Both are read - a name holds no colon, so a colon in the reply
+    means the model wrote the line.  Anything else is a StructuredOutputError (502): a
+    bad answer is an error, never a guess.
+    """
+    from serve.structured import StructuredOutputError
+    name, q = questions[0]
+    lines = [ln.strip() for ln in text.split("\n")]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        raise StructuredOutputError("/v1/systemone: the model wrote no answer")
+    if ":" in lines[0]:
+        return parse_answers(text, questions)      # the model wrote the whole line
+    if len(lines) > 1:
+        raise StructuredOutputError(f"/v1/systemone: the answer is one line, got {len(lines)}")
+    value = lines[0]
+    qtype, crit = q["type"], q["criteria"]
+    if qtype == "noul":
+        low = value.lower()
+        if low in ("yes", "no"):
+            return {name: low == "yes"}
+        try:
+            num = float(value)
+        except ValueError:
+            num = float("nan")
+        if not math.isfinite(num) or not 0.0 <= num <= 1.0:
+            raise StructuredOutputError(
+                f'/v1/systemone: question "{name}" takes yes, no, or a number 0-1, got {value!r}')
+        return {name: num}
+    if qtype == "choice":
+        if value not in crit:
+            raise StructuredOutputError(
+                f'/v1/systemone: question "{name}" takes one of {sorted(crit)}, got {value!r}')
+        return {name: value}
+    levels = score_names(q)
+    if value not in levels:
+        raise StructuredOutputError(
+            f'/v1/systemone: question "{name}" takes one of {levels}, got {value!r}')
+    return {name: levels.index(value)}
+
+
+END_OF_TURN = ("<|im_end|>", "<|endoftext|>")
+
+
+def end_of_turn_ids(tok) -> set[int]:
+    """The ids of the tokens that end a turn (the end-of-turn and end-of-text control
+    tokens).  Their weight is the model's "rather not answer"."""
+    out = set()
+    for name in END_OF_TURN:
+        try:
+            out.update(tok.encode(name, parse_special=True))
+        except Exception:
+            pass
+    return out
+
+
+def decode_answer(tokens: list[int], tok, stop_ids=None) -> str:
+    """The text the model wrote at the answer position.
+
+    The end-of-turn token ends the answer and is not part of it (the chat path stops
+    there too), so it is cut before the text is decoded: a decoded <|im_end|> would
+    make the answer a different string, and the reply unreadable (measured: the
+    collision case answered "rule_2<|im_end|>", which is not one of the options)."""
+    if stop_ids is None:
+        stop_ids = end_of_turn_ids(tok)
+    cut = len(tokens)
+    for i, t in enumerate(tokens):
+        if t in stop_ids:
+            cut = i
+            break
+    return tok.decode(tokens[:cut]) if cut else ""
 
 
 def build_response(questions: list[tuple[str, dict]], answers: dict, model: str, usage: dict,

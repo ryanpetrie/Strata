@@ -42,11 +42,11 @@ CASES = [
      True),
     ("choice", {"state": {"plan": "enterprise", "days": 41},
                 "questions": {"dept": {"type": "choice", "instructions": "Which team owns it?",
-                                       "criteria": {"STOP": None, "ANSWER": None}}}},
+                                       "criteria": {"billing": None, "technical": None}}}},
      True),
     ("score", {"state": {"plan": "enterprise", "days": 41},
-               "questions": {"mood": {"type": "score", "instructions": "How urgent?",
-                                      "criteria": ["low", "high"]}}},
+               "questions": {"mood": {"type": "score", "instructions": "How happy?",
+                                      "criteria": ["unhappy", "happy"]}}},
      True),
     ("collide", {"state": {"plan": "enterprise", "days": 41},
                  "questions": {"rule": {"type": "choice", "instructions": "Which rule applies?",
@@ -84,7 +84,8 @@ def get(url: str, key: str, timeout: float):
 
 
 def summarize(body: dict) -> str:
-    """One line per answer: the type, the pick and the top probability."""
+    """One line per answer: the type, the pick and the top probability - and, when the
+    server sends them, the two readings of that probability side by side."""
     parts = []
     for name, ans in (body.get("answers") or {}).items():
         if ans.get("type") == "noul":
@@ -98,6 +99,10 @@ def summarize(body: dict) -> str:
             parts.append(f"{name}=score {ans.get('score')} p={top:.3f} conf={ans.get('confidence')}")
         else:
             parts.append(f"{name}=? {ans}")
+    for name, d in (body.get("diagnostics") or {}).items():
+        parts.append(f"{name}[closed={d.get('closed_confidence', 0):.3f} "
+                     f"open={d.get('open_confidence', 0):.3f} "
+                     f"stop={d.get('stop', 0):.3f} outside={d.get('outside', 0):.3f}]")
     return " | ".join(parts) if parts else "(no answers)"
 
 
@@ -164,11 +169,21 @@ def main() -> int:
         t0 = time.perf_counter()
         status, raw = post(base + "/v1/chat/completions", key,
                             {"model": cfg["model"], "messages": [{"role": "user", "content": "Say ok."}],
-                             "max_tokens": 8, "temperature": 0.0}, args.timeout)
+                             "max_tokens": 64, "temperature": 0.0}, args.timeout)
         ms = (time.perf_counter() - t0) * 1000.0
         body = json.loads(raw)
-        text = (body.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        print(f"{'chat':8s} OK  {status} {ms:7.1f} ms  {text.strip()[:60]!r}")
+        choice = (body.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        text = msg.get("content")
+        if not isinstance(text, str):
+            # the content can legitimately be null (thinking-only, a tool call, or an empty
+            # completion): show the body so the case is diagnosed rather than crashing the run
+            print(f"{'chat':8s} BAD {status} {ms:7.1f} ms  content={text!r} "
+                  f"finish={choice.get('finish_reason')!r}  body={raw[:300]!r}")
+            ok = False
+        else:
+            print(f"{'chat':8s} OK  {status} {ms:7.1f} ms  finish={choice.get('finish_reason')!r}  "
+                  f"{text.strip()[:60]!r}")
     except Exception as e:
         print(f"chat     BAD  {e}")
         ok = False
