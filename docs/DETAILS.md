@@ -2264,6 +2264,61 @@ Structured SSE buffers the answer while sending keep-alive comments. It emits co
 then usage/timings and `[DONE]`; failures emit an SSE error and `[DONE]` without invalid content deltas.
 `/v1/status.structured_output` advertises the formats, validation method and buffered streaming behavior.
 
+### The decision endpoint: `POST /v1/systemone`
+
+Off by default. Turn it on with `"systemone": {"enabled": true}` in `strata-<model>.json`
+and restart the server; `/v1/status` then lists `/v1/systemone` among the dialects. It
+answers a decision request - a `state` and one to ten named `questions` - with one
+answer per question, in the TypeSafe SystemOne shape: `noul` (yes/no), `choice` (one
+of the options) and `score` (one of the ordered levels).
+
+The endpoint is served by the model Strata already has loaded. There is no second
+model, no second copy of the weights, and no training: the request is turned into a
+prompt, and the model's own next-token distribution at the answer position is read
+instead of sampled.
+
+```sh
+curl -s http://127.0.0.1:8080/v1/systemone -H "Content-Type: application/json" \
+  -d '{"state": {"plan": "enterprise", "days": 41},
+       "questions": {"urgent": {"type": "noul", "instructions": "Is this an outage?"}}}'
+```
+
+```json
+{"answers": {"urgent": {"type": "noul", "noul": 0.012}}, "calibrated": true, ...}
+```
+
+**What the numbers mean.** A greedy decode gives the argmax, so a pick would be
+reported as 1.0 and every other option as 0.0. The endpoint reads the model's own
+distribution instead, so the answer carries a real probability:
+
+- `probabilities` is the distribution over the options, and it adds up to 1. It is
+  the *closed* reading: the weight the model put on anything else (wanting to end
+  the turn, writing a digit) is not counted.
+- `confidence` is the model's *own* probability of the pick: the weight it put on
+  that option out of the whole vocabulary. It is never larger than the
+  distribution's maximum. Measured on a 235-item sample of the OpenDecisions set,
+  it ranks a correct answer above a wrong one better than the closed reading does
+  (the AUC against correctness 0.83 against 0.75 on the choice questions).
+- A `noul` answer is the probability of "yes" among the two answers, so the value
+  and the answer always agree.
+
+A reply the model wrote that does not parse is a **502**, never a made-up answer.
+
+**What it costs.** One prefill, the same as a chat turn: about 2 s for a new state
+and about 0.2 s for a state the conversation cache already holds. A request with
+several questions is one prompt that answers all of them; a request with one
+question reads the model's distribution at the answer position, which needs a
+second pass over the options that start with the same token (a few hundred
+milliseconds, and only for those).
+
+Add `"diagnostics": true` to the same block to get the alternative reading beside
+the answer: the model's own probability of every option, the weight it put on
+ending the turn, and the weight it put on everything that is not an option. It is
+a diagnostic only - the answer does not change.
+
+The measurements, the design and what is still open are in
+[docs/research/shared_backbone_decision_policy.md](research/shared_backbone_decision_policy.md).
+
 ### API request monitor
 
 Off by default, since it keeps prompts and answers in memory: turn it on with `"api_monitor": true` in

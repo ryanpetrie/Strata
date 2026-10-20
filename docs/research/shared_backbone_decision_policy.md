@@ -665,7 +665,52 @@ outside), so the response is built the same way and the two can be compared.
 
 ### 10.8 The OpenDecisions run
 
-TBD
+The 10% sample of jgeuter/OpenDecisions v1.0.1 (235 items, seed 42, the same ids
+as the 65.6 baseline), one question per request, the official `score.py` on
+`sample10_items.jsonl`:
+
+| run | Capability | Intelligence | Calibration | predicted | calibration items TVD |
+|---|---:|---:|---:|---:|---:|
+| the old decode-only path (the baseline) | 65.6 | 62.0 | 69.2 | 223/235 | 0.546 |
+| the first-token path, the degenerate 1.0/0.0 probabilities | 74.9 | 72.3 | 77.6 | 227/235 | 0.284 |
+| the first-token path, the real probabilities | 72.1 | 70.8 | 73.4 | 226/235 | 0.261 |
+| the first-token path + the chain rule | **73.4** | 70.8 | **76.1** | **228/235** | 0.292 |
+
+Per type, the last run: choice 89.7% accurate, noul 91.3%, score 67.8%. The fast
+path carried 177 of the 235 items (75%); 50 fell back to the decode path because
+their options share a first token and are not the same length (see §10.9), and one
+because an option's token was outside the engine's window.
+
+**The two rows that differ only in the probabilities are the honest part.** The
+second row sent the scorer a degenerate distribution (1.0 on the pick, 0.0
+elsewhere), so its calibration component was just 1 - accuracy. The third row sent
+the endpoint's real distribution, and the Capability **dropped 2.8 points**: the
+model's own confidence is over-confident relative to its own accuracy. That is a
+finding, not a bug in the reading - and it is the reason the chain rule (which
+gives the colliding questions a real confidence too) is worth 1.3 Capability
+points even though it changes no answer the first-token path got right.
+
+**The two readings, per type** (`tools/decision_policy/readings_split.py`, the
+fast-path items of the 235):
+
+| type | closed AUC | open AUC | closed ECE | open ECE |
+|---|---:|---:|---:|---:|
+| choice (75) | 0.7464 | **0.8285** | 0.1147 | **0.0975** |
+| noul (69) | 0.9491 | 0.9499 | **0.0933** | 0.1157 |
+| score (18) | - | - | **0.1580** | 0.1684 |
+
+The open reading (the model's own probability) ranks a correct answer above a
+wrong one better; the closed reading is better calibrated for a yes/no, where its
+value is the probability of "yes" among the two answers, so the value and the
+answer always agree. Hence the contract: `probabilities` is the closed reading
+(the shape's distribution, which has to add up to 1), `confidence` is the open one
+(the model's own probability of the pick), and a yes/no keeps the closed reading.
+
+**The VRAM** during the run: the minimum free was **1072 MiB** (1207 at load)
+against the engine's 1024 MiB warning threshold, and each parked conversation costs
+~240 MiB with these long prompts. Four conversation-cache slots would put the card
+about 484 MiB below that threshold - the failure mode that kills a verify window -
+so the slots stay at 2.
 
 ### 10.9 What is not done
 
@@ -679,9 +724,19 @@ TBD
   endpoint reports the model's internal probability. That is the right shape for the
   API, but the *answer* and the *probability* then come from different places - the
   argmax against the distribution.
-- **The exact probability of an option that continues past the separating token**
-  ("bill" against "billing"). The chain rule needs the probability of not
-  continuing, which the rows do not carry.
+- **The chain rule for the options of different lengths.** 72 of the 235 items have
+  options that share a first token, and only 13 of them have options that are all
+  the same length - the case the chain rule as built handles exactly. The other 59
+  have options of different lengths ("frontier" and "frontier_reasoning",
+  "plus" and "plus_with_advisor"), where the shorter option is a prefix of the
+  longer one. Separating those exactly needs the probability of *not* continuing
+  (the end-of-turn token's weight at that position), and comparing options of
+  different lengths needs a rule for the length, or the comparison is biased
+  towards the shorter ones. The walk itself is cheap - the rows up to where the
+  options split are 5 or fewer for 52 of the 72 items, measured by
+  `tools/decision_policy/chain_costs.py` - so it is the semantics, not the cost,
+  that is open. They are left to the decode path, which still answers them (the
+  greedy text is the model's own choice) but without a real confidence.
 - **The conversation cache's slots.** Measured: the minimum free VRAM during the
   235-item run was 1072 MiB (1228 at load), against the engine's 1024 MiB warning
   threshold - and each parked conversation costs ~240 MiB of VRAM with these long
