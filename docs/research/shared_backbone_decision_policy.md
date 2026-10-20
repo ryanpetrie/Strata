@@ -438,6 +438,13 @@ generated data and should stay out of version control unless the user asks.
 | `serve/test_systemone.py` | 14 tests, MockEngine, no GPU |
 | `serve/server.py` | wired: flag + config, admission, dispatch, `Service.systemone`, dialects |
 | `tools/decision_policy/opendecisions.py` | OpenDecisions harness: serial + batch arms, resume-safe, official predictions output |
+| `serve/logits_first_token.py` | the first-token lookup: both readings, the collision check, the top-1 rule |
+| `serve/test_logits_first_token.py` | the logits path, the wire format and the fallback, MockEngine, no GPU |
+| `tools/decision_policy/logits_prob.py` | the probability module: log-space softmax, the chain rule, the response shape (28 tests) |
+| `tools/decision_policy/logits_check.py` | the probe: six cases, each with the verdict it must produce |
+| `tools/decision_policy/readings_compare.py` | the closed-vs-open comparison, with the official scorer's own correctness rule |
+| `tools/decision_policy/vram_headroom.py` | the minimum free VRAM during a run, from the engine's log |
+| `tools/decision_policy/first_token.py` | the tokenization analysis: how many option names are multi-token, and where they collide |
 
 ## 9. OpenDecisions validation (2026-10-19, validation only - the set says do not train)
 
@@ -494,3 +501,167 @@ so its calibration-item TVD (0.272 on 60 items vs 0.546/0.400) is not comparable
 accuracy and failure-rate comparisons stand. Conclusion: same-question batching
 preserves serial accuracy, formats cleaner than serial itself, and is the right
 shape for an agent's fixed-vocabulary loop.
+
+---
+
+## 10. The first-token logits path (2026-10-20, milestone 1)
+
+### 10.1 What was missing
+
+The endpoint's confidence was the open problem. A greedy decode yields the argmax,
+so a pick was reported as 1.0 and every other option as 0.0, and every response
+carried `"calibrated": false`. The user asked for the confidence to come from the
+model's internal state, the way a trained decision model produces it.
+
+The model already computes that state on every request:
+
+```
+prompt -> tokens -> embeddings -> 48 layers -> hidden state (n_embd 2560)
+        -> lm_head (the vocabulary projection) -> logits (~248,320 floats)
+        -> softmax -> the model's own next-token distribution
+```
+
+The endpoint threw the distribution away and sampled one token from it. Reading it
+instead of sampling it is the whole feature: no second model, no heads, no training.
+
+### 10.2 The answer position, and why the assistant turn is prefilled
+
+The answer format is `name: answer`. A prompt that simply ends with `name: ` makes
+the model start its turn by writing the **name**, so the next-token logits describe
+the name rather than the answer. Measured on the probe: the question's name was the
+top token at the answer position in every case, with the answer third or fourth.
+
+The fix is to prefill the assistant's turn with the answer line's prefix, so the
+model continues *into* the answer. The server already had that mechanism
+(`prepare(..., force=...)`, used for forced tool calls), so no new engine machinery
+was needed for it.
+
+The prefix must end at the **colon**, not at a space. In training `"urgent: no"`
+tokenizes as `['urgent', ':', ' no']` - the space lives inside the merged token. A
+prompt ending in a lone space token after the colon is off-distribution, and the
+model reacts by wanting out: measured, `<|im_end|>` became the top token (18.78) with
+`' no'` second (13.82). With the prefix ending at the colon, the answer became the
+top token:
+
+```
+noul   : 874:20.82:' no'  | 9542:16.46:' yes' | 2233:15.98:' No' | 248046:15.55:'<|im_end|>'
+choice : 10597:18.25:' technical' | 32419:17.92:' billing' | 248046:13.19:'<|im_end|>'
+```
+
+### 10.3 The engine command
+
+`LOGITS <k> <max_new> <id,id,...>` on the engine's stdin protocol. It is an ordinary
+GEN request that also prints the answer position's row:
+
+| Line | What it is |
+| --- | --- |
+| `Z <logz>` | the full-vocabulary log-sum-exp: `P(token) = exp(logit - logz)` |
+| `L <token_id> <logit>` | the top-k at the answer position, descending |
+| `T <token_id>` | the tokens the request generated (the normal decode) |
+| `DONE ...` | the normal DONE line |
+
+`logz` is what makes the "open" reading exact: it normalizes over the whole
+vocabulary, not just the top-k.
+
+The command was at first a prefill-only request that broke out of the serve window
+loop early. That break skipped, on every such request, `adapt_thr.join()` (the
+adaptive refill thread was never joined), the `if (!adapt_ok)` check, the policy's
+`observe(...)`, `++rounds`, `fs->completed` and `pcie_auto_step(...)`. The adaptive
+tier is what swaps experts between the VRAM and the RAM tier
+(`src.replace_resident(...)`) - VRAM copies, on a background thread - so leaving it
+unjoined while the next request starts, and feeding the policy statistics that omit
+those windows, faults the GPU silently. Measured, the crash landed one or two
+requests *after* a fast-path request, not on it:
+
+| path | requests before a crash |
+| --- | --- |
+| plain decode (log, 2026-10-19 17:11) | 235, none |
+| with the fast path | 39, 22, 18 |
+
+The break is gone. `LOGITS` is now an ordinary GEN request that also prints the
+answer position's row: every counter, the policy observation and the adaptive join
+run exactly as on any other request. The cost is that the fast path also pays for
+the decode - the prefill dominates (~2 s against a ~30 ms decode), and the prize was
+always the probabilities, not the speed.
+
+A bonus of the redesign: the fallback needs no second engine request. The tokens
+that same request generated *are* the answer, so every decision is exactly one
+engine request, including the ~30% of questions whose options collide on a first
+token.
+
+### 10.4 Two readings of the same probability
+
+| | what it is | sums to |
+| --- | --- | --- |
+| **closed** | softmax over the option tokens only - the forced-choice reading | the options sum to 1.0 |
+| **open** | `P = exp(logit - logz)` - the model's own probability | the options sum to < 1.0 |
+
+They differ by exactly the mass outside the options. The **answer** is identical
+under both (a renormalization does not reorder options) - only the confidence
+differs. So the choice between them is a calibration question, answered by
+measurement rather than argument (§10.6).
+
+The diagnostics also carry `stop` (the mass on the end-of-turn tokens) and
+`outside` (everything that is not an option). Measured on the probe, after the
+prefix fix, the two readings nearly coincide - so the large `<|im_end|>` mass was
+noise from the off-distribution space, not uncertainty:
+
+| case | closed | open | stop | outside |
+| --- | ---: | ---: | ---: | ---: |
+| noul | 0.987 | 0.962 | 0.006 | 0.026 |
+| choice | 0.505 | 0.494 | 0.004 | 0.022 |
+| score | 0.950 | 0.844 | 0.089 | 0.112 |
+
+### 10.5 Two bugs, both found by the probe
+
+**The wire format.** The engine reads `LOGITS <k> <max_new> <ids>`; the server wrote
+`LOGITS <k> <ids>`. The engine answered `ERR expected: LOGITS <k 1..1024> <max_new
+1..4096> <id,id,...>`, the request never ran, and every decision fell back to the
+decode path: no `L`/`Z` rows, no probabilities, and the replies the fallback
+produced were truncated at the front (`"ood: happy"` for `"mood: happy"`). The mock
+engine in the tests answers from a script and never sees the line, so nothing caught
+it. The format is now pinned by a test (`serve/test_logits_first_token.py`,
+`EngineWireFormat`).
+
+**The end-of-turn token.** The fallback read the answer from the tokens the request
+generated and decoded the end-of-turn token with them, so the collision case
+answered `"rule_2<|im_end|>"` - not one of the options, so a 502. The end token now
+ends the answer and is cut before the text is decoded, as the chat path does.
+
+The probe's six cases after the fixes (2026-10-20, the deployed engine 0.1.45.3):
+
+| case | expected | measured |
+| --- | --- | --- |
+| noul | fast path | fast path, closed 0.987, open 0.962 |
+| choice | fast path | fast path, closed 0.505, open 0.494 |
+| score | fast path | fast path, closed 0.950, open 0.844 |
+| collide | falls back (the options share a first token) | falls back, answered `rule_2` |
+| multi | falls back (one question per request) | falls back |
+| chat | unchanged | unchanged |
+
+### 10.6 The OpenDecisions run
+
+TBD
+
+### 10.7 What is not done
+
+- **The chain rule for multi-token options.** 92.9% of the option names in the
+  dataset are several tokens, and 29.9% of the questions have options that collide
+  on their first token. The probability of a multi-token option is the product of its
+  token probabilities, which needs the logits at *each* position of that option's
+  sequence - one extra forward pass per token. The engine's `LOGITS` command returns
+  the row at the answer position; the walk needs the server to append the option's
+  tokens and read the next row. `tools/decision_policy/logits_prob.py`'s
+  `sequence_logprob` is written for exactly this and is already unit-tested. Until
+  then, the open probability of a multi-token option is its first token's - an upper
+  bound on the sequence.
+- **The real-trajectory data** (the 60-example synthetic set is rule-labelled, so it
+  measures agreement with a rule, not quality). Blocked on the user: log
+  `(state, questions, answers, outcome, trajectory_id)` JSONL from the agent, freeze
+  a trajectory-split evaluation set, and re-run.
+- **A contract question to state plainly.** The reference API's `noul` type returns a
+  *float* (the probability of yes) and the scorer thresholds it at 0.5. The prompt
+  now says "answer yes or no", which makes the model write a boolean while the
+  endpoint reports the model's internal probability. That is the right shape for the
+  API, but the *answer* and the *probability* then come from different places - the
+  argmax against the distribution.

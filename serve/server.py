@@ -4172,7 +4172,7 @@ class Service:
         # Several questions: one prompt answers them all, so the prefill is shared.
         return self._systemone_classic(state_text, questions, model, cancel)
 
-    def _systemone_classic(self, state_text, questions, model, cancel):
+    def _systemone_classic(self, state_text, questions, model, cancel, reason=None):
         """The decode path: one prompt answers every question and the reply is the
         `name: answer` lines.  It is the fallback for a single question too, when the
         model wrote nothing at the answer position."""
@@ -4193,6 +4193,9 @@ class Service:
         answers = sysone.parse_answers(text, questions)
         body = sysone.build_response(questions, answers, model, collected.get("usage") or {},
                                      collected.get("timings"))
+        if reason and getattr(self, "systemone_diagnostics", False):
+            # opt-in: why the answer came from the decode path
+            body["diagnostics"] = {name: {"reason": reason} for name, _ in questions}
         return 200, body
 
     def _systemone_single(self, state_text, questions, model, cancel):
@@ -4224,8 +4227,20 @@ class Service:
                                               sysone.MAX_TOKENS_PER_QUESTION, force=prefix,
                                               req=None, cancel=cancel)
         try:
-            topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
-                                                     sysone.MAX_TOKENS_PER_QUESTION, cancel)
+            # The engine's turn: its stdin and stdout carry ONE request at a time, so a
+            # decision and a chat request must never interleave on the pipe (the chat
+            # path takes the same turn).  Without it, two overlapping requests read
+            # each other's lines and both answers are garbage.
+            deadline = (time.monotonic() + self.queue_timeout_s
+                        if self.queue_timeout_s is not None else None)
+            with self._inference_fifo(deadline, cancel):
+                topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
+                                                        sysone.MAX_TOKENS_PER_QUESTION, cancel)
+        except (QueueCancelled, QueueWaitExpired):
+            # The client left, or the queue wait expired: neither is a reason to fall
+            # back to the decode path (it would wait for the same turn and fail the
+            # same way).  The HTTP layer answers these (nothing, or a 429).
+            raise
         except Exception as e:
             # The engine's answer was lost (it died, it answered ERR, the client went
             # away).  The decision still has to be made, so the decode path answers it -
@@ -4260,14 +4275,20 @@ class Service:
         # The logits cannot be scored (an option's first token is outside the window, two
         # options share one, or the model wanted to say something else): the tokens THIS
         # request generated are the answer, so no second request is needed.
+        reason = lft.fallback_reason(questions, topk or {}, self.tok, prefix, logz)
         text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if tokens else ""
         if text.strip():
             answers = sysone.parse_answer_text(text, questions)
             body = sysone.build_response(questions, answers, model, usage, None)
+            if getattr(self, "systemone_diagnostics", False):
+                # opt-in: WHY the fast path did not fire, so a run records the reason
+                # per item instead of only the fact that it did not
+                body["diagnostics"] = {name: {"reason": reason} for name, _ in questions}
             return 200, body
         # The model wrote nothing at the answer position (it wanted to end the turn):
         # the classic prompt, where it writes the whole line, answers it.
-        return self._systemone_classic(state_text, questions, model, cancel)
+        return self._systemone_classic(state_text, questions, model, cancel,
+                                       reason="the model wrote nothing at the answer position")
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
