@@ -1734,6 +1734,21 @@ endpoint already solved for score levels**: §6.0's `{id: description}` form exi
 because "the model was measured answering the short id unprompted against
 full-string criteria, so exact reproduction of ~100-character strings is the wrong
 demand".  A choice option that is a generic name with a description is that same
-situation, and the endpoint has no answer for it.  Mapping a text that matches
-exactly one option's description back to that option would turn four 502s into
-answers; it is a small, separable change and it is not made here.
+situation, and the endpoint had no answer for it.
+
+**Done (2026-10-21, later the same day).**  A text that matches **exactly one**
+option's description is read as that option; a name is still checked first, an
+ambiguous description (two options carrying it) stays an error rather than a coin
+flip, and an option with no description is never matched.  The answer the endpoint
+returns is still one of the option names, so the contract does not change.
+
+Measured:
+
+| | before | after |
+|---|---:|---:|
+| the four requests | 0 of 4 answered | **4 of 4 answered** |
+| the rewrites suite | 488 tests judged, 4 unjudged | **492 judged, 0 unjudged** |
+| the overall coherence score | 0.658 [0.599, 0.717] | **0.661** [0.603, 0.719] |
+| the graded score | 0.923 | 0.923 |
+| the 235-item OpenDecisions sample | 79.8 | 79.2 (inside the noise floor) |
+| the suite | - | 1,014 tests, 0 failures |

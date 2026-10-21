@@ -412,5 +412,56 @@ class ConfigFlag(unittest.TestCase):
             systemone_multi_mode({"systemone": {"multi": "batch"}})
 
 
+class OptionDescriptions(unittest.TestCase):
+    """A model that answers with an option's DESCRIPTION instead of its name.
+
+    The prompt shows an option as `- name ("description")` and asks for the name, but
+    the JevBench rewrite cases (whose options are named option_1 ... option_4 with a
+    description attached) drew the description: four of 643 requests answered 502
+    because of it.  The description names the option just as well, so the endpoint
+    maps it - but only when EXACTLY ONE option carries that description, so it can
+    never be a guess between two options.
+    """
+
+    RAW = {"tier": {"type": "choice", "instructions": "Which plan?",
+                    "criteria": {"option_1": "The paid pro plan",
+                                 "option_2": "The free tier",
+                                 "option_3": None}}}
+
+    @classmethod
+    def setUpClass(cls):
+        _, cls.QUESTIONS = sysone.validate_request({"state": "x", "questions": cls.RAW})
+
+    def test_a_description_names_its_option(self):
+        answers = sysone.parse_answer_text("The paid pro plan", self.QUESTIONS)
+        self.assertEqual(answers["tier"], "option_1")
+
+    def test_the_whole_line_is_read_too(self):
+        answers = sysone.parse_answers("tier: The free tier\n", self.QUESTIONS)
+        self.assertEqual(answers["tier"], "option_2")
+
+    def test_a_name_is_never_second_guessed(self):
+        # the name is checked first, so a name that also reads as a description wins
+        answers = sysone.parse_answer_text("option_3", self.QUESTIONS)
+        self.assertEqual(answers["tier"], "option_3")
+
+    def test_an_unknown_text_is_still_an_error(self):
+        with self.assertRaises(StructuredOutputError):
+            sysone.parse_answer_text("something else", self.QUESTIONS)
+
+    def test_an_ambiguous_description_is_not_guessed(self):
+        # two options carry the same description: there is no single answer, so the
+        # text stays an error rather than a coin flip
+        _, questions = sysone.validate_request({"state": "x", "questions": {
+            "tier": {"type": "choice", "instructions": "Which?",
+                     "criteria": {"option_1": "the same", "option_2": "the same"}}}})
+        with self.assertRaises(StructuredOutputError):
+            sysone.parse_answer_text("the same", questions)
+
+    def test_an_option_without_a_description_is_never_matched(self):
+        with self.assertRaises(StructuredOutputError):
+            sysone.parse_answer_text("None", self.QUESTIONS)
+
+
 if __name__ == "__main__":
     unittest.main()
