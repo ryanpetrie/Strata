@@ -123,6 +123,12 @@ there (its last token, and another option continues through that node).  The fir
 case needs nothing but the row; the second needs the probability of the turn ENDING
 there, because a model that stops after the shorter option has answered with it.
 
+THE ROOT IS CHECKED TOO.  The root is the answer position, and the options claim
+their first tokens there, so the row at the answer position is held to the same rule
+the first-token path holds it to: the model's top token there must be one the options
+claim, or the model was going to say something else and the reading is about a choice
+it is not making.
+
 None when the options' tokenization does not continue the prefix's: the model's
 context and the option's own text would then be different sequences, and the whole
 reading would be about a different prompt.
@@ -160,9 +166,15 @@ reading would be about a different prompt.
     # THE OUTCOMES: what the options at a node claim.  An option that continues
     # through the node claims the token it continues with; an option whose text ends
     # there claims the end of the turn.
+    #
+    # THE ROOT IS ALWAYS ONE OF THEM.  The root is the answer position, and the
+    # options claim their first tokens there, so the row at the answer position is
+    # checked the way the first-token path checks it: if the model's top token there
+    # is not one the options claim, the model was going to say something else, and
+    # the reading (which is about a context the model is not in) must not be used.
     stop_ids = end_of_turn_ids(tok)
     outcomes: dict[tuple, set] = {}
-    for node in nodes:
+    for node in set(nodes) | {()}:
         claimed: set = set()
         ends = False
         for opt in options:
