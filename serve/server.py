@@ -4346,24 +4346,37 @@ class Service:
         usage = {"prompt_tokens": len(ids) * (1 + walk), "completion_tokens": len(tokens),
                  "total_tokens": len(ids) * (1 + walk) + len(tokens),
                  "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
-        if readings is not None:
-            answers = {name: lft.reading_response(r) for name, r in readings.items()}
-            body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
-                    "created": int(time.time()), "model": model, "calibrated": True,
-                    "answers": answers, "usage": usage}
-            if getattr(self, "systemone_diagnostics", False):
-                # opt-in: the alternative reading, so the two can be compared (which one
-                # predicts a correct answer better is a measurement, not a decision)
-                body["diagnostics"] = {name: lft.reading_diagnostics(r)
-                                       for name, r in readings.items()}
-            return 200, body
-        # The logits cannot be scored (an option's first token is outside the window, two
-        # options share one, or the model wanted to say something else): the tokens THIS
-        # request generated are the answer, so no second request is needed.
+        # THE MODEL'S OWN CHOICE.  When the model's top token at the answer position is
+        # one of the options, it was choosing among them and the readings are the
+        # answer.  When it was not (it wanted to write a digit, a phrase, a number), the
+        # model's own text is the answer if that text is a valid answer - a yes/no may
+        # be given as a rate - and the readings are the answer if it is not.  Either
+        # way the doubt is in the confidence: the open reading is the model's own
+        # probability of the answer, so a question the model was not going to answer
+        # with an option comes back with a small one.
+        picked = readings is not None and all(r.get("model_picked", True)
+                                              for r in readings.values())
+        if readings is not None and picked:
+            return 200, self._systemone_readings(readings, model, usage)
+        # The model's own text: the tokens THIS request generated are the answer, so no
+        # second request is needed.
         reason = lft.fallback_reason(questions, topk or {}, self.tok, prefix, logz, trie_reason)
         text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if tokens else ""
         if text.strip():
-            answers = sysone.parse_answer_text(text, questions)
+            try:
+                answers = sysone.parse_answer_text(text, questions)
+            except StructuredOutputError:
+                # The model wrote something that is not an answer.  If the readings
+                # exist, they are the better answer: the forced choice, with the
+                # confidence carrying the doubt.
+                if readings is not None:
+                    body = self._systemone_readings(readings, model, usage)
+                    if getattr(self, "systemone_diagnostics", False):
+                        body["diagnostics"] = {name: dict(lft.reading_diagnostics(r),
+                                                           reason=reason)
+                                               for name, r in readings.items()}
+                    return 200, body
+                raise
             body = sysone.build_response(questions, answers, model, usage, None)
             if getattr(self, "systemone_diagnostics", False):
                 # opt-in: WHY the fast path did not fire, so a run records the reason
@@ -4374,6 +4387,23 @@ class Service:
         # the classic prompt, where it writes the whole line, answers it.
         return self._systemone_classic(state_text, questions, model, cancel,
                                        reason="the model wrote nothing at the answer position")
+
+    def _systemone_readings(self, readings, model, usage) -> dict:
+        """The response built from the readings: the forced choice, the distribution
+        over the options, and the confidence (the model's own probability of the pick).
+        """
+        from serve import logits_first_token as lft
+        from serve import systemone as sysone
+        answers = {name: lft.reading_response(r) for name, r in readings.items()}
+        body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
+                "created": int(time.time()), "model": model, "calibrated": True,
+                "answers": answers, "usage": usage}
+        if getattr(self, "systemone_diagnostics", False):
+            # opt-in: the alternative reading, so the two can be compared (which one
+            # predicts a correct answer better is a measurement, not a decision)
+            body["diagnostics"] = {name: lft.reading_diagnostics(r)
+                                   for name, r in readings.items()}
+        return body
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""

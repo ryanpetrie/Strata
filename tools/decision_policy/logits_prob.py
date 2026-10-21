@@ -134,7 +134,7 @@ def build_response(qtype: str, answers: dict[str, list[list[int]]],
     """The reference response shape (serve/systemone.py build_response) with real
     probabilities instead of degenerate 1.0/0.0.
 
-    - noul:   {"type": "noul", "noul": P(yes)}
+    - noul:   {"type": "noul", "noul": P(yes), "confidence": p}
     - choice: {"type": "choice", "choice": pick, "probabilities": {...},
                "confidence": p}
     - score:  {"type": "score", "score": idx, "legend": {...},
@@ -143,13 +143,16 @@ def build_response(qtype: str, answers: dict[str, list[list[int]]],
     `answers` supplies the ordering (insertion order) that score's index and
     legend are built from.  `distribution` is the distribution over the answers (it
     has to add up to 1: it is the shape's distribution).  `confidence` is the
-    confidence to report; None means the distribution's own maximum.  The caller
-    sets the body-level "calibrated": True.
+    confidence to report; None means the distribution's own maximum, and for a noul it
+    means no confidence at all.  The caller sets the body-level "calibrated": True.
     """
     if qtype not in ("noul", "choice", "score"):
         raise ValueError(f"build_response: unknown qtype {qtype!r}")
     if qtype == "noul":
-        return {"type": "noul", "noul": float(distribution.get("yes", 0.0))}
+        out = {"type": "noul", "noul": float(distribution.get("yes", 0.0))}
+        if confidence is not None:
+            out["confidence"] = float(confidence)
+        return out
     pick = None
     best = -1.0
     for name, p in distribution.items():
