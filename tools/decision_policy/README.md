@@ -38,8 +38,8 @@ python tools/decision_policy/vram_headroom.py       # the free VRAM during a run
 `logits_check.py` asks for a handful of small requests and reports, per case, whether the request took the
 LOGITS fast path (a real probability) or fell back to the decode path (1.0/0.0). The cases cover the paths
 that matter: a yes/no, a choice, a score, two options that share their first token, two options of different
-lengths, two options where only some share a first token, and a request with two questions (which must fall
-back - the answer position is per question).
+lengths, two options where only some share a first token, and a request with two questions (each question is
+answered on its own, so the fast path fires for each of them).
 
 `opendecisions.py` runs a dataset through the endpoint and writes the scorer's input (the probabilities) and
 a per-item run log (the fast path or not, and why not). It is resume-safe: it skips the ids already in the

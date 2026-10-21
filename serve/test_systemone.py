@@ -8,24 +8,41 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import logits_first_token as lft   # noqa: E402
 from serve import systemone as sysone  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service  # noqa: E402
+from serve.server import ByteTokenizer, MockEngine, Service, systemone_multi_mode  # noqa: E402
 from serve.structured import StructuredOutputError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 CTX = 4096
 
 
-def svc_with(script: str) -> Service:
+def svc_with(script: str | list[str] = "q: yes\n") -> Service:
+    """A service whose mock engine replays `script`.  A list gives one reply per
+    request (the last one repeats), which is what a request with several questions
+    needs: every question is its own request."""
     tok = ByteTokenizer()
     svc = Service(MockEngine(tok, script, max_context=CTX), tok,
                   ChatTemplate(ROOT / "serve/chat_template.jinja"))
     svc.systemone_enabled = True
     svc.model = "test-model"
     return svc
+
+
+def count_requests(svc: Service) -> list:
+    """Wrap the mock engine's generate() so a test can count the engine's requests."""
+    calls = []
+    original = svc.engine.generate
+
+    def counting(ids, max_new, sampling, cancel, embeddings=None):
+        calls.append(list(ids))
+        return original(ids, max_new, sampling, cancel, embeddings)
+    svc.engine.generate = counting
+    return calls
 
 
 def req(**kw):
@@ -209,7 +226,9 @@ class ServiceRoute(unittest.TestCase):
         self.assertGreater(body["usage"]["prompt_tokens"], 0)
 
     def test_choice_and_score(self):
-        svc = svc_with("dept: technical\nmood: happy\n")
+        # several questions: each one is its own request, so the model answers one
+        # question per reply
+        svc = svc_with(["dept: technical\n", "mood: happy\n"])
         code, body = svc.systemone(req(questions={
             "dept": {"type": "choice", "instructions": "Which team?",
                      "criteria": {"billing": None, "technical": None}},
@@ -228,6 +247,169 @@ class ServiceRoute(unittest.TestCase):
         svc = svc_with("q: yes\n")
         with self.assertRaises(ValueError):
             svc.systemone({"state": "x", "questions": {}}, threading.Event())
+
+
+class MultiQuestion(unittest.TestCase):
+    """Several questions: each one is answered on its own (the single-question path)
+    and the answers are merged into one response."""
+
+    Q1 = {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}
+    Q2 = {"type": "choice", "instructions": "Pick", "criteria": {"x": None, "y": None}}
+
+    def req(self, **kw):
+        base = {"state": {"goal": "x"}, "questions": {"q1": self.Q1, "q2": self.Q2}}
+        base.update(kw)
+        return base
+
+    def test_each_question_is_answered_on_its_own(self):
+        # two questions, two engine turns, one answer each
+        svc = svc_with(["q1: a\n", "q2: y\n"])
+        calls = count_requests(svc)
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["answers"]["q1"]["choice"], "a")
+        self.assertEqual(body["answers"]["q2"]["choice"], "y")
+        self.assertEqual(list(body["answers"]), ["q1", "q2"])     # the request's order
+        self.assertEqual(len(calls), 2)                          # one turn per question
+
+    def test_every_answer_carries_the_model_s_own_probability(self):
+        # the fast path: the model's own next-token distribution at each answer
+        # position, so the answers are real probabilities and not the degenerate 1.0/0.0
+        svc = svc_with()
+        svc.engine.logits_rows = [({1000: 3.0, 1001: 1.0}, 4.0), ({1002: 3.0, 1003: 1.0}, 4.0)]
+        ids = {"a": 1000, "b": 1001, "x": 1002, "y": 1003}
+        with mock.patch.object(lft, "first_token_ids",
+                               lambda opts, tok, prefix="": {o: ids[o] for o in opts}):
+            code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q1"]["choice"], "a")
+        self.assertEqual(body["answers"]["q2"]["choice"], "x")
+        probs = body["answers"]["q1"]["probabilities"]
+        self.assertAlmostEqual(probs["a"] + probs["b"], 1.0)      # the closed reading adds up to 1
+        self.assertGreater(probs["b"], 0.0)                     # and it is not the degenerate one
+        self.assertLess(body["answers"]["q1"]["confidence"], 1.0)   # the model's own probability
+
+    def test_the_engine_s_turn_is_taken_once_per_question(self):
+        # the fast path holds the engine's turn while it runs, and gives it back
+        # before the next question: the turn is not held across the questions, or the
+        # requests would serialise wrongly
+        svc = svc_with(["q1: a\n", "q2: y\n"])
+        calls = []
+        original = svc.engine.logits
+
+        def counting(ids, k, max_new, cancel):
+            calls.append(svc.fifo.locked())
+            return original(ids, k, max_new, cancel)
+        svc.engine.logits = counting
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(len(calls), 2)              # one engine request per question
+        self.assertTrue(all(calls))                  # and the turn was held while it ran
+        self.assertFalse(svc.fifo.locked())          # and given back afterwards
+
+    def test_one_failing_question_does_not_take_the_others_down(self):
+        # the model did not answer q1: q1 is left out, q2 keeps its answer, and the
+        # request is still a 200
+        svc = svc_with(["not an answer\n", "q2: y\n"])
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertNotIn("q1", body["answers"])
+        self.assertEqual(body["answers"]["q2"]["choice"], "y")
+        # q2 came from the decode path, so the merged answer is not calibrated
+        self.assertFalse(body["calibrated"])
+
+    def test_no_answer_at_all_is_a_502(self):
+        # nothing could be answered: there is no answer to return, and a one-question
+        # request in the same situation is a 502 too
+        svc = svc_with(["not an answer\n"])
+        with self.assertRaises(StructuredOutputError):
+            svc.systemone(self.req(), threading.Event())
+
+    def test_the_single_question_path_is_unchanged(self):
+        # the same question answered alone and answered as part of a pair gives the
+        # same answer: A1 is the single-question path, once per question
+        alone = svc_with(["q1: a\n"]).systemone(
+            self.req(questions={"q1": self.Q1}), threading.Event())[1]
+        pair = svc_with(["q1: a\n", "q2: y\n"]).systemone(self.req(), threading.Event())[1]
+        self.assertEqual(pair["answers"]["q1"], alone["answers"]["q1"])
+        self.assertFalse(alone["calibrated"])        # the decode path: the degenerate 1.0/0.0
+
+    def test_the_usage_adds_up(self):
+        # the merged request costs what the two single-question requests cost
+        one = svc_with(["q1: a\n"]).systemone(
+            self.req(questions={"q1": self.Q1}), threading.Event())[1]
+        two = svc_with(["q2: y\n"]).systemone(
+            self.req(questions={"q2": self.Q2}), threading.Event())[1]
+        pair = svc_with(["q1: a\n", "q2: y\n"]).systemone(self.req(), threading.Event())[1]
+        self.assertEqual(pair["usage"]["prompt_tokens"],
+                         one["usage"]["prompt_tokens"] + two["usage"]["prompt_tokens"])
+        self.assertEqual(pair["usage"]["total_tokens"],
+                         pair["usage"]["prompt_tokens"] + pair["usage"]["completion_tokens"])
+
+    def test_the_merged_response_has_the_reference_shape(self):
+        svc = svc_with(["q1: a\n", "q2: y\n"])
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["object"], "systemone.classification")
+        self.assertTrue(body["id"].startswith("systemone-"))
+        self.assertEqual(body["model"], "test-model")
+        self.assertIsInstance(body["created"], int)
+        for name in ("q1", "q2"):
+            self.assertEqual(set(body["answers"][name]),
+                             {"type", "choice", "probabilities", "confidence"})
+        self.assertEqual(set(body["usage"]),
+                         {"prompt_tokens", "completion_tokens", "total_tokens", "prompt_tokens_details"})
+
+    def test_a_noul_in_the_merged_answer(self):
+        svc = svc_with(["q1: yes\n", "q2: no\n"])
+        code, body = svc.systemone(self.req(questions={
+            "q1": {"type": "noul", "instructions": "Is it?"},
+            "q2": {"type": "noul", "instructions": "Is it not?"}}), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["answers"]["q1"], {"type": "noul", "noul": 1.0})
+        self.assertEqual(body["answers"]["q2"], {"type": "noul", "noul": 0.0})
+
+    def test_the_default_is_separate(self):
+        self.assertEqual(svc_with("q: yes\n").systemone_multi, "separate")
+
+    def test_the_shared_prompt_is_still_there(self):
+        # the old path, behind the config flag: one prompt answers every question, so
+        # the prefill is shared and the answers carry no probability
+        svc = svc_with(["q1: a\nq2: y\n"])
+        svc.systemone_multi = "shared"
+        calls = count_requests(svc)
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["answers"]["q1"]["choice"], "a")
+        self.assertEqual(body["answers"]["q2"]["choice"], "y")
+        self.assertFalse(body["calibrated"])
+        self.assertEqual(len(calls), 1)                # one prompt for both questions
+
+    def test_the_diagnostics_name_the_question_that_failed(self):
+        svc = svc_with(["not an answer\n", "q2: y\n"])
+        svc.systemone_diagnostics = True
+        code, body = svc.systemone(self.req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertIn("reason", body["diagnostics"]["q1"])
+        self.assertIn("q2", body["answers"])
+
+
+class ConfigFlag(unittest.TestCase):
+    """The config's "systemone": {"multi": ...}."""
+
+    def test_the_default_is_separate(self):
+        self.assertEqual(systemone_multi_mode({}), "separate")
+        self.assertEqual(systemone_multi_mode({"systemone": {"enabled": True}}), "separate")
+        self.assertEqual(systemone_multi_mode({"systemone": None}), "separate")
+
+    def test_the_two_modes(self):
+        self.assertEqual(systemone_multi_mode({"systemone": {"multi": "separate"}}), "separate")
+        self.assertEqual(systemone_multi_mode({"systemone": {"multi": "shared"}}), "shared")
+
+    def test_an_unknown_mode_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_multi_mode({"systemone": {"multi": "batch"}})
 
 
 if __name__ == "__main__":

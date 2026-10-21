@@ -3461,6 +3461,7 @@ class Service:
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.systemone_enabled = False                # opt-in: the config's "systemone": {"enabled": true} turns on POST /v1/systemone
         self.systemone_diagnostics = False            # opt-in: "systemone": {"diagnostics": true} adds the alternative reading
+        self.systemone_multi = "separate"            # "systemone": {"multi": "shared"} turns on the old shared prompt for several questions
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4166,8 +4167,9 @@ class Service:
 
     def systemone(self, req: dict, cancel: threading.Event) -> tuple[int, dict]:
         """POST /v1/systemone: the reference API's classification shape on this server's
-        own model (serve/systemone.py). One prompt answers every question; a reply that
-        does not parse is a StructuredOutputError (502), never a fabricated answer."""
+        own model (serve/systemone.py). One question is read at the answer position;
+        several questions are answered one at a time and merged.  A reply that does
+        not parse is a StructuredOutputError (502), never a fabricated answer."""
         from serve import systemone as sysone
         if not self.systemone_enabled:
             return 404, {"error": {"type": "invalid_request_error",
@@ -4180,8 +4182,76 @@ class Service:
             # so the next token IS the answer.  The logits path reads the distribution
             # there; the fallback generates from the same position.
             return self._systemone_single(state_text, questions, model, cancel)
-        # Several questions: one prompt answers them all, so the prefill is shared.
-        return self._systemone_classic(state_text, questions, model, cancel)
+        if self.systemone_multi == "shared":
+            # The old path: one prompt answers every question, so the prefill is shared.
+            # Its answers carry no probability (the degenerate 1.0/0.0 of a greedy
+            # decode), which is why it is not the default any more.
+            return self._systemone_classic(state_text, questions, model, cancel)
+        # Several questions: the single-question path once per question, merged into one
+        # response.  Every answer then carries the model's own probability.
+        return self._systemone_separate(state_text, questions, model, cancel)
+
+    def _systemone_separate(self, state_text, questions, model, cancel):
+        """Several questions, answered one at a time and merged into one response.
+
+        Each question runs the single-question path - the same path a one-question
+        request runs, with the same answers and the same probabilities - so every answer
+        in the merged response carries the model's own distribution instead of the
+        degenerate 1.0/0.0 a shared decode reports.  The price is one engine turn per
+        question instead of one shared prefill: the state is in every question's
+        prompt, so the prefill is repeated per question.
+
+        A question that cannot be answered does not cost the others their answers: it is
+        left out of "answers" (the shape has no per-question error field, and a made-up
+        answer is worse than a missing one), the reason is logged, and the other
+        questions are still answered.  When NO question could be answered there is
+        nothing to return, so the request is a 502 - the answer a one-question request
+        gives in the same situation.
+        """
+        from serve import systemone as sysone
+        answers: dict = {}
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                 "prompt_tokens_details": {"cached_tokens": 0}}
+        calibrated = True
+        timings: list[dict] = []
+        diagnostics: dict = {}
+        failed: list[tuple[str, str]] = []
+        for name, q in questions:
+            try:
+                _, body = self._systemone_single(state_text, [(name, q)], model, cancel)
+            except StructuredOutputError as e:
+                # the model did not answer this question.  The others still get theirs.
+                failed.append((name, str(e)))
+                continue
+            answers.update(body.get("answers") or {})
+            u = body.get("usage") or {}
+            usage["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
+            usage["completion_tokens"] += int(u.get("completion_tokens") or 0)
+            usage["total_tokens"] += int(u.get("total_tokens") or 0)
+            usage["prompt_tokens_details"]["cached_tokens"] += int(
+                (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+            calibrated = calibrated and bool(body.get("calibrated"))
+            if body.get("timings"):
+                timings.append(body["timings"])
+            diagnostics.update(body.get("diagnostics") or {})
+        if failed:
+            print("[strata] the decision request's question(s) "
+                  + ", ".join(f"{n!r} ({why})" for n, why in failed)
+                  + " could not be answered; the other questions are answered", flush=True)
+            if getattr(self, "systemone_diagnostics", False):
+                for name, why in failed:
+                    diagnostics[name] = {"reason": why}
+        if not answers:
+            why = failed[0][1] if failed else "the model wrote no answer"
+            raise StructuredOutputError(f"/v1/systemone: no question could be answered: {why}")
+        out = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
+               "created": int(time.time()), "model": model, "calibrated": calibrated,
+               "answers": answers, "usage": usage}
+        if timings:
+            out["timings"] = merge_timings(timings)
+        if diagnostics:
+            out["diagnostics"] = diagnostics
+        return 200, out
 
     def _logits_row(self, ids, cancel):
         """-> (top-k, normalizer) at the position after the last of `ids`, or
@@ -5467,6 +5537,29 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
             # the speculative drafts, as llama.cpp names them (from PR #83, @mikicvi): only when the engine reported them
             **({"draft_n": int(last["drafts_offered"]), "draft_n_accepted": int(last["drafts_accepted"])}
                if last.get("drafts_offered") is not None else {})}
+
+
+def merge_timings(timings: list[dict]) -> dict:
+    """Several requests' timings as one (the decision endpoint's merged answer).
+
+    The counts and the milliseconds add up; the rates are ratios, so they are computed
+    from the totals instead of being added.  The names are the ones
+    `request_timings` writes, so a merged answer reads like a single request's.
+    """
+    total: dict = {}
+    for t in timings:
+        for k in ("cache_n", "prompt_n", "prompt_ms", "predicted_n", "predicted_ms",
+                  "draft_n", "draft_accepted"):
+            if t.get(k) is not None:
+                total[k] = total.get(k, 0) + t[k]
+    prompt_n, prompt_ms = total.get("prompt_n", 0), total.get("prompt_ms", 0.0)
+    predicted_n, predicted_ms = total.get("predicted_n", 0), total.get("predicted_ms", 0.0)
+    total["prompt_per_token_ms"] = round(prompt_ms / prompt_n, 3) if prompt_n else None
+    total["prompt_per_second"] = round(prompt_n / (prompt_ms / 1000), 1) if prompt_n and prompt_ms > 0 else None
+    total["predicted_per_token_ms"] = round(predicted_ms / predicted_n, 3) if predicted_n else None
+    total["predicted_per_second"] = round(predicted_n / (predicted_ms / 1000), 1) \
+        if predicted_n and predicted_ms > 0 else None
+    return total
 
 
 def request_stats(segments: list[dict]) -> dict:
@@ -7846,6 +7939,23 @@ def default_model_name(cfg: dict) -> str:
     return cfg.get("model_name") or FAMILY_MODEL_NAMES.get(cfg.get("arch") or "qwen4exp", "qwen3.8-flash-next")
 
 
+def systemone_multi_mode(cfg: dict) -> str:
+    """The config's "systemone": {"multi": ...}: how a request with several questions is
+    answered.
+
+    "separate" (the default): every question is answered on its own, so every answer
+    carries the model's own probability.  "shared": the old path - one prompt answers
+    all the questions, so the prefill is shared and the answers carry no probability.
+    """
+    block = cfg.get("systemone")
+    mode = block.get("multi") if isinstance(block, dict) else None
+    if mode is None:
+        return "separate"
+    if mode not in ("separate", "shared"):
+        raise ValueError(f'"systemone": {{"multi": ...}} must be "separate" or "shared", not {mode!r}')
+    return mode
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -8212,12 +8322,22 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     _systemone_cfg = cfg.get("systemone")
     svc.systemone_enabled = isinstance(_systemone_cfg, dict) and _systemone_cfg.get("enabled") is True
     svc.systemone_diagnostics = isinstance(_systemone_cfg, dict) and _systemone_cfg.get("diagnostics") is True
+    # "separate" (the default): every question is answered on its own, so every answer
+    # carries the model's own probability.  "shared": the old path - one prompt answers
+    # all the questions, so the prefill is shared but the answers carry no probability.
+    try:
+        svc.systemone_multi = systemone_multi_mode(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
         print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
               flush=True)
     if svc.systemone_diagnostics:
         print("[strata] decisions: the alternative reading is on (\"systemone\": {\"diagnostics\": true})",
               flush=True)
+    if svc.systemone_multi == "shared":
+        print("[strata] decisions: several questions are answered by one shared prompt "
+              "(\"systemone\": {\"multi\": \"shared\"}); their answers carry no probability", flush=True)
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to

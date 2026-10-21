@@ -22,12 +22,13 @@ The cases are chosen so that one run is decisive:
   partial      three options where only two share a first token ("No change"/"One file"/
                "One service") -> the fast path MUST fire: the trie walk reads the row
                   where the two that share are told apart
-  multi        two questions in one request                        -> the fast path MUST NOT fire
-               (the answer position is per question, so one question per request)
+  multi        two questions in one request                        -> the fast path MUST fire
+               (every question is answered on its own, so every answer carries the
+                model's own probability)
 
 If `noul` comes back "calibrated": false, the fast path is not reaching the logits at all:
 the most likely cause is the tokenization pairing (the answer's first token), which the
-`collide` and `multi` controls then confirm. The API key is read from the launch config
+`collide` control then confirms. The API key is read from the launch config
 and never printed.
 """
 from __future__ import annotations
@@ -72,7 +73,7 @@ CASES = [
     ("multi", {"state": {"plan": "enterprise", "days": 41},
                "questions": {"a": {"type": "noul", "instructions": "Is it x?"},
                              "b": {"type": "noul", "instructions": "Is it y?"}}},
-     False),
+     True),
 ]
 
 

@@ -280,11 +280,12 @@ The deliverable is the reference contract served by Strata's own resources: the 
 model, the prompt cache, the existing server path. No second model, no heads, no training,
 no engine changes.
 
-**§10 is the current state of this work.** This section and the ones before it are the
+**§10 and §11 are the current state of this work.** This section and the ones before it are the
 record of how it got there, written on 2026-10-19 and kept as it was then: the endpoint
 that answered with a greedy decode and a degenerate distribution, the design decisions
-that led to it, and the measurements behind them. Where they disagree with §10, §10 is
-right. The three things that changed after this section was written:
+that led to it, and the measurements behind them. Where they disagree with §10 and
+§11, §10 and §11 are right. The four things that changed after this section was
+written:
 
 - The confidence is no longer degenerate. §10.1: the endpoint reads the model's own
   next-token distribution instead of sampling it, so a response carries a real
@@ -294,6 +295,9 @@ right. The three things that changed after this section was written:
   235 sample items.
 - The end-to-end numbers moved: Capability 65.6 → 79.5 on the 235-item sample
   (§10.8).
+- Several questions are no longer answered by one shared prompt. §11: every question
+  is answered on its own, so every answer carries the model's own probability, and a
+  question that fails does not cost the others their answers.
 
 ### 6.0 Final design (IMPLEMENTED in the workspace, 2026-10-19)
 
@@ -1032,3 +1036,85 @@ ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
   about 484 MiB *below* that threshold, which is the failure mode that kills a
   verify window, so the slots stay at 2 until the margin is measured on a longer
   run.
+
+---
+
+## 11. Several questions, one at a time (2026-10-20, milestone 2)
+
+### 11.1 What was wrong with the shared prompt
+
+A request with more than one question was answered by **one prompt that held all of
+them**: the model wrote a `name: answer` line per question and the server parsed
+them. Two things were wrong with it.
+
+**The answers carried no probability.** The shared prompt's answers came from a
+greedy decode, so they were the degenerate 1.0/0.0 and the response said
+`"calibrated": false` - while a request with exactly one question, which reads the
+model's own distribution at the answer position (§10), said `"calibrated": true` and
+carried a real probability. The same endpoint, two contracts, depending on the number
+of questions.
+
+**The request was atomic.** One unparseable line lost every question in it: §9's
+batched arm measured 12 of 47 mixed batches (25.5%) failing that way, against 5.1%
+for the serial arm, and the failures were correlated - one bad line, 46 serial-correct
+items lost as collateral. Zero partial batches, "by construction".
+
+### 11.2 What it is now
+
+**A request with several questions is answered by running the single-question path
+once per question, and the answers are merged into one response.** The single-question
+path is not touched: it is the same code, the same answers and the same probabilities,
+so every question in the merged response carries the model's own probability and the
+response says `"calibrated": true`.
+
+* The engine's turn is taken **once per question**: the fast path holds the FIFO while
+  the engine answers and gives it back before the next question. Holding it across the
+  questions would serialise the requests wrongly - one request's questions would block
+  every other request for the whole batch.
+* The merged response says `"calibrated": true` when **every** answer in it came from
+  the fast path. A question that fell back to the decode path (a degenerate 1.0/0.0
+  answer) makes the whole response `"calibrated": false`, because one of the
+  probabilities in it is not the model's own.
+* The `usage` is the sum of the questions' (each question's prompt is its own), and
+  the `timings` are merged: the counts and the milliseconds add up, the rates are
+  computed from the totals.
+* The response keeps its shape: the same `id`, `object`, `created`, `model`,
+  `answers` and `usage` fields, the same per-answer shapes, the same status codes.
+
+### 11.3 The failure rule
+
+The response shape has no per-question error field, and the endpoint's rule is that a
+bad answer is an error and never a fabricated distribution. So:
+
+* a question the model could not answer is **left out** of `answers`. The other
+  questions keep their answers and the request is a **200**;
+* the reason goes to the server's log, and into the diagnostics when they are on;
+* when **no** question could be answered there is nothing to return, and the request
+  is a **502** - the same answer a one-question request gives in the same situation.
+
+The alternative - failing the whole request when one question fails - is what the
+shared prompt did, and it is what costs the 46 items of §9's batched arm.
+
+### 11.4 The flag
+
+The shared prompt is still reachable: `"systemone": {"enabled": true, "multi":
+"shared"}` in the launch config. The default is `"separate"` (the new path). The
+endpoint itself is opt-in (`"enabled": true`), so this is a change to an opt-in
+endpoint's own behaviour, and the old behaviour is one config key away.
+
+### 11.5 What it costs, and what is not measured
+
+**The cost.** The shared prompt amortized the prefill over the questions: one read
+of the state, one decode. The new path puts the state in every question's prompt, so
+the prefill is repeated per question - a request with N questions costs about N
+prefills (the conversation cache may reuse the state's tokens between the questions;
+that has not been measured). The §9 batched arms measured the amortization the new
+path gives up (per-question latency median 1.5 s against 3.2 s serial, 2.1x); it is
+given up for the real probabilities and the per-question isolation.
+
+**Not measured.** The §10.8 OpenDecisions numbers are the **one-question-per-request**
+path, which this change does not touch. The merged path has not been run against the
+sample yet, so there is no measured Capability for it - the numbers in §9 for the
+batched arms belong to the shared prompt, which is still there behind the flag. A
+run of the sample through the merged path (several questions per request) is the
+measurement this change still owes.

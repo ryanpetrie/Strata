@@ -3,17 +3,28 @@
 The request shape follows the TypeSafe SystemOne contract: a `state` (a string, or a
 JSON object/array passed as it is) plus 1-10 named `questions` in three modes -
 `noul` (yes/no), `choice` (one of up to 255 named options), `score` (2-10 ordered
-levels). It is served by Strata's own loaded chat model through the existing chat
-path (Service.prepare -> openai_chunks -> openai_collect). No second model, no
-heads, no training: the model reads the state and each question's literal
-instructions and answers every question on its own `name: answer` line.
+levels). It is served by Strata's own loaded chat model. No second model, no heads,
+no training: the model reads the state and each question's literal instructions and
+answers.
 
-HONESTY NOTE. One greedy decode yields the argmax, not a calibrated distribution.
-A yes/no/score pick is reported degenerate (1.0 on the pick, 0.0 elsewhere) and
-every response says `"calibrated": false`. The one exception: a noul answer given
-as a number in [0, 1] is reported as given - on items whose state states an explicit
-rate, the model transcribes the rate (measured: '0.7', '0.8875', '0.92' on
-calibration items), which is reading comprehension, not sampling noise. General
+TWO PATHS. One question is answered at the answer position: the assistant's turn is
+prefilled with the answer line's prefix, so the next token the model writes IS the
+answer, and the server reads the model's own distribution there
+(serve/logits_first_token.py). Several questions are answered ONE AT A TIME - the
+same one-question path once per question - and the answers are merged into one
+response (server.py's Service._systemone_separate), so every answer in it carries the
+model's own probability. The shared prompt (render_prompt: one prompt, one
+`name: answer` line per question) is the old path; it is still reachable behind the
+config's `"systemone": {"multi": "shared"}`.
+
+HONESTY NOTE. The fast path reads the model's own distribution, so a pick is
+reported with the model's probability and the response says `"calibrated": true`. The
+decode path (the fallback, and the shared prompt) yields the argmax, not a calibrated
+distribution: a yes/no/score pick is reported degenerate (1.0 on the pick, 0.0
+elsewhere) and that response says `"calibrated": false`. The one exception: a noul
+answer given as a number in [0, 1] is reported as given - on items whose state states
+an explicit rate, the model transcribes the rate (measured: '0.7', '0.8875', '0.92'
+on calibration items), which is reading comprehension, not sampling noise. General
 thresholds on these numbers are still meaningless; the safety mechanism is
 abstention instead: model output that does not parse is a 502
 (StructuredOutputError), the same rule serve/structured.py applies to failed
@@ -217,6 +228,10 @@ def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
     """One prompt for the whole request: the state once, then every question. One
     model call answers all questions, so the prefill (and its cache) is shared.
 
+    This is the SHARED path - the config's `"systemone": {"multi": "shared"}`. The
+    default path answers one question per prompt (render_answer_prompt), so every
+    answer carries the model's own probability.
+
     The question lines deliberately hold no colons: the reply's `name: answer` lines
     are the only colon shape in the prompt, so the model cannot echo a header into
     a well-formed-looking answer (an echo fails closed as a 502, never misparses)."""
@@ -238,7 +253,9 @@ def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
     reads and then answers in its own words - measured: the model's next token was
     then the question's name, not the answer.
 
-    One question per request; the multi-question prompt stays on the decode path."""
+    One question per prompt: a request with several questions runs this once per
+    question and merges the answers, so the model's next token is the answer of the
+    question at hand."""
     parts = ["State:\n" + state_text + "\n",
              "\nAnswer the question on its own line as `name: answer`, and nothing else. "
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",

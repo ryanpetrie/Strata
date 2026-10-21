@@ -2318,12 +2318,32 @@ A reply the model wrote that does not parse is a **502**, never a made-up answer
 unless the endpoint has the probabilities, in which case they are the better
 answer.
 
+**Several questions.** A request with more than one question is answered **one
+question at a time**: each question runs the same path a one-question request runs,
+and the answers are merged into one response. So every answer in the response carries
+the model's own probability, exactly like a one-question request does, and the
+response says `"calibrated": true`.
+
+**A question that cannot be answered does not cost the others their answers.** The
+response shape has no per-question error field, and a made-up answer is worse than a
+missing one, so a question the model failed to answer is simply **left out** of
+`answers`; the other questions keep theirs and the request is still a **200**. The
+reason is in the server's log, and in the diagnostics when they are on. When *no*
+question could be answered there is nothing to return, and the request is a **502** -
+the same answer a one-question request gives in the same situation.
+
+The old shared prompt is still there: put `"multi": "shared"` in the same block
+(`"systemone": {"enabled": true, "multi": "shared"}`) and the questions are answered
+by one prompt again. Its answers carry no probability (`"calibrated": false`), and it
+is not the default.
+
 **What it costs.** One prefill, the same as a chat turn: about 2 s for a new state
 and about 0.2 s for a state the conversation cache already holds. A request with
-several questions is one prompt that answers all of them; a request with one
-question reads the model's distribution at the answer position. When two of the
-options start with the same word, one more row is read - the one where the options
-are told apart - which takes a few hundred milliseconds, and only for those.
+several questions is one engine turn per question: the state is in every question's
+prompt, so the prefill is repeated per question (the conversation cache can reuse the
+state's tokens, but that has not been measured). When two of the options start with
+the same word, one more row is read - the one where the options are told apart -
+which takes a few hundred milliseconds, and only for those.
 
 Add `"diagnostics": true` to the same block to get the alternative reading beside
 the answer: the model's own probability of every option, the weight it put on

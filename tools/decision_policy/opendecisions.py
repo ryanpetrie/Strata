@@ -289,7 +289,11 @@ def main() -> int:
                             record["stop_probability"] = diag.get("stop")
                             record["outside_probability"] = diag.get("outside")
                             record["open_probs"] = diag.get("open")
-                            record["fast_path"] = bool(body.get("calibrated"))
+                            # the question is on the fast path when its own diagnostics
+                            # carry the two readings.  The body's "calibrated" is the AND
+                            # over the questions of a merged answer, so it cannot say
+                            # which one of them fell back.
+                            record["fast_path"] = "closed_confidence" in diag
                         if diag and diag.get("reason"):
                             # why the fast path did not fire (the server's own words)
                             record["fallback_reason"] = diag["reason"]
@@ -306,7 +310,7 @@ def main() -> int:
                 else:
                     record["predicted"] = False
                     if status == 200:
-                        record["error"] = f"no answer line for {name} (batch parse failed elsewhere)"
+                        record["error"] = f"no answer for {name} (the question could not be answered)"
                     else:
                         record["error"] = json.dumps(body.get("error", {}), ensure_ascii=False)[:300]
                     n_fail += 1
