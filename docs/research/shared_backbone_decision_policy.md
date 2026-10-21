@@ -628,40 +628,86 @@ generated and decoded the end-of-turn token with them, so the collision case
 answered `"rule_2<|im_end|>"` - not one of the options, so a 502. The end token now
 ends the answer and is cut before the text is decoded, as the chat path does.
 
-The probe's seven cases after the fixes (2026-10-20, the deployed engine 0.1.45.3):
+The probe's cases after the fixes (2026-10-20, the deployed engine 0.1.45.3; the
+last two rows are the trie walk's, measured the same day):
 
 | case | expected | measured |
 | --- | --- | --- |
 | noul | fast path | fast path, closed 0.985, open 0.966 |
 | choice | fast path | fast path, closed 0.604, open 0.593 |
 | score | fast path | fast path, closed 0.964, open 0.933 |
-| collide | fast path (the chain rule separates them) | fast path, closed 0.602, open 0.579, answered `rule_2` |
+| collide | fast path (the trie walk separates them) | fast path, closed 0.602, open 0.579, answered `rule_2` |
 | prefix | falls back (the options are not the same length) | falls back, answered `rule_1` |
 | multi | falls back (one question per request) | falls back |
 | chat | unchanged | unchanged |
+| prefix (the trie walk) | fast path (the shorter option ends where the longer one continues) | fast path, closed 0.921, open 0.885, answered `rule_1` |
+| partial (the trie walk) | fast path (only two of the three options share a first token) | fast path, closed 0.704, open 0.677, answered `No change` |
 
-### 10.7 The chain rule for the options that share a first token
+### 10.6 The trie walk for the options that share a first token
 
 The first-token lookup cannot separate two options that start with the same token
 ("rule_1" and "rule_2" both start with " rule"; so do "Tier 0".."Tier 3"). The
-chain rule can: an option's probability is the **product** of its token
-probabilities, `P(u_1..u_L) = P(u_1) P(u_2|u_1) ... P(u_L|u_1..u_{L-1})`, so the
-row after the shared token tells the two apart.
+**trie walk** can: the options' token sequences form a trie, and the row at a node of
+the trie tells the options that pass through it apart.
 
-The walk needs the row at the position after the shared token. The engine's LOGITS
-command reports the row at the answer position - the last position of the prompt it
-was given - so asking again with the shared tokens appended gives the row after
-them. **No engine change:** the prompt is in the conversation cache, so the extra
-request reads the shared tokens, not the prompt.
+The walk needs the row at a node. The engine's LOGITS command reports the row at the
+answer position - the last position of the prompt it was given - so asking again with
+the node's tokens appended gives the row after them. **No engine change:** the prompt
+is in the conversation cache, so the extra request reads the shared tokens, not the
+prompt.
 
-The walk stops where the options separate. In the common case they are the same
-number of tokens long and share all but the last, so one extra row separates them
-and one extra request is enough. Options of different lengths (one a prefix of
-another: "bill" and "billing") are left to the decode path: separating them
-exactly needs the probability of *not* continuing, which is a different question.
+**THE RESOLUTION.** An option is told apart at the shallowest node where it is alone:
+either its next token is one no other option through that node has, or its text
+**ends** there (its last token, and another option continues through that node). The
+second case needs the probability of the turn **ending** there, because a model that
+stops after the shorter option has answered with it. Without that factor the shorter
+option ("frontier") would carry the whole weight of the shared prefix and always beat
+the longer one ("frontier_reasoning").
 
-The reading has the same shape as the first-token one (closed, open, stop,
-outside), so the response is built the same way and the two can be compared.
+The weight of an option is then the product of a factor per node (the token that comes
+next there) times the outcome it claims at its resolution node: the token it continues
+with, or the end of the turn.
+
+**The cost, measured** (`tools/decision_policy/trie_costs.py`, the shipped code and
+the server's own tokenizer, over the 235 items):
+
+| extra engine requests | items |
+|---:|---:|
+| 1 | 50 |
+| 2 | 12 |
+| 3 | 5 |
+| 4 | 3 |
+| 5 | 1 |
+| 7 | 1 |
+
+113 extra requests over the 72 colliding items of the sample - 113 requests that each
+read a handful of cached tokens, not the prompt.
+
+### 10.7 What the chain rule could not reach
+
+The chain rule that came before it walked a single shared prefix, so it needed
+**every** option to share one prefix and to be the same number of tokens long. A
+census of the 235 items against the shipped tokenizer shows how much that left on the
+table:
+
+| the 235 items | count |
+|---|---:|
+| every option has its own first token (the first-token path answers them) | 163 |
+| every option shares the first token | 37 |
+| **only some of them share it** (a partial collision) | 35 |
+
+Of the 37 full collisions the chain rule answered 15 - the ones whose options were
+all the same length. It also read one row too few for an option longer than the
+shared prefix plus one, so `jb16-multilingual-faa2edf82c` (five-token options, one
+shared token) fell back - and its fallback wrote a bare `4`, which the parser
+rejected, so the request answered **502**.
+
+The same shape, on the `score` questions whose levels are long strings with a numeric
+head ("0: none of the five features"): the harness refuses to shorten a level whose
+head is a digit, so the raw strings stay as the option names, the model answers `0`,
+and the parse - which demands the exact level string - fails. Seven of the 235 items
+answered 502 that way, all of them `score` questions. The trie walk answers them from
+the logits, so the model's text is never read.
 
 ### 10.8 The OpenDecisions run
 
@@ -674,12 +720,15 @@ as the 65.6 baseline), one question per request, the official `score.py` on
 | the old decode-only path (the baseline) | 65.6 | 62.0 | 69.2 | 223/235 | 0.546 |
 | the first-token path, the degenerate 1.0/0.0 probabilities | 74.9 | 72.3 | 77.6 | 227/235 | 0.284 |
 | the first-token path, the real probabilities | 72.1 | 70.8 | 73.4 | 226/235 | 0.261 |
-| the first-token path + the chain rule | **73.4** | 70.8 | **76.1** | **228/235** | 0.292 |
+| the first-token path + the chain rule | 73.4 | 70.8 | 76.1 | 228/235 | 0.292 |
+| **the first-token path + the trie walk** | **79.5** | **77.5** | **81.4** | **235/235** | **0.215** |
+| the trie walk, run again (the noise floor) | 78.9 | 77.3 | 80.6 | 235/235 | 0.222 |
 
-Per type, the last run: choice 89.7% accurate, noul 91.3%, score 67.8%. The fast
-path carried 177 of the 235 items (75%); 50 fell back to the decode path because
-their options share a first token and are not the same length (see §10.9), and one
-because an option's token was outside the engine's window.
+Per type, the last run: choice 89.7% accurate, noul 91.3%, score 79.7% (the chain
+rule's run: 89.7%, 91.3%, 67.8%). The fast path carried **233 of the 235 items**
+(99%); the two that fell back did so because an option's token was outside the
+engine's top-k, and the seven that answered 502 before (the model's text did not
+parse) are now answered from the probabilities.
 
 **The two rows that differ only in the probabilities are the honest part.** The
 second row sent the scorer a degenerate distribution (1.0 on the pick, 0.0
@@ -690,14 +739,25 @@ finding, not a bug in the reading - and it is the reason the chain rule (which
 gives the colliding questions a real confidence too) is worth 1.3 Capability
 points even though it changes no answer the first-token path got right.
 
+**The trie walk is worth 6.1 Capability points**, and the reason is structural
+rather than a matter of luck: 51 items moved off the decode path (they carry the
+model's own probability now), the 7 that answered 502 are answered at all, and the
+score questions - the ones whose options collide hardest - went from 67.8% to
+79.7% accurate.
+
 **The two readings, per type** (`tools/decision_policy/readings_split.py`, the
 fast-path items of the 235):
 
 | type | closed AUC | open AUC | closed ECE | open ECE |
 |---|---:|---:|---:|---:|
-| choice (75) | 0.7464 | **0.8285** | 0.1147 | **0.0975** |
-| noul (69) | 0.9491 | 0.9499 | **0.0933** | 0.1157 |
-| score (18) | - | - | **0.1580** | 0.1684 |
+| choice (105) | 0.8066 | **0.8375** | 0.0910 | **0.0597** |
+| noul (69) | 0.9508 | 0.9508 | **0.0917** | 0.1008 |
+| score (59) | **0.8298** | 0.8191 | 0.1069 | **0.0982** |
+
+Over every fast-path item: the open reading AUC 0.8266 against the closed 0.8085,
+and the open reading's expected calibration error 0.0426 against the closed 0.0623 -
+so the contract (the closed reading for the distribution, the open one for the
+confidence) still points the right way, now over 233 items instead of 177.
 
 The open reading (the model's own probability) ranks a correct answer above a
 wrong one better; the closed reading is better calibrated for a yes/no, where its
@@ -706,11 +766,34 @@ answer always agree. Hence the contract: `probabilities` is the closed reading
 (the shape's distribution, which has to add up to 1), `confidence` is the open one
 (the model's own probability of the pick), and a yes/no keeps the closed reading.
 
-**The VRAM** during the run: the minimum free was **1072 MiB** (1207 at load)
+**The VRAM** during the run: the minimum free was **1082 MiB** (1206 at load)
 against the engine's 1024 MiB warning threshold, and each parked conversation costs
-~240 MiB with these long prompts. Four conversation-cache slots would put the card
-about 484 MiB below that threshold - the failure mode that kills a verify window -
-so the slots stay at 2.
+~240 MiB with these long prompts (the largest snapshot: 488 MiB for the two slots
+the config has). Four conversation-cache slots would put the card about 484 MiB
+below that threshold - the failure mode that kills a verify window - so the slots
+stay at 2.
+
+**The noise floor.** The same request does not always give the same numbers: the
+engine's KV cache puts a conversation in a slot whose physical layout differs from
+one run to the next, and the attention's rounding differs with it. Measured by
+running the whole 235-item set twice with the same code:
+
+| | the first run | the second run |
+|---|---:|---:|
+| Capability | 79.5 | 78.9 |
+| Intelligence | 77.5 | 77.3 |
+| Calibration | 81.4 | 80.6 |
+| predicted | 235/235 | 235/235 |
+| the fast path | 233 items | 233 items |
+
+The *method* is the same on every item - the fast path differed on none of the 235 -
+and three picks flipped, all of them near-ties (the closed reading's top two options
+0.26 against 0.26, 0.57 against 0.47, 0.32 against 0.34). The confidence moved by a
+median of 0.004 and at most 0.11. So the run-to-run spread is about 0.6 Capability
+points, and the 6.1 points the trie walk is worth are ten times that.
+
+A repeat of the same request that hit the conversation cache gave exactly the same
+numbers, so the wobble is the cache's layout, not the endpoint.
 
 ### 10.9 What is not done
 
@@ -724,23 +807,42 @@ so the slots stay at 2.
   endpoint reports the model's internal probability. That is the right shape for the
   API, but the *answer* and the *probability* then come from different places - the
   argmax against the distribution.
-- **The chain rule for the options of different lengths.** 72 of the 235 items have
-  options that share a first token, and only 13 of them have options that are all
-  the same length - the case the chain rule as built handles exactly. The other 59
-  have options of different lengths ("frontier" and "frontier_reasoning",
-  "plus" and "plus_with_advisor"), where the shorter option is a prefix of the
-  longer one. Separating those exactly needs the probability of *not* continuing
-  (the end-of-turn token's weight at that position), and comparing options of
-  different lengths needs a rule for the length, or the comparison is biased
-  towards the shorter ones. The walk itself is cheap - the rows up to where the
-  options split are 5 or fewer for 52 of the 72 items, measured by
-  `tools/decision_policy/chain_costs.py` - so it is the semantics, not the cost,
-  that is open. They are left to the decode path, which still answers them (the
-  greedy text is the model's own choice) but without a real confidence.
+- **The chain rule for the options of different lengths** - **done** (§10.6): the trie
+  walk tells the options apart wherever they separate and uses the end-of-turn
+  probability where an option's text ends, so "frontier" and "frontier_reasoning" are
+  comparable.
+- **The exact probability of an option that continues past the separating token.** The
+  walk stops where the options are told apart, so a longer option's weight is the
+  probability of the prefix that identifies it, with the rest of its text assumed
+  certain - the same approximation the first-token path makes. The exact weight would
+  need the row at the end of that option's own text (the full trie: up to 94 rows for
+  one item of the sample, against the 1-7 the walk needs).
+- **An option outside the engine's window.** Two of the 235 items still fall back
+  because an option's token is not in the engine's top-k (`'creative_writing'` and
+  `'escalate_human'`). It does not change the answer - an option below the window
+  has a lower logit than every option inside it, so it cannot be the pick - but the
+  endpoint gives up rather than report a probability for it. The bound is there: the
+  option's probability is below the window's tail, so the closed reading could be
+  computed with it at (almost) zero.
+- **The chat path's telemetry for the decision path.** The decision path takes the
+  engine's turn and the engine's DONE line, but it does not go through
+  `Service.run`, so the monitor's live request list does not show a decision
+  request. It shows as idle while a decision runs.
+- **The trie walk does not check the answer position when the options all collide.**
+  The check ("the model's top token at this node must be one the options claim, or
+  the model was going to say something else") runs at the nodes where the options
+  are told apart. When every option shares a first token, that node is deeper than
+  the answer position, so the answer position is not checked: the reading is then
+  "what the model would write IF it wrote the shared prefix". Measured over the 235
+  items that reading is the better one (the score questions went from 67.8% to 79.7%
+  accurate), but the hole is real - the first-token path does check its row. The
+  check needs the row's top token to be the shared first token, which is the same
+  check the first-token path makes, so it is a small change; it was not made here
+  because it can only be judged by another run.
 - **The conversation cache's slots.** Measured: the minimum free VRAM during the
-  235-item run was 1072 MiB (1228 at load), against the engine's 1024 MiB warning
+  235-item run was 1082 MiB (1206 at load), against the engine's 1024 MiB warning
   threshold - and each parked conversation costs ~240 MiB of VRAM with these long
-  prompts (484 MiB for the two slots the config has). Four slots would put the card
+  prompts (488 MiB for the two slots the config has). Four slots would put the card
   about 484 MiB *below* that threshold, which is the failure mode that kills a
   verify window, so the slots stay at 2 until the margin is measured on a longer
   run.

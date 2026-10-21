@@ -2298,7 +2298,7 @@ distribution instead, so the answer carries a real probability:
   that option out of the whole vocabulary. It is never larger than the
   distribution's maximum. Measured on a 235-item sample of the OpenDecisions set,
   it ranks a correct answer above a wrong one better than the closed reading does
-  (the AUC against correctness 0.83 against 0.75 on the choice questions).
+  (the AUC against correctness 0.84 against 0.81 on the choice questions).
 - A `noul` answer is the probability of "yes" among the two answers, so the value
   and the answer always agree.
 
@@ -2307,9 +2307,9 @@ A reply the model wrote that does not parse is a **502**, never a made-up answer
 **What it costs.** One prefill, the same as a chat turn: about 2 s for a new state
 and about 0.2 s for a state the conversation cache already holds. A request with
 several questions is one prompt that answers all of them; a request with one
-question reads the model's distribution at the answer position, which needs a
-second pass over the options that start with the same token (a few hundred
-milliseconds, and only for those).
+question reads the model's distribution at the answer position. When two of the
+options start with the same word, one more row is read - the one where the options
+are told apart - which takes a few hundred milliseconds, and only for those.
 
 Add `"diagnostics": true` to the same block to get the alternative reading beside
 the answer: the model's own probability of every option, the weight it put on
