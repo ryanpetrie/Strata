@@ -2284,7 +2284,7 @@ curl -s http://127.0.0.1:8080/v1/systemone -H "Content-Type: application/json" \
 ```
 
 ```json
-{"answers": {"urgent": {"type": "noul", "noul": 0.012}}, "calibrated": true, ...}
+{"answers": {"urgent": {"type": "noul", "noul": 0.012, "confidence": 0.014}}, "calibrated": true, ...}
 ```
 
 **What the numbers mean.** A greedy decode gives the argmax, so a pick would be
@@ -2300,9 +2300,23 @@ distribution instead, so the answer carries a real probability:
   it ranks a correct answer above a wrong one better than the closed reading does
   (the AUC against correctness 0.84 against 0.81 on the choice questions).
 - A `noul` answer is the probability of "yes" among the two answers, so the value
-  and the answer always agree.
+  and the answer always agree. It carries a `confidence` too: the model's own
+  probability of the side it picked. A confident "no" therefore reports a small
+  value and a large confidence - `{"noul": 0.03, "confidence": 0.95}` means "the
+  answer is no, and I am fairly sure of it". A consumer that does not know the
+  field can ignore it.
 
-A reply the model wrote that does not parse is a **502**, never a made-up answer.
+**When the model was not going to answer with an option.** If the model's most
+likely token at the answer position is not one of the options - it wanted to write
+a digit, a phrase, a rate - the endpoint still answers: the model's own text when
+that text is a valid answer (a yes/no given as a rate), and otherwise the option
+the model would have picked, with the **confidence carrying the doubt** (the
+weight it put on the option is small, so the confidence is small). The diagnostics
+report it as `model_picked`.
+
+A reply the model wrote that does not parse is a **502**, never a made-up answer -
+unless the endpoint has the probabilities, in which case they are the better
+answer.
 
 **What it costs.** One prefill, the same as a chat turn: about 2 s for a new state
 and about 0.2 s for a state the conversation cache already holds. A request with

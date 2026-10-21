@@ -1,5 +1,17 @@
 # Handoff: Explore a Shared-Backbone System 1 Decision Policy in Strata
 
+> **Historical (2026-10-19): the brief, and what came of it.** The brief asked for
+> a *learned* policy - capture the backbone's hidden state, train a small classifier
+> on it, serve the decision without generating text. That track was dropped by the
+> user (the head saves ~2% end-to-end, because the prefill dominates; see
+> [shared_backbone_decision_policy.md](shared_backbone_decision_policy.md) §5) and
+> the work took another road: the `systemone`-style endpoint, whose confidence comes
+> from the model's own next-token distribution and whose probabilities are real
+> (same document, §10). The capture point this brief names - the final hidden
+> representation before the vocabulary projection - is still the right one if a
+> *quality* play is ever wanted. The findings and the measurements are in
+> [shared_backbone_decision_policy.md](shared_backbone_decision_policy.md).
+
 **Audience:** A coding agent operating inside the user's Strata workspace  
 **Status:** Research and prototype assignment; do not change default behavior  
 **Primary objective:** Determine whether Strata can serve a fast, specialized agent decision policy using the already-loaded Qwen3.8-Flash-Next backbone, without loading a second large model or duplicating its weights.

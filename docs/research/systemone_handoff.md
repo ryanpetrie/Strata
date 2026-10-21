@@ -1,5 +1,15 @@
 # SystemOne on Strata — session handoff
 
+> **Historical (2026-10-19).** This is one session's handoff, kept as the record of
+> that session. It is **not** the current state: the confidence is no longer
+> degenerate (the endpoint reads the model's own next-token distribution, so a
+> response says `"calibrated": true`), the fast path now carries 233 of the 235
+> sample items (the options that share a first token are separated by a trie walk),
+> and the conversation cache has 2 slots, not 4. The current state is
+> [shared_backbone_decision_policy.md](shared_backbone_decision_policy.md) §10, and
+> the tools are listed in
+> [tools/decision_policy/README.md](../../tools/decision_policy/README.md).
+
 **Date:** 2026-10-19. **Purpose:** let a fresh session continue exactly where this one stops.
 **Rule zero:** the machine holds ONE Strata instance. Never start a second engine/server. No VRAM-heavy work without asking the user.
 
