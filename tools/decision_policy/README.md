@@ -53,6 +53,36 @@ one is calibrated).
 `vram_headroom.py` watches the free VRAM while a run is going, because the conversation cache holds parked
 conversations and the engine's warning threshold is what decides how many slots the server can keep.
 
+## The other datasets
+
+`jevbench.py` and `jevbench_rewrites.py` run the two JevBench sets through the endpoint. They need the
+server running with `"systemone": {"enabled": true, "diagnostics": true}`.
+
+```sh
+python tools/decision_policy/jevbench.py --items <items.jsonl> --out <predictions.jsonl>
+python tools/decision_policy/jevbench_rewrites.py --items <sample.jsonl> --out <predictions.jsonl>
+python tools/decision_policy/jevbench_rewrites.py --items <sample.jsonl> --out <predictions.jsonl> --report
+```
+
+`jevbench.py` runs the 3% sample of [Praveenrajus/jev-bench](https://huggingface.co/datasets/Praveenrajus/jev-bench)
+(683 records over 22 configs). **280 of them carry the human label distribution** (`soft_label`), so the
+calibration can be scored against how uncertain the humans were and not only against one right answer. The
+run log carries that distribution and the total variation distance to it per item. Caveats the sample's own
+metadata records: jev-bench has no difficulty tier, so every item is filed under `"hard"` and the scorer's
+tier weights collapse to one - say so in any write-up, it is not a difficulty claim; the licence is per-source
+and mixed (several "research use only"); and the dataset says validation only.
+
+`jevbench_rewrites.py` runs the JevBench coherence suite (the metamorphic rewrite cases). The official metric
+is in the published package (`pip install jevbench`, [JevBench/jevbench](https://github.com/JevBench/jevbench),
+Apache-2.0); the harness re-implements the laws and names the official file and class beside each one, so it
+runs from a checkout with nothing installed. The metric needs no gold labels: it asks whether the distribution
+stays coherent when a question is reworded, negated or combined. **One failed request drops that relation's
+coverage, and a relation under 95% coverage is not scored at all** - so the engine's failures would silently
+remove relations. The harness says so in the report rather than counting a missing answer as a law broken.
+
+Both harnesses are resume-safe, both omit a failed request from the predictions file (the scorer counts a
+missing answer as wrong), and neither retries a request that produced an answer.
+
 ## The options' shape
 
 ```sh
@@ -81,6 +111,10 @@ whose options share a first token.
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |
+| `jevbench.py` | source | the jev-bench sample harness: one item per request, the human label distribution and the distance to it. |
+| `jevbench_sample.py` | source | builds the 3% sample and its scorer-shaped items file from the dataset. |
+| `jevbench_rewrites.py` | source | the JevBench coherence metric over the endpoint's answers (the official laws, re-implemented). |
+| `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |
 | `first_token_report.md`, `first_token_analysis.json` | generated | the first-token study's results. |
 
