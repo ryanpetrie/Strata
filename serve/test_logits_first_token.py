@@ -672,7 +672,10 @@ class EngineWireFormat(unittest.TestCase):
         return eng
 
     def test_the_command_carries_k_max_new_and_the_ids(self):
-        eng = self._engine(["Z 3.0", "L 1000 2.0", "T 7", "DONE 1 2 3 4 stop"])
+        # the DONE line carries the prompt's own token count: that is how the server
+        # knows the answer it read is the answer to THIS request (serve/server.py's
+        # Engine.logits), so the fixture carries the three ids that were sent.
+        eng = self._engine(["Z 3.0", "L 1000 2.0", "T 7", "DONE 1 3 3 4 stop"])
         topk, logz, tokens = eng.logits([11, 22, 33], 64, 32, threading.Event())
         written = eng.proc.stdin.write.call_args[0][0]
         self.assertEqual(written, "LOGITS 64 32 11,22,33\n")
