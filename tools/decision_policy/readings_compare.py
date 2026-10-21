@@ -134,7 +134,7 @@ def main() -> int:
     print(line)
 
     # --- why the decode path was used: the reasons say different things (a collision
-    #     is what the chain rule fixes; the others are not)
+    #     is what the trie walk fixes; the others are not)
     if slow:
         reasons = {}
         for r in slow:

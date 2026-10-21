@@ -238,39 +238,62 @@ class DebugReport(unittest.TestCase):
         self.assertIn("top 1", text)
 
 
-class ChainRule(unittest.TestCase):
-    """The chain rule: an option's probability is the product of its token
-    probabilities, so the row after the shared token separates two options the
-    first-token row cannot ("rule_1" and "rule_2" both start with " rule")."""
+class TrieWalk(unittest.TestCase):
+    """The trie walk: the options' token sequences form a trie, and the row at a node
+    of the trie tells the options that pass through it apart.  It is what answers a
+    question whose options share a first token ("rule_1" and "rule_2" both start with
+    " rule"), and it stops where the options are told apart, so it is short."""
 
     def setUp(self):
         self.tok = Tok()
         _, self.collide = sysone.validate_request({"state": "x", "questions": {
             "q": {"type": "choice", "instructions": "Pick", "criteria": {"rule_1": None, "rule_2": None}}}})
 
-    def test_the_plan_finds_the_shared_tokens(self):
-        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+    def _plan(self, options):
+        plan = lft.trie_plan(options, self.tok, PREFIX)
         self.assertIsNotNone(plan)
-        # the mock tokenizer splits "rule_1" into "rule", "_", "1" (the model's BPE
-        # gives " rule" and "_1"), so the options share the first two tokens
-        self.assertEqual(plan["shared"], 2)
-        self.assertEqual(len(plan["shared_tokens"]), 2)
-        self.assertNotEqual(plan["tokens"]["rule_1"], plan["tokens"]["rule_2"])
+        return plan
 
-    def test_the_plan_needs_the_options_to_be_the_same_length(self):
-        # "bill" and "bill now": separating them exactly needs the probability of NOT
-        # continuing, so the plan does not apply
-        self.assertIsNone(lft.chain_plan(["bill", "bill now"], self.tok, PREFIX))
-
-    def test_the_probability_is_the_product_of_the_token_probabilities(self):
-        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+    def test_the_options_are_told_apart_at_their_first_differing_token(self):
+        plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
-        # row 0: the answer position ("rule"); row 1: after "rule" ("_");
-        # row 2: after "rule", "_" (the two options' own tokens)
-        row0 = {ids["rule_1"][0]: 3.0}
-        row1 = {ids["rule_1"][1]: 2.0}
-        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}
-        probs = lft.chain_probs(ids, [row0, row1, row2], [3.0, 3.0, 3.0])
+        # the mock tokenizer splits "rule_1" into "rule", "_", "1" (the model's BPE
+        # gives " rule" and "_1"), so the options are told apart at the third token
+        self.assertEqual(plan["resolution"]["rule_1"], 2)
+        self.assertEqual(plan["resolution"]["rule_2"], 2)
+        self.assertEqual(plan["walk"], [tuple(ids["rule_1"][:1]), tuple(ids["rule_1"][:2])])
+
+    def test_the_walk_reads_every_node_on_the_way(self):
+        # the weight of an option is a factor per node, so the row after "rule" is
+        # needed as well as the row after "rule", "_"
+        plan = self._plan(["rule_1", "rule_2"])
+        self.assertEqual(len(plan["walk"]), 2)
+
+    def test_options_of_different_lengths_are_told_apart(self):
+        # "bill" and "bill now": the shorter one ENDS where the longer one continues,
+        # so the turn has to end there for the shorter one to be the answer
+        plan = self._plan(["bill", "bill now"])
+        self.assertEqual(plan["resolution"]["bill"], 1)
+        self.assertEqual(plan["resolution"]["bill now"], 1)
+        self.assertEqual(len(plan["walk"]), 1)
+
+    def test_a_partial_collision_is_told_apart_at_the_root(self):
+        # "No change" and "Cross-service" are alone at the first token; "One file" and
+        # "One service" are not, so they are told apart one node deeper
+        plan = self._plan(["No change", "One file", "One service", "Cross-service"])
+        self.assertEqual(plan["resolution"]["No change"], 0)
+        self.assertEqual(plan["resolution"]["Cross-service"], 0)
+        self.assertEqual(plan["resolution"]["One file"], 1)
+        self.assertEqual(plan["resolution"]["One service"], 1)
+        self.assertEqual(len(plan["walk"]), 1)          # only the "One" node
+
+    def test_the_weight_is_the_product_of_the_token_probabilities(self):
+        plan = self._plan(["rule_1", "rule_2"])
+        ids = plan["tokens"]
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}, 3.0)}
+        probs = lft.trie_probs(plan, rows)
         self.assertAlmostEqual(probs["rule_1"],
                                math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(2.0 - 3.0))
         self.assertAlmostEqual(probs["rule_2"],
@@ -278,36 +301,62 @@ class ChainRule(unittest.TestCase):
         self.assertGreater(probs["rule_1"], probs["rule_2"])
 
     def test_a_token_outside_the_window_is_no_answer(self):
-        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
-        row0 = {ids["rule_1"][0]: 3.0}
-        row1 = {ids["rule_1"][1]: 2.0}
-        row2 = {ids["rule_1"][2]: 2.0}                    # rule_2's token is missing
-        self.assertIsNone(lft.chain_probs(ids, [row0, row1, row2], [3.0, 3.0, 3.0]))
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0}, 3.0)}   # rule_2 missing
+        self.assertIsNone(lft.trie_probs(plan, rows))
+
+    def test_the_shorter_option_needs_the_turn_to_end(self):
+        # "bill" and "bill now": the end-of-turn token is what makes "bill" the answer
+        plan = self._plan(["bill", "bill now"])
+        ids = plan["tokens"]
+        stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
+        node = tuple(ids["bill"][:1])
+        rows = {(): ({ids["bill"][0]: 3.0}, 3.0),
+                node: ({ids["bill now"][1]: 2.0, stop_id: 1.0}, 3.0)}
+        probs = lft.trie_probs(plan, rows)
+        # "bill": the prefix times the probability that the turn ends there
+        self.assertAlmostEqual(probs["bill"], math.exp(3.0 - 3.0) * math.exp(1.0 - 3.0))
+        # "bill now": the prefix times the probability of the token it continues with
+        self.assertAlmostEqual(probs["bill now"], math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0))
+        self.assertGreater(probs["bill now"], probs["bill"])
 
     def test_the_reading_separates_the_options(self):
-        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
-        row0 = {ids["rule_1"][0]: 3.0}
-        row1 = {ids["rule_1"][1]: 2.0}
-        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}
-        r = lft.chain_readings(self.collide[0][1], ids, [row0, row1, row2], [3.0, 3.0, 3.0], self.tok)
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}, 3.0)}
+        r = lft.trie_readings(self.collide[0][1], plan, rows)
         self.assertIsNotNone(r)
         self.assertAlmostEqual(sum(r["closed"].values()), 1.0)
         self.assertEqual(max(r["closed"], key=r["closed"].get), "rule_1")
         # the open reading: the model's own probability of each option
         self.assertAlmostEqual(r["open"]["rule_1"],
                                math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(2.0 - 3.0))
+        self.assertLessEqual(r["outside"], 1.0)
 
     def test_the_reading_is_none_when_the_model_wanted_something_else(self):
-        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
         stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
-        row0 = {ids["rule_1"][0]: 3.0}
-        row1 = {ids["rule_1"][1]: 2.0}
-        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0, stop_id: 9.0}
-        self.assertIsNone(lft.chain_readings(self.collide[0][1], ids, [row0, row1, row2],
-                                              [3.0, 3.0, 3.0], self.tok))
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0,
+                                           stop_id: 9.0}, 3.0)}
+        self.assertIsNone(lft.trie_readings(self.collide[0][1], plan, rows))
+
+    def test_the_failure_reason_says_which_way_it_failed(self):
+        plan = self._plan(["rule_1", "rule_2"])
+        ids = plan["tokens"]
+        stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0,
+                                           stop_id: 9.0}, 3.0)}
+        self.assertIn("wanted something else", lft.trie_failure_reason(plan, rows))
 
 
 class DecodeAnswer(unittest.TestCase):
@@ -396,10 +445,10 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["answers"]["q"]["choice"], "b")
 
-    def test_colliding_options_use_the_chain_rule(self):
+    def test_colliding_options_use_the_trie_walk(self):
         # "x1" and "x2" share their first tokens, so the first-token row cannot
-        # separate them: the chain rule walks to the row that does, and the answer
-        # comes from the probabilities
+        # separate them: the trie walk reads the rows that do, and the answer comes
+        # from the probabilities
         svc = svc_with()
         tok = svc.tok
         ids = lft.option_token_ids(["x1", "x2"], tok, PREFIX)
