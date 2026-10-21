@@ -1040,11 +1040,12 @@ ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
 - **The engine's stale context** (§12). A long run once answered another question's
   options, and the 2026-10-20 handoff recorded it as an engine cache bug that
   invalidated every long measurement. The evidence does not support that: the log
-  line that was read as a proof is the trie walk's own request, the failed items
-  answer on a healthy engine, and the failure does not reproduce under repeated
-  passes, a 300-item run, or a concurrent load. The trigger is still unknown, so
-  there is no fix to write; the mitigation (a fresh engine per chunk) is what the
-  measurements here use.
+  line that was read as a proof is the trie walk's own request, and the failed items
+  answer on a healthy engine. **The fault was in the server's client, not in the
+  engine's cache, and it is fixed (§13).**
+- **The real-trajectory data** - still last in the user's priority order, and now
+  less needed: the jev-bench soft labels (§14) answer the calibration question
+  against a human gold standard, and the published sets are the reference.
 - **The conversation cache's slots.** Measured: the minimum free VRAM during the
   235-item run was 1082 MiB (1206 at load), against the engine's 1024 MiB warning
   threshold - and each parked conversation costs ~240 MiB of VRAM with these long
@@ -1426,3 +1427,83 @@ about the second.
   predicted, 235 on the fast path**, with the same per-type accuracies as before
   (choice 89.7%, noul 91.3%, score 79.7%) - so the fix changed no answer, and the
   0.7 points against the 79.1 row are the run-to-run spread.
+
+---
+
+## 14. The calibration question, answered against the humans (2026-10-21)
+
+§10.13 listed the calibration question as the one thing the OpenDecisions set
+cannot answer: that set has a right answer per item, so it can say whether the
+model's confidence ranks a correct answer above a wrong one, but not whether the
+confidence is calibrated to the *uncertainty* a human would feel.  The jev-bench
+sample has what OpenDecisions does not - **280 of its 683 records carry the human
+label distribution** (`soft_label`), so the endpoint's answer can be scored
+against how uncertain the humans were.
+
+### 14.1 The run
+
+Praveenrajus/jev-bench v0.1.1, a 3% sample (seed 20261020) of 683 records over 22
+configs: choice 294, noul 222, score 167.  One item per request, one attempt each,
+the official scorer on the scorer-shaped items file.  **683 of 683 answered, 0
+failures** (the run shared the engine with the user's own agent for part of it).
+
+| | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---:|---:|---:|
+| the jev-bench 3% sample | **55.2** | 46.7 | 63.7 | 70.7% | 74.3% | 47.9% |
+
+The caveat the sample's own metadata carries: **jev-bench has no difficulty tier**,
+so every item is filed under `"hard"` and the scorer's tier weights collapse to
+one.  That is not a difficulty claim, and any write-up has to say so.
+
+### 14.2 The distance to the human distribution
+
+The total variation distance to the humans' distribution, over the 280 records that
+have one, with two trivial baselines measured the same way:
+
+| | mean TVD | |
+|---|---:|---|
+| **the endpoint's own distribution** (the closed reading) | **0.4432** | |
+| the argmax with no uncertainty | 0.5045 | the endpoint is closer on **199 of 280** |
+| a uniform guess | 0.4943 | the endpoint is closer on **146 of 280** |
+
+**The endpoint's real distribution is closer to the humans' uncertainty than either
+trivial baseline.**  That is the positive half of the answer: the model's own
+uncertainty carries real information about human uncertainty, and a distribution
+that says "I am not sure" is worth more here than a confident guess.
+
+Per config the spread is wide, and it tracks how ambiguous the task is:
+chaosnli 0.312, civil_comments 0.384, measuring_hate_speech 0.492, **go_emotions
+0.722** - the six-way emotion labelling, where the humans themselves were spread
+out.  Per type: noul 0.384, choice 0.470, score 0.492.
+
+### 14.3 The other half, stated plainly
+
+**The endpoint's pick agrees with the humans' consensus on only 123 of the 280
+records (43.9%).**  The model disagrees with the humans more often than not, and
+the disagreement is not random - it is largest where the task is most ambiguous.
+
+The **AUC** of the model's own probability against "the humans' consensus was
+right" is **0.6427** - informative (0.5 would be chance), but the confidence
+barely separates the two cases: the mean confidence is **0.868** when the endpoint
+agrees with the humans and **0.776** when it does not.  So the model is
+**over-confident relative to human uncertainty**: it is usually right about where
+the disagreement lies, but it is not nearly uncertain enough when it is wrong.
+
+This is the same finding the OpenDecisions sample gave in a different form (the
+real probabilities cost 2.8 Capability points against the degenerate ones, because
+the model is over-confident relative to its own accuracy).  Against a human gold
+standard it is sharper: the endpoint's distribution is genuinely better than a
+confident guess, and genuinely worse than the humans' own uncertainty.
+
+### 14.4 What this does and does not settle
+
+* It answers the question §10.13 left open, against a human gold standard, with
+  the numbers above.
+* It does **not** say the endpoint should be more confident: the finding is that
+  the model is over-confident, so a consumer that wants calibrated uncertainty
+  should read the `confidence` as an upper bound, not a probability.
+* The licence is per-source and mixed (several "research use only"), and the
+  dataset says validation only.
+* The rewrites suite asks the other half of the coherence question: not "is the
+  answer right" but "does the distribution stay coherent when the question is
+  reworded, negated or combined".  It is measured next.
