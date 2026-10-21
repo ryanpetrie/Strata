@@ -3584,6 +3584,7 @@ class Service:
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
+                       "decisions": 0,             # the requests the decision endpoint served
                        "drafts_offered": 0, "drafts_accepted": 0}   # #457: the MTP drafts, summed where reported
         self.last_timings = None                         # the last finished request's, llama.cpp's names (/v1/status)
         # /metrics/prometheus' two throughput gauges need the totals as they stood at the last scrape, because
@@ -3684,9 +3685,15 @@ class Service:
                     self.client_disconnect_cancels += 1
 
     @contextlib.contextmanager
-    def _inference_fifo(self, deadline: float | None, cancel: threading.Event | None = None):
+    def _inference_fifo(self, deadline: float | None, cancel: threading.Event | None = None,
+                        on_taken=None):
+        """The engine's turn.  `on_taken` runs once the turn is ours: the decision path
+        counts itself as queued until then (the chat path counts itself the same way,
+        in Service._run)."""
         if deadline is None:
             with self.fifo:
+                if on_taken is not None:
+                    on_taken()
                 yield
             return
         while True:
@@ -3702,9 +3709,71 @@ class Service:
                 raise QueueCancelled("the client disconnected while waiting for the engine")
             if time.monotonic() >= deadline:
                 raise QueueWaitExpired("the inference queue wait deadline expired; retry later")
+            if on_taken is not None:
+                on_taken()
             yield
         finally:
             self.fifo.release()
+
+    @contextlib.contextmanager
+    def _decision_turn(self, deadline, cancel, prompt_tokens, max_new):
+        """The engine's turn for a decision, and the live state that goes with it.
+
+        The chat path marks its turn the same way (Service._run), so the Monitor shows
+        the engine working on a decision instead of saying "Idle": the decision is
+        queued while it waits for the turn and busy while the engine reads the prompt
+        and answers.  The status is cleared while the turn is still held, so the next
+        request does not inherit a stale one.
+
+        The engine's batch slots are the exception: with them the chat path does not
+        hold the FIFO and keeps a status per request (live_reqs), so a decision leaves
+        the shared status alone."""
+        if getattr(self.engine, "batch", 0):
+            with self._inference_fifo(deadline, cancel):
+                yield
+            return
+        with self.status_lock:
+            self.status["queued"] += 1
+        waiting = time.perf_counter()
+        taken = False
+
+        def on_taken():
+            nonlocal taken
+            with self.status_lock:
+                self.status["queued"] -= 1
+                taken = True
+                self.status.update(busy=True, decision=True, phase="deciding",
+                                   prompt_tokens=prompt_tokens, generated=0,
+                                   started=time.time(), first_token=None,
+                                   max_tokens=max_new, tail="", tool=None)
+            trace = getattr(self.request_trace, "record", None)
+            if trace is not None:                # the API request monitor's row
+                with self.status_lock:
+                    trace["queue_s"] += round(time.perf_counter() - waiting, 3)
+                    trace["state"] = "generating"
+
+        try:
+            with self._inference_fifo(deadline, cancel, on_taken=on_taken):
+                try:
+                    yield
+                finally:
+                    with self.status_lock:
+                        # the turn is ours: clear it before the FIFO goes, so the next
+                        # request does not find a stale "busy" (the chat path settles
+                        # its own status the same way)
+                        self.status["busy"] = False
+                        self.status.pop("decision", None)
+                        self.status.pop("phase", None)
+                        self.status.pop("tail", None)
+                        self.status.pop("tool", None)
+                    trace = getattr(self.request_trace, "record", None)
+                    if trace is not None and trace.get("first_token_s") is None:
+                        with self.status_lock:
+                            trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
+        finally:
+            if not taken:
+                with self.status_lock:
+                    self.status["queued"] -= 1
 
     def begin_drain(self) -> int:
         """Stop new inference admission and return the number of owned calls to drain."""
@@ -4245,19 +4314,106 @@ class Service:
                                              "{\"enabled\": true} in the config and restart)"}}
         state_text, questions = sysone.validate_request(req)   # ValueError: the server answers 400
         model = self.model_for(req)
-        if len(questions) == 1:
-            # One question: the assistant turn is prefilled with the answer line's prefix,
-            # so the next token IS the answer.  The logits path reads the distribution
-            # there; the fallback generates from the same position.
-            return self._systemone_single(state_text, questions, model, cancel)
-        if self.systemone_multi == "shared":
-            # The old path: one prompt answers every question, so the prefill is shared.
-            # Its answers carry no probability (the degenerate 1.0/0.0 of a greedy
-            # decode), which is why it is not the default any more.
-            return self._systemone_classic(state_text, questions, model, cancel)
-        # Several questions: the single-question path once per question, merged into one
-        # response.  Every answer then carries the model's own probability.
-        return self._systemone_separate(state_text, questions, model, cancel)
+        # The decision's own bookkeeping: one row in the request list for the whole
+        # request, whatever path answered it, and the engine work it did in the totals.
+        mark = {"segments": [], "started": time.time(), "request_id": self._decision_request_id()}
+        self.request_trace.decision = mark
+        try:
+            if len(questions) == 1:
+                # One question: the assistant turn is prefilled with the answer line's prefix,
+                # so the next token IS the answer.  The logits path reads the distribution
+                # there; the fallback generates from the same position.
+                code, body, path = self._systemone_single(state_text, questions, model, cancel)
+            elif self.systemone_multi == "shared":
+                # The old path: one prompt answers every question, so the prefill is shared.
+                # Its answers carry no probability (the degenerate 1.0/0.0 of a greedy
+                # decode), which is why it is not the default any more.
+                code, body, path = self._systemone_classic(state_text, questions, model, cancel)
+            else:
+                # Several questions: the single-question path once per question, merged into one
+                # response.  Every answer then carries the model's own probability.
+                code, body, path = self._systemone_separate(state_text, questions, model, cancel)
+        except StructuredOutputError as e:
+            self._decision_bookkeeping(None, mark, "error", str(e))
+            raise
+        except (QueueCancelled, QueueWaitExpired):
+            self._decision_bookkeeping(None, mark, "cancel", "the client left")
+            raise
+        except Exception as e:
+            self._decision_bookkeeping(None, mark, "error", str(e))
+            raise
+        finally:
+            self.request_trace.decision = None
+        self._decision_bookkeeping(body, mark, "stop", path=path)
+        return code, body
+
+    def _decision_request_id(self) -> str:
+        """The id of the request in flight: the API request monitor's own row when there
+        is one (so both views name the same request), else a fresh one."""
+        record = getattr(self.request_trace, "record", None)
+        return (record or {}).get("id") or uuid.uuid4().hex[:12]
+
+    def _decision_bookkeeping(self, body, mark, finish, error=None, path=None):
+        """The decision in the request list and in the server's totals.
+
+        One row for the whole request, whatever path answered it: the fast path did its
+        own engine turn, the decode path went through Service.run, which hands its
+        figures to the decision instead of writing a chat row of its own (a decision
+        is one request, not one per question).
+
+        The engine's clock comes from the segments: the fast path's own turn and the
+        trie walk's extra rows, or the decode path's turn."""
+        usage = (body or {}).get("usage") or {}
+        last = request_stats(mark["segments"])
+        # the prompt tokens: the answer's own count, or the engine's when the request
+        # failed before it could answer (then there is no usage to read)
+        prompt_tokens = int(usage.get("prompt_tokens") or 0) or int(last.get("prompt_tokens") or 0)
+        output_tokens = int(usage.get("completion_tokens") or 0)
+        # the tokens the conversation cache held: every question's turn, added up (the
+        # trie walk's own turns read a cached prompt, so they are not counted again)
+        reused = int(mark.get("reused") or 0) or int(last.get("reused") or 0)
+        seen = prompt_tokens_seen(prompt_tokens, last)
+        decode_ms = float(last.get("decode_ms") or 0.0)
+        generated = int(last.get("generated") or output_tokens)
+        hit_rate = round(last["hits"] / last["lookups"], 3) if last.get("lookups") else None
+        routed = (last.get("lookups") or 0) + (last.get("offloaded") or 0)
+        pcie_share = round(last["offloaded"] / routed, 3) \
+            if last.get("offloaded") is not None and routed else None
+        answers = (body or {}).get("answers") or {}
+        row = {"id": mark["request_id"], "kind": "decision", "time": mark["started"],
+               "duration_s": round(time.time() - mark["started"], 1), "finish": finish,
+               "prompt_tokens": seen, "reused": reused, "output_tokens": output_tokens,
+               "prompt_total": prompt_tokens, "prompt_read": last.get("prompt_read"),
+               "engine_generated": generated,
+               "prompt_ms": last.get("prompt_ms"), "decode_ms": decode_ms,
+               "decode_tok_s": round(generated / (decode_ms / 1000), 1) if generated and decode_ms else None,
+               "hit_rate": hit_rate, "pcie_share": pcie_share,
+               "drafts_offered": last.get("drafts_offered"),
+               "drafts_accepted": last.get("drafts_accepted"),
+               "questions": len(answers), "answers": decision_picks(body),
+               "calibrated": (body or {}).get("calibrated"), "path": path}
+        if error:
+            row["error"] = error
+        with self.status_lock:
+            self.history.append(row)
+            t = self.totals
+            t["requests"] += 1
+            t["prompt_tokens"] += seen
+            t["reused"] += reused
+            t["output_tokens"] += output_tokens
+            t["prompt_ms"] += float(last.get("prompt_ms") or 0.0)
+            t["decode_ms"] += decode_ms
+            t["decisions"] = t.get("decisions", 0) + 1
+            timings = (body or {}).get("timings")
+            if timings:
+                self.last_timings = dict(timings, at=int(time.time()))
+        trace = getattr(self.request_trace, "record", None)
+        if trace is not None:                    # the API request monitor's row
+            with self.status_lock:
+                summary = decision_picks(body)
+                trace["output"] = json.dumps(summary, ensure_ascii=False, indent=2) if summary else ""
+                if error:
+                    trace["error"] = {"message": error}
 
     def _systemone_separate(self, state_text, questions, model, cancel):
         """Several questions, answered one at a time and merged into one response.
@@ -4284,13 +4440,15 @@ class Service:
         timings: list[dict] = []
         diagnostics: dict = {}
         failed: list[tuple[str, str]] = []
+        paths: list[str] = []
         for name, q in questions:
             try:
-                _, body = self._systemone_single(state_text, [(name, q)], model, cancel)
+                _, body, path = self._systemone_single(state_text, [(name, q)], model, cancel)
             except StructuredOutputError as e:
                 # the model did not answer this question.  The others still get theirs.
                 failed.append((name, str(e)))
                 continue
+            paths.append(path)
             answers.update(body.get("answers") or {})
             u = body.get("usage") or {}
             usage["prompt_tokens"] += int(u.get("prompt_tokens") or 0)
@@ -4319,7 +4477,8 @@ class Service:
             out["timings"] = merge_timings(timings)
         if diagnostics:
             out["diagnostics"] = diagnostics
-        return 200, out
+        return 200, out, ("fast" if set(paths) == {"fast"} else
+                           "decode" if set(paths) == {"decode"} else "mixed")
 
     def _logits_row(self, ids, cancel):
         """-> (top-k, normalizer) at the position after the last of `ids`, or
@@ -4344,7 +4503,12 @@ class Service:
             logz = top + math.log(sum(math.exp(v - top) for v in topk.values()))
         return topk, logz
 
-    def _systemone_trie(self, questions, topk, logz, ids, prefix, cancel, fifo_held=False):
+    def _engine_segment(self):
+        """The engine's own clock for the request that just ran (its DONE line)."""
+        return dict(getattr(self.engine, "last", None) or {})
+
+    def _systemone_trie(self, questions, topk, logz, ids, prefix, cancel, fifo_held=False,
+                        segments=None):
         """The trie walk: the options that share a first token.
 
         The options' token sequences form a trie, and the row at a node of the trie
@@ -4361,6 +4525,9 @@ class Service:
         can take the engine's turn in between and take the cached prompt away).  Then
         the walk must NOT take the turn again - the FIFO is a lock, not a reentrant
         one.
+
+        `segments`: the list the walk's own engine turns are added to, so the request's
+        timing covers them too.
 
         -> (readings, requests_made, reason).  readings is None when the walk does
         not apply or does not finish; the caller then falls back to the decode path,
@@ -4381,6 +4548,8 @@ class Service:
                 if row is None:
                     return None
                 rows[node] = (row, lz)
+                if segments is not None:
+                    segments.append(self._engine_segment())
             return rows
 
         try:
@@ -4426,7 +4595,7 @@ class Service:
         if reason and getattr(self, "systemone_diagnostics", False):
             # opt-in: why the answer came from the decode path
             body["diagnostics"] = {name: {"reason": reason} for name, _ in questions}
-        return 200, body
+        return 200, body, "decode"
 
     def _systemone_single(self, state_text, questions, model, cancel):
         """One question, read at the answer position.
@@ -4456,6 +4625,11 @@ class Service:
         ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
                                               sysone.MAX_TOKENS_PER_QUESTION, force=prefix,
                                               req=None, cancel=cancel)
+        # The engine's clock for this question's work: the base turn and the trie
+        # walk's extra rows.  The request's timing (and the Monitor's row) covers them.
+        mark = getattr(self.request_trace, "decision", None)
+        segments: list[dict] = mark["segments"] if mark is not None else []
+        own_start = len(segments)       # this question's own engine turns start here
         try:
             # The engine's turn: its stdin and stdout carry ONE request at a time, so a
             # decision and a chat request must never interleave on the pipe (the chat
@@ -4463,9 +4637,17 @@ class Service:
             # each other's lines and both answers are garbage.
             deadline = (time.monotonic() + self.queue_timeout_s
                         if self.queue_timeout_s is not None else None)
-            with self._inference_fifo(deadline, cancel):
+            # The decision's own turn: it is marked in the server's live state, so the
+            # Monitor shows the engine working on a decision instead of saying "Idle".
+            with self._decision_turn(deadline, cancel, len(ids), max_new):
                 topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
                                                         sysone.MAX_TOKENS_PER_QUESTION, cancel)
+                segments.append(self._engine_segment())
+                if mark is not None:
+                    # the tokens the conversation cache held for this question's turn
+                    # (the trie walk's own turns read a cached prompt, so they are not
+                    # counted again here)
+                    mark["reused"] = mark.get("reused", 0) + int(segments[-1].get("reused") or 0)
                 # The trie walk is part of THIS question's work, so it runs inside the
                 # same turn.  It asks the engine for the row at a node of the options'
                 # trie, and it appends that node's tokens to the prompt it was given -
@@ -4483,7 +4665,8 @@ class Service:
                     # the row at the node where they are told apart separates them.
                     readings, walk, trie_reason = self._systemone_trie(questions, topk, logz,
                                                                         ids, prefix, cancel,
-                                                                        fifo_held=True)
+                                                                        fifo_held=True,
+                                                                        segments=segments)
         except (QueueCancelled, QueueWaitExpired):
             # The client left, or the queue wait expired: neither is a reason to fall
             # back to the decode path (it would wait for the same turn and fail the
@@ -4520,6 +4703,13 @@ class Service:
         usage = {"prompt_tokens": len(ids) * (1 + walk), "completion_tokens": len(tokens),
                  "total_tokens": len(ids) * (1 + walk) + len(tokens),
                  "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
+        # The request's timings, in the chat path's names: the prefill and the decode,
+        # with the part of the prompt the conversation cache already held.  The decode
+        # path reports them too (the chat path's own), so both paths answer alike.
+        # Only this question's own turns: a request with several questions has one
+        # timing per question, and they are added up.
+        timings = request_timings(usage["prompt_tokens"], len(tokens),
+                                  request_stats(segments[own_start:]))
         # THE MODEL'S OWN CHOICE.  When the model's top token at the answer position is
         # one of the options, it was choosing among them and the readings are the
         # answer.  When it was not (it wanted to write a digit, a phrase, a number), the
@@ -4531,7 +4721,7 @@ class Service:
         picked = readings is not None and all(r.get("model_picked", True)
                                               for r in readings.values())
         if readings is not None and picked:
-            return 200, self._systemone_readings(readings, model, usage)
+            return 200, self._systemone_readings(readings, model, usage, timings), "fast"
         # The model's own text: the tokens THIS request generated are the answer, so no
         # second request is needed.  Only a request the engine FINISHED has an answer
         # in its tokens.
@@ -4545,25 +4735,25 @@ class Service:
                 # exist, they are the better answer: the forced choice, with the
                 # confidence carrying the doubt.
                 if readings is not None:
-                    body = self._systemone_readings(readings, model, usage)
+                    body = self._systemone_readings(readings, model, usage, timings)
                     if getattr(self, "systemone_diagnostics", False):
                         body["diagnostics"] = {name: dict(lft.reading_diagnostics(r),
                                                            reason=reason)
                                                for name, r in readings.items()}
-                    return 200, body
+                    return 200, body, "fast"
                 raise
             body = sysone.build_response(questions, answers, model, usage, None)
             if getattr(self, "systemone_diagnostics", False):
                 # opt-in: WHY the fast path did not fire, so a run records the reason
                 # per item instead of only the fact that it did not
                 body["diagnostics"] = {name: {"reason": reason} for name, _ in questions}
-            return 200, body
+            return 200, body, "decode"
         # The model wrote nothing at the answer position (it wanted to end the turn):
         # the classic prompt, where it writes the whole line, answers it.
         return self._systemone_classic(state_text, questions, model, cancel,
                                        reason="the model wrote nothing at the answer position")
 
-    def _systemone_readings(self, readings, model, usage) -> dict:
+    def _systemone_readings(self, readings, model, usage, timings=None) -> dict:
         """The response built from the readings: the forced choice, the distribution
         over the options, and the confidence (the model's own probability of the pick).
         """
@@ -4573,6 +4763,8 @@ class Service:
         body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
                 "created": int(time.time()), "model": model, "calibrated": True,
                 "answers": answers, "usage": usage}
+        if timings:
+            body["timings"] = timings
         if getattr(self, "systemone_diagnostics", False):
             # opt-in: the alternative reading, so the two can be compared (which one
             # predicts a correct answer better is a measurement, not a decision)
@@ -4631,6 +4823,8 @@ class Service:
         else:
             state = "idle"
         live = {"state": state, "queued": s.get("queued", 0), "phase": s.get("phase") if s.get("busy") else None,
+                # a decision is a request of its own: the Monitor says "Deciding" while it runs
+                "decision": bool(s.get("decision")) if s.get("busy") else False,
                 "prompt_tokens": s.get("prompt_tokens") if s.get("busy") else None,
                 "prompt_read": None, "prompt_total": None, "generated": s.get("generated") if s.get("busy") else None,
                 "max_tokens": s.get("max_tokens") if s.get("busy") else None,
@@ -5230,6 +5424,9 @@ class Service:
                         st.update(busy=True, phase="reading the prompt", prompt_tokens=len(ids),
                                   generated=0, started=time.time(), first_token=None, tool=None, tail="",
                                   max_tokens=max_new, reasoning_recoveries=0, thinking_budget=budget)
+                        if getattr(self.request_trace, "decision", None) is not None:
+                            # a decision: the Monitor shows it as a decision, not as a chat turn
+                            st["decision"] = True
                         if par:
                             self.live_reqs[id(st)] = (st, rate)
                             self.status.update(st)
@@ -5486,42 +5683,51 @@ class Service:
                             pcie_share = round(last["offloaded"] / routed, 3) \
                                 if last.get("offloaded") is not None and routed else None
                             seen = prompt_tokens_seen(len(ids), last)   # #471: < len(ids) when cancelled mid-read
-                            self.history.append({
-                                "id": request_id,
-                                "projection": (sampling or {}).get("experimental_speed_projection") is not False
-                                if loaded else None,
-                                "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
-                                "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
-                                "first_engine_token_s": first_engine_token_s,
-                                # the request's whole prompt, and the tokens read of it (None: an older engine)
-                                "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
-                                "reasoning_recoveries": recovery_count,
-                                "reasoning_repeat_coverage": round(repeat_coverage, 3),
-                                "engine_generated": last.get("generated"),
-                                "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
-                                "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
-                                if n and last.get("generated") and last.get("decode_ms") else None,
-                                "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
-                                "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
-                                # #457: the speculative drafts from the DONE line (None: the engine did not say)
-                                "drafts_offered": last.get("drafts_offered"),
-                                "drafts_accepted": last.get("drafts_accepted")})
-                            t = self.totals
-                            t["requests"] += 1
-                            t["prompt_tokens"] += seen
-                            t["reused"] += last.get("reused") or 0
-                            t["output_tokens"] += n
-                            t["prompt_ms"] += last.get("prompt_ms") or 0.0
-                            t["decode_ms"] += last.get("decode_ms") or 0.0
-                            t["drafts_offered"] += last.get("drafts_offered") or 0
-                            t["drafts_accepted"] += last.get("drafts_accepted") or 0
-                            ft0 = st.get("first_token")             # this request's own (#465: one per request)
-                            self.latencies.observe(ft0 - started if ft0 else None, n,
-                                                   (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
-                            fresh = getattr(self.engine, "last", None)
-                            if fresh is not None and fresh is not before:      # the engine's clock for THIS request
-                                timings = request_timings(seen, n, last)
-                                self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                            decision = getattr(self.request_trace, "decision", None)
+                            if decision is None:
+                                self.history.append({
+                                    "id": request_id,
+                                    "projection": (sampling or {}).get("experimental_speed_projection") is not False
+                                    if loaded else None,
+                                    "time": started, "duration_s": round(time.time() - started, 1), "finish": finish,
+                                    "prompt_tokens": seen, "reused": last.get("reused"), "output_tokens": n,
+                                    "first_engine_token_s": first_engine_token_s,
+                                    # the request's whole prompt, and the tokens read of it (None: an older engine)
+                                    "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
+                                    "reasoning_recoveries": recovery_count,
+                                    "reasoning_repeat_coverage": round(repeat_coverage, 3),
+                                    "engine_generated": last.get("generated"),
+                                    "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
+                                    "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
+                                    if n and last.get("generated") and last.get("decode_ms") else None,
+                                    "hit_rate": hit_rate, "pcie_share": pcie_share, "ram_blobs": last.get("ram_blobs"),
+                                    "file_blobs": last.get("file_blobs"), "file_mb": last.get("file_mb"),
+                                    # #457: the speculative drafts from the DONE line (None: the engine did not say)
+                                    "drafts_offered": last.get("drafts_offered"),
+                                    "drafts_accepted": last.get("drafts_accepted")})
+                                t = self.totals
+                                t["requests"] += 1
+                                t["prompt_tokens"] += seen
+                                t["reused"] += last.get("reused") or 0
+                                t["output_tokens"] += n
+                                t["prompt_ms"] += last.get("prompt_ms") or 0.0
+                                t["decode_ms"] += last.get("decode_ms") or 0.0
+                                t["drafts_offered"] += last.get("drafts_offered") or 0
+                                t["drafts_accepted"] += last.get("drafts_accepted") or 0
+                                ft0 = st.get("first_token")             # this request's own (#465: one per request)
+                                self.latencies.observe(ft0 - started if ft0 else None, n,
+                                                       (last.get("decode_ms") or 0.0) / 1000, time.time() - started)
+                                fresh = getattr(self.engine, "last", None)
+                                if fresh is not None and fresh is not before:      # the engine's clock for THIS request
+                                    timings = request_timings(seen, n, last)
+                                    self.last_timings = dict(timings, at=int(time.time())) if timings else None
+                            else:
+                                # A DECISION: the decision path writes the request - one row
+                                # for the whole request, whatever path answered it - and
+                                # counts it.  A chat row here would make a decision look
+                                # like a chat turn, and would count it twice.
+                                decision["segments"].append(last)
+                                decision["reused"] = decision.get("reused", 0) + int(last.get("reused") or 0)
                             self.last_request_at = time.time()
                             now = time.time()
                             el = now - st.get("started", now)
@@ -5541,6 +5747,7 @@ class Service:
                         st["busy"] = False
                         st.pop("tail", None)                     # #212: the answer's end is not kept once it is done
                         st.pop("tool", None)
+                        st.pop("decision", None)                 # a decision is marked only while it runs
                         if par:
                             self.live_reqs.pop(id(st), None)
                             if self.live_reqs:              # the newest request still running
@@ -5549,6 +5756,7 @@ class Service:
                                 self.status.update(busy=False)
                                 self.status.pop("tail", None)
                                 self.status.pop("tool", None)
+                                self.status.pop("decision", None)
         except QueueCancelled:
             finish = "cancel"
             yield "done", {"finish": "cancel", "completion_tokens": 0, "reused": 0, "timings": None,
@@ -5665,6 +5873,33 @@ def merge_timings(timings: list[dict]) -> dict:
     total["predicted_per_second"] = round(predicted_n / (predicted_ms / 1000), 1) \
         if predicted_n and predicted_ms > 0 else None
     return total
+
+
+def decision_picks(body) -> dict:
+    """The decision's answers as short strings: what was picked, per question.
+
+    The Monitor's request list shows them (a decision has no text output, so this is
+    what the row carries), and the API request monitor's Output pane shows the same.
+    A yes/no is read the way the reference API reads it: the value is the probability
+    of yes, so above a half is a yes."""
+    out = {}
+    for name, answer in ((body or {}).get("answers") or {}).items():
+        kind = answer.get("type")
+        if kind == "noul":
+            value = answer.get("noul")
+            if isinstance(value, bool):
+                out[name] = "yes" if value else "no"
+            elif isinstance(value, (int, float)):
+                out[name] = f"yes ({value:.2f})" if value >= 0.5 else f"no ({value:.2f})"
+            else:
+                out[name] = str(value)
+        elif kind == "choice":
+            out[name] = str(answer.get("choice"))
+        else:
+            index = answer.get("score")
+            legend = answer.get("legend") or {}
+            out[name] = legend.get(str(int(index)), str(index)) if index is not None else "?"
+    return out
 
 
 def request_stats(segments: list[dict]) -> dict:

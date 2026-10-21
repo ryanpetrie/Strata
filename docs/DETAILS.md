@@ -2350,6 +2350,14 @@ the answer: the model's own probability of every option, the weight it put on
 ending the turn, and the weight it put on everything that is not an option. It is
 a diagnostic only - the answer does not change.
 
+**A decision in the Monitor.** A decision is a request like any other, so it shows
+up in the web app's Monitor tab: the state card says **Deciding** while the engine
+reads the state, and the request list has a **Decision** row with the questions it
+answered, the tokens it read and the time it took. The API request monitor
+(`/api-monitor`, below) keeps the same row and shows what the decision answered in
+its Output pane. The answer itself carries the `timings` the chat path reports, so a
+client can see what the decision cost.
+
 The measurements, the design and what is still open are in
 [docs/research/shared_backbone_decision_policy.md](research/shared_backbone_decision_policy.md).
 
