@@ -173,7 +173,9 @@ With an API key, add `-H "Authorization: Bearer <key>"`.
 
 ## 8. Connect the user's apps
 
-- **Browser:** `http://127.0.0.1:8080` - Chat, a live Monitor, and About (settings and addresses).
+- **Browser:** `http://127.0.0.1:8080` - Chat, a live Monitor, and About (settings and addresses). A **Decide** tab
+  shows up too when the decision endpoint is on (`"systemone": {"enabled": true}`): it asks the model a question about
+  a state and shows the answer with the numbers behind it.
 - **Any OpenAI-compatible app or agent:** base URL `http://127.0.0.1:8080/v1`, any API key (or the configured one),
   any model name.
 - **Anthropic-compatible apps:** base URL `http://127.0.0.1:8080`, without `/v1`. Those apps add `/v1/messages`

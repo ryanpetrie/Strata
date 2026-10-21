@@ -2358,6 +2358,15 @@ answered, the tokens it read and the time it took. The API request monitor
 its Output pane. The answer itself carries the `timings` the chat path reports, so a
 client can see what the decision cost.
 
+**A decision in the web app.** The web app has a **Decide** tab, next to Chat, Images,
+Monitor and About. It is a client of the same endpoint, over the same API key: you fill
+in the state and the questions, the page shows the exact request body, and it sends it
+to `POST /v1/systemone`. The answer comes back as one card per question: the pick, the
+distribution over the options, the confidence, and - with `"diagnostics": true` - the
+numbers behind them, each with a plain-language explanation. The tab is hidden when the
+endpoint is off, and the page never invents an answer: a request the server refuses is
+shown as the server wrote it.
+
 The measurements, the design and what is still open are in
 [docs/research/shared_backbone_decision_policy.md](research/shared_backbone_decision_policy.md).
 

@@ -2,7 +2,7 @@
 
 **Status:** the endpoint is built and measured (§10, §11); the engine's stale-context
 failure is under investigation and the evidence is corrected (§12); the decision is a
-request in the Monitor like any other (§15).
+request in the Monitor like any other (§15), and the web app can ask one (§16).
 **Date:** 2026-10-21 (the sections before §6 are the 2026-10-19 record, kept as it was
 then)
 **Task:** explore whether Strata can serve a fast, specialized agent decision policy from the already-loaded
@@ -525,6 +525,8 @@ generated data and should stay out of version control unless the user asks.
 | `serve/systemone.py` | the endpoint's pure module: validate, render, parse, respond |
 | `serve/test_systemone.py` | the endpoint's tests, MockEngine, no GPU |
 | `serve/test_decision_monitor.py` | the decision in the server's telemetry: the live state, the request list, the totals, the timings |
+| `serve/web/decide.js` | the Decide tab: the page's own code (the client of the endpoint) |
+| `serve/test_decision_page.py` | the Decide tab: the page's structure, the server's flags, the request it builds |
 | `serve/server.py` | wired: flag + config, admission, dispatch, `Service.systemone`, dialects |
 | `tools/decision_policy/opendecisions.py` | OpenDecisions harness: serial + batch arms, resume-safe, official predictions output |
 | `serve/logits_first_token.py` | the first-token lookup and the trie walk: both readings, the resolution, the end factor, the checks |
@@ -1536,13 +1538,18 @@ decision request in flight, polled every 0.4 s:
 | --- | --- | --- |
 | `/metrics` `live.state` | `idle` for the whole decision | `reading`, with `live.decision: true` and `live.phase: "deciding"` |
 | the prompt's progress | not reported | 887 / 897 tokens, 99 % |
-| `/metrics` `live.queued` | 0 | 1 while the decision waits for the engine's turn |
+| `/metrics` `live.queued` | 0 | 0 - the decision took the turn at once |
 | the request list (`/metrics` `requests`) | 12 rows before and 12 after | one new row, `kind: "decision"` |
 | `/metrics` `totals` | `requests` 39 before and 39 after | `requests` +1, and `decisions` +1 |
 
 The browser's Monitor tab follows: the header pill says **Deciding · 99 %**,
 the state card says **Deciding** with the prompt's progress, and the request
 table has a **Decision** row.
+
+A decision that has to **wait** for the engine's turn is counted as queued
+(`status["queued"]`, the count the chat path keeps too).  That one is covered by
+a test, not by the runs above: in every live run the decision took the turn at
+once.
 
 ### 15.2 What a decision row carries
 
@@ -1578,6 +1585,43 @@ it merges the usage.
   engine work, so the totals count it (`totals.decisions` counts them apart).
   A server with the endpoint on therefore reports more requests than one with
   it off - which is what happened.
+
+---
+
+## 16. The Decide tab (2026-10-21)
+
+The endpoint is a JSON API: to use it a user has to write the request by hand
+and read the answer as JSON.  The web app now has a **Decide** tab that does
+both - it is a client of `POST /v1/systemone`, over the same origin and the
+same API key, and it changes nothing about the endpoint.
+
+### 16.1 Two things the page had to get right
+
+**The order of the score levels is the order the model reads them in.**  The
+page writes the request body by hand instead of with `JSON.stringify`, because
+`JSON.stringify` puts the integer-like keys first (`"2"` before `"10"`), so a map
+keyed by the user's own names can come out in another order than it went in.
+The server keeps the order it receives (`validate_questions` walks the map in
+its own order, and `_check_levels` returns `list(criteria)`), so a score
+question whose levels are named `0`, `1`, `2` would arrive shuffled.
+
+**A `noul` answers with a probability, not with a side.**  The response carries
+the probability of yes, and the documented reading is that the value and the
+answer always agree (`docs/DETAILS.md`).  The page reads the side from the value
+at 0.5 - the same threshold the reference scorer uses - and says so: "Yes, the
+probability of yes: 99.94 %".  It is the reading, not a new answer.
+
+### 16.2 What was checked
+
+* The example request the page offers passes the endpoint's own validator, and
+  the limits the page checks are the endpoint's constants (a test reads both
+  out of the files and compares them).
+* Live, against the running instance: the three question types answered, the
+  numbers shown with their meanings, the page's own check refusing a name with a
+  colon before anything is sent, and a 400 shown with the server's own message.
+  The 502 path (the model wrote something that did not parse) and the page's
+  note for a server without `"diagnostics": true` were not exercised live; both
+  are the same code path as the 400.
 
 ---
 
