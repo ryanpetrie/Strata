@@ -302,6 +302,10 @@ written:
   question that fails does not cost the others their answers. Measured on the
   235-item sample: Capability 79.0 with every item predicted, against the shared
   prompt's 49.5 with 165 of 235 (§11.5).
+- The engine's stale-context failure, which the 2026-10-20 handoff recorded as the
+  cause of every long run's failures, is **not** what the evidence supports. §12:
+  the log line that was read as a proof is the trie walk's own request, the failed
+  items pass on a healthy engine, and the failure does not reproduce.
 
 ### 6.0 Final design (IMPLEMENTED in the workspace, 2026-10-19)
 
@@ -1033,6 +1037,14 @@ ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
   engine's turn and the engine's DONE line, but it does not go through
   `Service.run`, so the monitor's live request list does not show a decision
   request. It shows as idle while a decision runs.
+- **The engine's stale context** (§12). A long run once answered another question's
+  options, and the 2026-10-20 handoff recorded it as an engine cache bug that
+  invalidated every long measurement. The evidence does not support that: the log
+  line that was read as a proof is the trie walk's own request, the failed items
+  answer on a healthy engine, and the failure does not reproduce under repeated
+  passes, a 300-item run, or a concurrent load. The trigger is still unknown, so
+  there is no fix to write; the mitigation (a fresh engine per chunk) is what the
+  measurements here use.
 - **The conversation cache's slots.** Measured: the minimum free VRAM during the
   235-item run was 1082 MiB (1206 at load), against the engine's 1024 MiB warning
   threshold - and each parked conversation costs ~240 MiB of VRAM with these long
@@ -1167,3 +1179,124 @@ about N tail-reads instead of N state-reads. That is the number that decides A1
 versus A2, and it is not measured yet: A2 is not implemented. What this section
 establishes is the end A1 has to beat - the quality of the serial path (79.1) and the
 speed of the shared path (1.61 s a question, at a third of the quality).
+
+---
+
+## 12. The engine's stale context: what was measured (2026-10-21)
+
+A long OpenDecisions run once failed **43% of its items** with a 502, and the failing
+answers were fragments of *other* items' option names (`creative_writing` for an
+`ondrel_l/ondrel_m/ondrel_s` question, `exchange_rate_feed` for a
+`nimble/steady/summit` question). The model appeared to be continuing a different
+conversation. A 2026-10-20 handoff recorded this as an **engine cache bug** - the
+engine restoring a conversation that was not the request's - and every long
+measurement was treated as suspect because of it.
+
+**That diagnosis was wrong on both counts: what the evidence showed, and where the
+fault is.** What follows is what was measured, on this machine, on 2026-10-21.
+
+#### 12.1 The log line that was read as a proof is the trie walk
+
+The handoff's evidence was the engine's own line:
+
+```
+strata serve: prompt 330 tokens = 320 reused + 10 read in 104 ms
+```
+
+Classifying **all 4,342** prompt lines in the engine log
+(`strata-unsloth-ud-iq4_xs.log`) shows what that line is:
+
+| the shape | what it is | requests |
+|---|---|---:|
+| `N tokens = 0 reused + N read` | a base request, nothing reused | 3,404 |
+| `N tokens = M reused + (N-M) read`, **1 generated** | **the trie walk's own request** | 775 |
+| `N tokens = M reused + (N-M) read`, 2+ generated | a chat turn (a growing conversation) | 80 |
+
+The second row is the one that was misread. A trie-walk request is the server's LOGITS
+call with `max_new=1`, appending a node's tokens to a prompt that is already in the
+cache: it reuses **its own** prompt's checkpoint and re-reads the last ~10 tokens
+(the checkpoint sits at `N-9`). The `1 generated` is the tell. So the line is benign,
+and it is the shape the whole trie-walk arm produces, not a symptom.
+
+#### 12.2 The failure is environmental, not the items and not the order
+
+The invalid run's own log is the proof. `full_trie.run.txt`:
+
+```
+25/2352 requests ok=11 fail=14 elapsed=43s
+```
+
+**It failed from its first item.** So the engine was already bad when the run
+started; the run did not poison itself.
+
+And the items are not the problem. Of the 145 failed items, **130 are in the first
+300 of the set** - and a clean re-run of *the same 300 items, in the same order, with
+the same code* answered **300/300** (HTTP 200 against the original run's 502):
+
+| | the invalid run | the clean re-run |
+|---|---:|---:|
+| the first 300 items, answered | 170/300 | **300/300** |
+| failures | 130 | **0** |
+
+#### 12.3 It does not reproduce on a healthy engine
+
+| the experiment | the result |
+|---|---|
+| the same 30 items, 4 passes in a row (120 requests) | 30/30 every pass |
+| 300 distinct items, file order, warm engine | 300/300 |
+| the same 30 items with a concurrent chat load on the same engine | 30/30 answered, 34 chat requests, 0 errors |
+
+So the trigger is neither the item, nor the order, nor the request count, nor a
+plain concurrency race. **The failing engine was in a state this work could not
+reproduce**, and a restart cleared it.
+
+#### 12.4 What is left, and it is not nothing
+
+The engine log carries **42** occurrences of
+
+```
+strata serve: WARNING: only 115 MiB of VRAM free at the start of this request
+    (below 1024 MiB): when the card is this full the driver can page GPU memory to
+    system RAM, decode falls to a few tok/s and a window may never finish (#2065).
+```
+
+with a **minimum of 115 MiB** free, against the engine's 1,024 MiB threshold. The
+engine's own text says the driver may page GPU memory to system RAM in that state.
+That is a mechanism that could corrupt a KV cell or a recurrent state, and the
+`qwen4exp` model has a recurrent state as well as a KV cache. **This is a
+hypothesis, not a finding**: no run here was shown to fail because of it, and the
+warnings do not line up with any specific failing run.
+
+The other candidate is the **conversation cache** (`--conversation-cache-mib 8192`,
+`--conversation-cache-slots 2`): it churns hard (a parked snapshot is ~240 MiB, the
+eviction counter climbs through a long run) and its `reused_kv_bytes` is sometimes 0
+and sometimes not, so what a restore actually reuses is not obvious from the log.
+
+#### 12.5 The mitigation, and what it costs
+
+The mitigation is the one the handoff describes: **a fresh engine per chunk**. It
+works, and it is cheap to state: a restart reloads the model in about 60 s, so a run
+of N items is split into chunks of N and the engine is restarted between them.
+
+What the failed run means for the numbers in §10.8: **none of them.** Every one of
+those runs was measured on a freshly restarted engine, and the clean re-run in §12.2
+reproduced the sample's behaviour exactly (300/300, no failures). The numbers that
+are suspect are the ones taken on an engine that had been running for a long time -
+and the one that demonstrably was, the 327-item run, is invalid and is not used
+anywhere in this document.
+
+#### 12.6 What is still open
+
+1. **The trigger.** The engine state that produced the wrong answers has not been
+   reproduced, so there is no fix to write and no fix to measure. The two live
+   candidates are the VRAM exhaustion above and the conversation cache's eviction
+   path; both need a reproduction before anything is changed.
+2. **The user's own agent** shares this engine, so it shares the risk. The
+   measurements here say the risk is small on a healthy engine, but they do not
+   measure it.
+3. **A guard.** The engine already warns below 1,024 MiB. Whether it should *refuse*
+   a request rather than proceed (the warning says the driver may page) is a
+   question for the engine's owner.
+
+Nothing in this section changes the engine. The finding is about what the evidence
+does and does not support.
