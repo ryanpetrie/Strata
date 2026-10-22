@@ -9033,6 +9033,12 @@ int main(int argc, char** argv) {
         std::vector<int32_t> live;
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
+        // park=0: parking is a switch-time decision taken by the NEXT request, so this is not the request's own
+        // `req_park` but whether the session the queue holds may be parked when a later request replaces it.  A
+        // request that read its prompt from scratch and said park=0 leaves false here; one that TOOK a parked
+        // conversation sets it back (that conversation must be put back), so the key suppresses only the park of
+        // one that was read from scratch.  See conversation_park_allowed().
+        bool live_parkable = true;
         // #879: a window met non-finite logits: the next request drops every cached state first and reads from token 0
         bool nan_flush = false;
         std::vector<ConvCheckpoint> checks;
@@ -9128,6 +9134,15 @@ int main(int argc, char** argv) {
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            // park=0: the request that read this conversation from scratch said no later request extends it, so
+            // parking it would spend a slot only to evict the conversation it was interleaved with.  Returning
+            // true is the same non-error skip the minimum-length and budget paths below take.  A conversation a
+            // request TOOK from the cache is parkable again (live_parkable stays true for it: it must go back).
+            if (!live_parkable) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking (the request that read it said "
+                                     "park=0; parked=%zu)\n", conversations.size());
+                return true;
+            }
             // #2049: parking copies the outgoing conversation's running checkpoints and K/V into host memory, which
             // is a silent stretch of the "request" stage; when the OS has paged that memory out it takes minutes.
             // Named, so a stall report says "parking"; its copies beat (conversation_copy.hpp), so the watchdog
@@ -11915,6 +11930,7 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
+                    live_parkable = true;   // a session file's conversation is parked as before (no park=0 on SAVE/LOAD)
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear();
@@ -11981,6 +11997,13 @@ int main(int argc, char** argv) {
             // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
             // when that reaches --prompt-cache-root.  Absent = checkpointed as before.
             int req_ckpt = 1;
+            // park=0: this request's conversation is not parked for the next one, while its session is still
+            // continued (`ckpt` stays 1: a trie walk's next step reuses it).  Parking is a switch-time decision,
+            // so a short one-shot request would otherwise leave a copy in the cache and, once it is full, evict
+            // the chat it was interleaved with.  A conversation this request RESTORES is parked again as before
+            // (it is put back).  Absent = parked as before.
+            bool req_park = true;
+            bool took_parked = false;   // this request restored a parked conversation, so it is parked again
             // pin=N: the first N prompt tokens are a shared read-only prefix (a long document that many short queries
             // follow).  The prompt is read in two parts at N, the checkpoint there is PINNED (retention never evicts it,
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
@@ -12011,6 +12034,7 @@ int main(int argc, char** argv) {
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
@@ -12584,6 +12608,9 @@ int main(int argc, char** argv) {
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 lent_slot = -1;   // (the main session holds the parked conversation now)
+                // park=0 does not apply to a conversation the cache served: the entry is gone from the cache and
+                // must be put back by whichever request replaces this one (conversation_park_allowed).
+                took_parked = true;
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -14932,6 +14959,9 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
+                // park=0: the next request does not park this conversation, unless this one took a parked entry
+                // from the cache (that one goes back).  live_ok stays as it was, so the session is still continued.
+                live_parkable = strata::core::conversation_park_allowed(req_park, took_parked);
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
             } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {
@@ -14941,6 +14971,7 @@ int main(int argc, char** argv) {
                 live.assign(cur.begin(), cur.begin() + pp_reached);
                 live_imgs = imgs_below(req_imgs, pp_reached);
                 live_ok = true;
+                live_parkable = strata::core::conversation_park_allowed(req_park, took_parked);
                 std::fprintf(stderr, "strata serve: cancelled request keeps its conversation: %lld tokens live\n",
                              (long long) pp_reached);
             }

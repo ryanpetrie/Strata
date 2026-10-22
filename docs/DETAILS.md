@@ -1186,6 +1186,15 @@ requests' length keeps the long conversation parked. The check runs before `make
 nothing and stores nothing; the log line is `conversation cache: skip parking (N tokens, below the M minimum;
 parked=P)`. 0 is the pre-flag behaviour and the flag leaves the answers untouched - it only decides which
 conversations keep a slot.
+The engine also takes a request key, `park=0` on a `GEN` or `LOGITS` line (opt-in per request): the conversation that
+request read is not parked for the next one, while its session stays continuable, so a step that follows it still adds
+to it. It is for a request whose turn nothing will extend - the decision endpoint's short questions - which would
+otherwise take the slots and evict the chat they were interleaved with. A conversation the request **restored** from
+the cache is parked again as before: the key suppresses only the park of one the request read from scratch. Absent,
+every conversation is parked as before, and an engine without the key skips it, so a version skew is safe. The log line
+is `conversation cache: skip parking (the request that read it said park=0; parked=P)`. The server sends it on the
+decision path only, and only with `STRATA_DECISION_PARK=1` until the measurement in
+[conversation_cache_oneshot.md](research/conversation_cache_oneshot.md) passes.
 `--conversation-cache-park-gain N` (opt-in, default 0 = park every turn) parks a conversation again only after it
 advanced N tokens past the copy it would supersede; a turn that grew by a few hundred tokens keeps the older copy
 instead of writing a whole snapshot that the next turn drops. The cost is that a resume from the older copy reads up
