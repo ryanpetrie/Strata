@@ -72,7 +72,8 @@
       "verdict": "usable",
       "quote": "This dataset is released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).",
       "source": "https://huggingface.co/datasets/google/civil_comments/raw/main/README.md",
-      "owes": "nothing"
+      "owes": "nothing",
+      "note": "PROVENANCE: the rows jev-bench ships as civil_comments train and validation are the upstream VALIDATION split, not the upstream train split (measured: all 8,492 distinct comment texts are in the upstream validation parquet, and none of the ids index the same comment there). The licence verdict is unchanged - validation is trainable under the record's rule and the licence is CC0 either way. CAVEAT: 71 of those 8,492 distinct comments are also in the upstream test split, the yardstick; measured on this pool: all 250 civil_comments items are in the upstream validation split, exactly 1 of them is among the 71, and the pool shares 0 texts with the jev-bench test sample (whose 100 civil_comments items are all from the upstream test split). The noul's target is the `toxicity` field, which is MEASURED to be the annotator share (every one of the 2,913 distinct values over the upstream train split is exactly k/n, 0 failures), not a continuous score."
     },
     "paws": {
       "spdx": "other",
