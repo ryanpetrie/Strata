@@ -146,6 +146,19 @@ script makes the comparison **paired**: it undoes the temperature the run was se
 another one, so both arms come out of ONE run and share the engine, the picks, the logits and the state.
 The transform is the server's own (`apply_temperature`); the inverse of "apply T" is "apply 1/T".
 
+**The arms of one run** (the same idea, with the measurements):
+
+```sh
+python tools/decision_policy/temperature_arms.py --items <items.jsonl> --runlog <run.runlog.jsonl> \
+  --served 3.65,3.75,3.73 --arm soft=3.65,3.75,3.73 --arm brier=2.27,2.93,3.29 \
+  --scorer <path to score.py> --out-report <report.md> [--out-predictions <the T = 1 arm>]
+```
+
+Every candidate arm is recovered out of one run: the T = 1 arm, the temperature the run was served with, and
+any candidate (the transform is invertible, so one run carries them all).  For each arm the script reports
+the mean total variation distance to the HUMAN distribution - overall, per type and per config - and the
+official scorer's Capability, Intelligence and Calibration.  The inversion is validated, not assumed.
+
 ## The other datasets
 
 `jevbench.py` and `jevbench_rewrites.py` run the two JevBench sets through the endpoint. They need the
@@ -259,7 +272,10 @@ whose options share a first token.
 | `temperature.py` | source | the per-type temperature: the fit, the cross-validation, and the official scorer's numbers. |
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
 | `temperature_report.md` | generated | the fit's report: the objectives, the cross-validation, the limits. |
+| `temperature_pool_calibration.json` | generated | the same, for the fit on the jev-bench validation pool (the constants that are NOT shipped). |
+| `temperature_pool_report.md` | generated | the pool fit's report. |
 | `retemperature.py` | source | re-scales a run's distributions: the paired comparison of two temperature settings out of one run. |
+| `temperature_arms.py` | source | every candidate arm of one run, with the distance to the human distribution and the official scorer's numbers. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |

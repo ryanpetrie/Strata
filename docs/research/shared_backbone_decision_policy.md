@@ -2466,3 +2466,203 @@ per-population calibration, not a single scalar.
 | the server | the main checkout `C:\tools\strata`, the live launch config, a **fresh engine before each measurement run** (§12.5) |
 | the tools | the worktree `C:\tools\strata-wt-p1b` |
 
+### 20.4 The pool run, and the fit on it
+
+**THE POOL RUN (a), 2026-10-22.**  A fresh engine (the server was restarted before
+it, per §12.5), the live launch config with **no temperature key** (so T = 1 for
+every type), the direct readout, one question per request, one attempt each:
+
+```
+python tools/decision_policy/jevbench.py --items <p1b_pool.jsonl> \
+  --out <p1b_pool_T1.jsonl> --log <p1b_pool_T1.runlog.jsonl> --config <the live config>
+```
+
+**1,500 of 1,500 answered, 0 failures, every item on the fast path**, in **6,306 s**
+(1 h 45 m).  The latency: median **3,511 ms**, p95 **10,269 ms**, mean 4,204 ms.  The
+slow items are the wide ones - the 151-option `clinc150` and the 77-option
+`banking77` questions - and the run's own pace (8-10 s an item at the start, 3 s
+later) is the conversation cache filling up, the same shape §18.5 measured.
+
+**THE FIT**, on that run (`tools/decision_policy/temperature.py`, the same grid, the
+same seed 42, the same five folds, the same no-leak rule).  **The constants are all
+ABOVE 1** - the pool's population wants a FLATTER distribution, and §18's wanted a
+sharper one:
+
+| arm | what it minimizes | choice | noul | score |
+|---|---|---:|---:|---:|
+| nll | the negative log-likelihood of the gold label | 2.31 | 2.67 | 3.36 |
+| **brier** (the control) | the multiclass Brier score | **2.27** | **2.93** | **3.29** |
+| ece | the raw top-level ECE | 2.42 | 1.47 | 3.02 |
+| **soft** (the primary) | the cross-entropy against the HUMAN distribution | **3.65** | **3.75** | **3.73** |
+| **single scalar** | one T over the pooled records | **2.47** | 2.47 | 2.47 |
+
+**THE POOL'S OWN T = 1 ARM** (the run above, scored by the official scorer): Capability
+**49.72** (Intelligence 41.98, Calibration 57.47); the per-type calibration
+**choice 44.8, noul 62.0, score 65.6**; the per-type accuracy 55.4% / 73.2% / 47.0%.
+
+**THE OUT-OF-FOLD FIT ON THE POOL** (each item scaled by the temperature of the fold
+it was **not** in):
+
+| arm | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---:|---:|---:|
+| the T = 1 arm | 49.72 | 41.98 | 57.47 | 44.8 | 62.0 | 65.6 |
+| the brier arm | **58.99** | 39.47 | **78.50** | 86.3 | 63.1 | 86.0 |
+| the soft arm | 52.66 | 39.05 | 66.27 | 51.9 | 61.7 | 85.2 |
+| the single scalar | 59.65 | 40.42 | 78.87 | 88.7 | 63.8 | 84.1 |
+
+(the three right-hand columns are the scorer's own per-type calibration components,
+0-100, higher is better.)
+
+**How sure is the fit?**  The out-of-bag bootstrap (1,000 resamples, the temperature
+fitted on one and the ECE measured on another): the temperature lowers the ECE in
+**100%** of the resamples for the choice and the score and in **60%** for the noul - a
+wash, as §18 found.  The paired item bootstrap, the out-of-fold fit against the T = 1
+arm: Capability **+8.84 [+7.14, +10.56]** (100% > 0), Calibration **+20.20 [+17.08,
++23.31]** (100% > 0), and Intelligence **-2.51 [-3.46, -1.52]** (0% > 0) - the
+flattening moves the score questions' expected level, and the scorer reads it.
+
+### 20.5 The test sample, with the soft constants live
+
+**THE RUN (c), 2026-10-22.**  A fresh engine, the launch config with the **soft**
+constants (choice 3.65, noul 3.75, score 3.73) - the startup line says so - the
+direct readout, the 683-item jev-bench test sample, one question per request:
+
+**683 of 683 answered, 0 failures, every item on the fast path**, in **2,674 s**
+(45 m).
+
+**THE ARMS, ALL OUT OF THAT ONE RUN** (`tools/decision_policy/temperature_arms.py`),
+so they share the engine, the picks, the logits and the state, and only the
+arithmetic differs.  The inversion is checked, not assumed: the recovered T = 1 arm
+put back through the served temperature reproduces the arm the run reported to
+**1.1e-16**, and the noul's recovered P(yes) matches the run log's own open reading
+to **3.3e-16**.
+
+| arm | mean TVD to the humans | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|---:|
+| **T = 1 (recovered)** | **0.4439** | 55.1 | 47.2 | 63.0 |
+| soft (3.65 / 3.75 / 3.73) | 0.4111 | 56.1 | 46.0 | 66.1 |
+| brier (2.27 / 2.93 / 3.29) | 0.4045 | 63.1 | 46.5 | 79.7 |
+| single (2.47) | 0.4034 | 62.5 | 47.1 | 78.0 |
+
+(The recovered T = 1 arm's 0.4439 and 55.1 are §19's stored T = 1 run, reproduced
+from a different engine: the recovery is sound, and the 0.0008 mean-TVD difference
+§19 measured is between the two runs, not between the two methods.)
+
+Per type and per config, the mean TVD to the humans:
+
+| arm | choice (130) | noul (100) | score (50) | chaosnli (80) | civil_comments (100) | go_emotions (50) | measuring_hate_speech (50) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| T = 1 | 0.4702 | 0.3836 | 0.4963 | 0.3116 | 0.3836 | 0.7239 | 0.4963 |
+| soft | 0.4139 | 0.3811 | 0.4639 | 0.2021 | 0.3811 | **0.7527** | 0.4639 |
+| brier | 0.4025 | 0.3777 | 0.4632 | 0.2103 | 0.3777 | 0.7100 | 0.4632 |
+| single | 0.4012 | 0.3762 | 0.4637 | 0.2054 | 0.3762 | 0.7143 | 0.4637 |
+
+### 20.6 The 235, the same arms
+
+**THE ARMS OUT OF ONE RUN** - the 2026-10-21 run with §18's constants
+(`fix_serial_temp.jsonl`), re-scaled offline to T = 1 and to each candidate, so they
+share the engine, the picks, the logits and the state:
+
+| arm | Capability | Intelligence | Calibration | choice cal. | noul cal. | score cal. | score comp. |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **T = 1 (the paired control)** | **78.9** | 75.9 | 81.8 | 78.9 | 79.2 | 87.4 | 65.7 |
+| §18's constants (0.62 / 0.67 / 0.77) | 80.1 | 77.0 | 83.1 | 80.8 | 81.8 | 86.7 | 68.9 |
+| soft (3.65 / 3.75 / 3.73) | 59.6 | 65.5 | 53.8 | 43.3 | 54.5 | 63.6 | 34.4 |
+| brier (2.27 / 2.93 / 3.29) | 66.1 | 66.7 | 65.4 | 64.7 | 67.5 | 64.1 | 38.0 |
+| single (2.47) | 69.0 | 69.3 | 68.6 | 62.9 | 70.8 | 72.1 | 46.0 |
+
+(The picks do not move: the map is monotone, so every arm answers the same 235 items
+the same way.  What moves is the reported distribution, and with it the calibration
+and the score questions' expected level.)
+
+### 20.7 The rule, applied
+
+| | the test | the candidates | the verdict |
+|---|---|---|---|
+| **(a)** | the pool's out-of-fold calibration improves against the pool's own T = 1 arm | brier 44.8/62.0/65.6 -> 86.3/63.1/86.0; single -> 88.7/63.8/84.1; soft -> 51.9/61.7/85.2 | **PASS** for the brier arm and the single scalar (every type); **PASS** for the soft arm on the choice and the score, and the noul is a wash (-0.3) |
+| **(b)** | the jev-bench test TVD does not get worse by more than 0.005 | soft 0.4439 -> 0.4111 (-0.0328); brier -> 0.4045 (-0.0394); single -> 0.4034 (-0.0405) | **PASS** for all three, by 6 to 8 times the margin |
+| **(c)** | the 235's Capability does not fall below its T = 1 arm (78.9) | soft 59.6 (-19.3); brier 66.1 (-12.8); single 69.0 (-9.9) | **FAIL** for all three |
+
+**NO CONSTANT SHIPS.**  Every candidate passes (a) and (b) and fails (c), and (c) is
+not close: the flattening that the human labels want costs the OpenDecisions
+population **9.9 to 19.3 Capability points**.
+
+### 20.8 What that means
+
+**The endpoint's calibration is POPULATION-SPECIFIC, and the two populations want
+opposite scalings.**  §18 fitted the OpenDecisions sample and got a temperature
+**below** 1 - the model is under-confident on Jev-style questions.  This fit, on the
+jev-bench content judgments, got a temperature **above** 1 - the model is more peaked
+than the people are (§19 measured the same: a top-label mass of 0.7862 against the
+humans' 0.6215).  One scalar cannot be right for both, and the rule says a constant
+that helps one population and hurts the other is not a constant we ship.  **The
+endpoint stays at T = 1.**
+
+**The noul is confirmed to be a BIAS, not a scale, and this is the second
+population to say so.**  The soft arm - the only objective fitted against the human
+distribution - moves the noul's TVD by **0.0025** (0.3836 -> 0.3811) while moving the
+choice's by 0.056 and the score's by 0.032.  A temperature cannot move a
+distribution's centre, and the noul's centre is wrong: the model over-predicts "yes"
+on 95 of the 100 items (§19).  The noul goes to item 1.4's **affine** fit, and the
+rule's clause that the noul's failure does not block the choice and the score
+constants is what is left to say - except that the choice and the score constants
+fail (c) too, so nothing is left to ship.
+
+**What the run does say that is worth keeping.**  The pool's own T = 1 arm is poorly
+calibrated (the choice's calibration component 44.8) and the fit fixes that on the
+pool's own population (86.3) with a large, well-bracketed effect (+8.84 Capability,
++20.20 Calibration, both 100% of the resamples).  A temperature is a real tool on the
+population it is fitted on; it is the *transfer* that fails.  The next step is
+therefore not a better constant but a **population-aware** calibration: an affine map
+(item 1.4) for the noul's bias, and a decision about what the endpoint should report
+when the question's population is unknown.
+
+**THE LIMITS.**
+
+* **The two populations are not the same kind of question.**  OpenDecisions is
+  Jev-style typed decisions; the jev-bench pool is content judgments (toxicity,
+  emotion, hate speech, intent classification, similarity).  The result is a
+  statement about *those two* populations, not about every question the endpoint
+  will ever be asked.
+* **The 235's arms come from a run on 2026-10-21**, re-scaled offline.  The
+  re-scaling is exact (the transform is invertible) and the T = 1 arm it produces is
+  §18.5's "the same run with the temperature undone" (78.9 / 75.9 / 81.8) - so the
+  arms are paired, but they are one engine's readings, not a fresh run.
+* **The pool's fit is a fit on 1,500 items of which 750 carry a human
+  distribution**; the soft arm's 250 items per type are what it optimizes, and the
+  other 250 per type (the shapes without a human distribution) are in the objective's
+  denominator for the other arms only.
+* **The test sample's arms come from ONE run with the soft constants**; the other
+  arms are re-scalings of it, so they share that run's engine wobble.
+* **What was not run.**  No live run of the 235 with the candidate constants (the
+  offline re-scaling is exact and the test sample's live run is the same arithmetic
+  on another population); no run of the pool with the candidate constants (the fit
+  is the offline arithmetic, and the pool's run at T = 1 is its T = 1 arm); no affine
+  calibration (that is item 1.4); no second model, no engine change, no new
+  dependency.  The letter readout was not tried: it loses on this population too
+  (Capability 48.3 against the direct arm's 55.1), and the direct readout is what
+  every number above is measured on.
+
+### 20.9 The artifacts, and where they are
+
+The pool run's files are the base arm for roadmap item 1.5's prompt experiment (the
+pool at T = 1 with today's template), and they are **kept, not overwritten**:
+
+```
+C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.jsonl
+C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.runlog.jsonl
+```
+
+The predictions file has one row per item, `{"id": ..., "probs": {...}}` - the shape
+the probe's `--base` argument reads - 1,500 rows, every item on the fast path.
+
+The rest of this run's files, in the same directory: `p1b_fit.json` and `p1b_fit.md`
+(the fit with the bootstrap off), `p1b_test_arms.md` (the arms of the test run),
+`p1b_jevbench_test_soft.jsonl` and its run log (the live run with the soft
+constants), `p1b_jevbench_test_soft_T1.jsonl` (the recovered T = 1 arm), and the
+235's arms `p1b_235_T1_from_current.jsonl`, `p1b_235_soft.jsonl`,
+`p1b_235_brier.jsonl`, `p1b_235_single.jsonl`.  The fit's own artifacts are also
+committed, as `tools/decision_policy/temperature_pool_calibration.json` and
+`tools/decision_policy/temperature_pool_report.md` - the §18 pair
+(`temperature_calibration.json`, `temperature_report.md`) is left as the record of
+the constants that are not shipped.
