@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
   "fitted_on": "2026-10-21",
   "objective": "brier",
@@ -32,12 +32,36 @@
       "choice": 0.58,
       "noul": 0.67,
       "score": 0.75
+    },
+    "soft": {
+      "choice": 4.36,
+      "noul": 1.2,
+      "score": 2.22
     }
+  },
+  "items_with_human_distribution": {
+    "choice": 3,
+    "noul": 6,
+    "score": 4
   },
   "source": {
     "dataset": "jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42)",
     "arm": "the serial first-token path, every item on the fast path",
-    "note": "the constants are fitted on these same items, so a re-run of the sample is IN-SAMPLE; the honest number is the out-of-fold one below"
+    "note": "the constants are fitted on these same items, so a re-run of the sample is IN-SAMPLE; the honest number is the out-of-fold one below",
+    "files": {
+      "items": {
+        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\opendecisions\\sample10_items.jsonl",
+        "sha256": "ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8"
+      },
+      "runlog": {
+        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\opendecisions\\fix_serial.runlog.jsonl",
+        "sha256": "778db6e107621865bb776a956558cc4b1d240bc2e0ef1759e8b099e31759c453"
+      },
+      "predictions": {
+        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\opendecisions\\fix_serial.jsonl",
+        "sha256": "6ca1b3126673affcb4dbf566a58ec160d87106d5dfc713e779a5aff2a3942727"
+      }
+    }
   },
   "validation": {
     "out_of_fold": {
@@ -51,6 +75,16 @@
           "choice": 0.14517589618424231,
           "noul": 0.11277367945883525,
           "score": 0.062246976298393354
+        },
+        "calibration_before": {
+          "choice": 73.7455649128233,
+          "noul": 84.8761501362288,
+          "score": 86.3339326194054
+        },
+        "calibration_after": {
+          "choice": 70.96482076315154,
+          "noul": 77.44526410823295,
+          "score": 90.95927504006184
         },
         "folds": [
           {
@@ -207,6 +241,16 @@
           "noul": 0.07861192725678798,
           "score": 0.06491506140958729
         },
+        "calibration_before": {
+          "choice": 73.7455649128233,
+          "noul": 84.8761501362288,
+          "score": 86.3339326194054
+        },
+        "calibration_after": {
+          "choice": 75.51585605521738,
+          "noul": 84.2776145486424,
+          "score": 90.75213674217144
+        },
         "folds": [
           {
             "fold": 0,
@@ -362,6 +406,16 @@
           "noul": 0.08237794423684712,
           "score": 0.04981654825345105
         },
+        "calibration_before": {
+          "choice": 73.7455649128233,
+          "noul": 84.8761501362288,
+          "score": 86.3339326194054
+        },
+        "calibration_after": {
+          "choice": 73.9844307775226,
+          "noul": 83.52441115263058,
+          "score": 92.27948465040697
+        },
         "folds": [
           {
             "fold": 0,
@@ -505,6 +559,171 @@
           "calibration_items_tvd": 0.24543818880746957,
           "calibration_items": 13
         }
+      },
+      "soft": {
+        "ece_before": {
+          "choice": 0.13127217543588357,
+          "noul": 0.07561924931885602,
+          "score": 0.10818720700054921
+        },
+        "ece_after": {
+          "choice": 0.3461516407330406,
+          "noul": 0.1001512178779877,
+          "score": 0.19121451936592654
+        },
+        "calibration_before": {
+          "choice": 73.7455649128233,
+          "noul": 84.8761501362288,
+          "score": 86.3339326194054
+        },
+        "calibration_after": {
+          "choice": 30.769671853391877,
+          "noul": 79.96975642440246,
+          "score": 77.13756967994318
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 48,
+            "temperatures": {
+              "choice": 4.36,
+              "noul": 1.2,
+              "score": 2.22
+            },
+            "tiers": {
+              "choice/easy": 2,
+              "choice/hard": 15,
+              "choice/judge": 3,
+              "choice/standard": 2,
+              "noul/easy": 3,
+              "noul/hard": 3,
+              "noul/judge": 6,
+              "noul/standard": 2,
+              "score/easy": 2,
+              "score/hard": 7,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 15
+          },
+          {
+            "fold": 1,
+            "n": 48,
+            "temperatures": {
+              "choice": 4.18,
+              "noul": 1.66,
+              "score": 0.95
+            },
+            "tiers": {
+              "choice/easy": 3,
+              "choice/hard": 13,
+              "choice/judge": 2,
+              "choice/standard": 4,
+              "noul/easy": 2,
+              "noul/hard": 6,
+              "noul/judge": 4,
+              "noul/standard": 2,
+              "score/easy": 1,
+              "score/hard": 8,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 13
+          },
+          {
+            "fold": 2,
+            "n": 47,
+            "temperatures": {
+              "choice": 4.36,
+              "noul": 1.06,
+              "score": 2.48
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 9,
+              "choice/judge": 5,
+              "choice/standard": 1,
+              "noul/easy": 2,
+              "noul/hard": 4,
+              "noul/judge": 3,
+              "noul/standard": 5,
+              "score/easy": 1,
+              "score/hard": 6,
+              "score/judge": 3,
+              "score/standard": 2
+            },
+            "hard_choice_items": 9
+          },
+          {
+            "fold": 3,
+            "n": 47,
+            "temperatures": {
+              "choice": 4.36,
+              "noul": 1.07,
+              "score": 2.22
+            },
+            "tiers": {
+              "choice/easy": 7,
+              "choice/hard": 6,
+              "choice/judge": 5,
+              "choice/standard": 3,
+              "noul/easy": 4,
+              "noul/hard": 3,
+              "noul/judge": 4,
+              "noul/standard": 3,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 2,
+              "score/standard": 2
+            },
+            "hard_choice_items": 6
+          },
+          {
+            "fold": 4,
+            "n": 45,
+            "temperatures": {
+              "choice": 4.46,
+              "noul": 1.2,
+              "score": 2.22
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 10,
+              "choice/judge": 5,
+              "noul/easy": 3,
+              "noul/hard": 5,
+              "noul/judge": 5,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 3
+            },
+            "hard_choice_items": 10
+          }
+        ],
+        "scorer": {
+          "capability": 68.04091961063563,
+          "intelligence": 73.45617323535875,
+          "calibration": 62.625665985912505,
+          "competence_per_type": {
+            "choice": 86.70504752978981,
+            "noul": 80.47619047619048,
+            "score": 53.18728170009597
+          },
+          "calibration_per_type": {
+            "choice": 30.769671853391877,
+            "noul": 79.96975642440246,
+            "score": 77.13756967994318
+          },
+          "accuracy_per_type": {
+            "choice": 89.7196261682243,
+            "noul": 91.30434782608695,
+            "score": 79.66101694915254
+          },
+          "items": 235,
+          "predicted": 235,
+          "calibration_items_tvd": 0.1795642936245724,
+          "calibration_items": 13
+        }
       }
     },
     "holdout_30": {
@@ -522,6 +741,16 @@
         "choice": 0.5,
         "noul": 0.6,
         "score": 0.88
+      },
+      "calibration_before": {
+        "choice": 66.07213255329026,
+        "noul": 64.18125187293853,
+        "score": 79.23595921436085
+      },
+      "calibration_after": {
+        "choice": 92.51815364709908,
+        "noul": 65.58207168835699,
+        "score": 86.85177473343087
       },
       "train_items": {
         "choice": 75,
