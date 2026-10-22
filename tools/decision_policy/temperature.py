@@ -450,6 +450,42 @@ def fit_temperature(scorer, records: list[dict], qtype: str, objective: str,
     return best_t, (best if best is not None else float("inf"))
 
 
+def fit_single_scalar(scorer, records: list[dict], objective: str = "brier",
+                      t_min: float = T_MIN, t_max: float = T_MAX) -> tuple[float, float]:
+    """-> (T, the objective's value at T): ONE temperature for every type.
+
+    THE COMPARISON THE ROADMAP ASKS FOR: if one scalar for all three types does as
+    well as three, then the three are not worth their complexity, and the honest
+    thing is to ship one and say so.  The objective is the same rule the per-type arm
+    uses, applied to the POOLED records - so the two arms are measured the same way.
+
+    The ECE is a per-type metric, so for one scalar it is the mean of the three
+    types' ECEs (the same shape as the scorer's own Calibration, which averages the
+    types' components).
+    """
+    if not records:
+        return 1.0, float("inf")
+    steps = int(round((t_max - t_min) / COARSE_STEP))
+    best_t, best = t_min, None
+    for i in range(steps + 1):
+        t = round(t_min + i * COARSE_STEP, 6)
+        if objective == "nll":
+            value = mean_nll(records, t)
+        elif objective == "brier":
+            value = mean_brier(records, t)
+        elif objective == "soft":
+            value = mean_soft_ce(records, t)
+        else:
+            per_type = ece_by_type(scorer, outcomes(scorer, records, t))
+            values = [v for v in per_type.values() if v is not None]
+            if not values:
+                continue
+            value = sum(values) / len(values)
+        if best is None or value < best:
+            best_t, best = t, value
+    return best_t, (best if best is not None else float("inf"))
+
+
 def bootstrap_ece(scorer, records: list[dict], qtype: str, objective: str,
                   resamples: int = 1000, seed: int = SEED,
                   t_min: float = T_MIN, t_max: float = T_MAX) -> dict:
@@ -630,6 +666,36 @@ def cross_validate(scorer, records: list[dict], objective: str, folds: int = FOL
 
 # ------------------------------------------------------------------ the official scorer, run
 
+def cross_validate_single(scorer, records: list[dict], objective: str, folds: int = FOLDS,
+                          seed: int = SEED) -> tuple[dict[str, float], list[dict]]:
+    """-> ({id: the out-of-fold temperature}, the fold table) for ONE scalar.
+
+    The same rule as cross_validate, with one temperature for every type: a fold's
+    scalar is fitted on the other folds' POOLED records and applied to the fold's
+    own items, so the fit never sees the item it is scored on.
+    """
+    fold_items = stratified_folds(records, folds, seed)
+    per_item: dict[str, float] = {}
+    table = []
+    for f in range(folds):
+        held = fold_items[f]
+        train = [r for g in range(folds) if g != f for r in fold_items[g]]
+        held_ids = {r["id"] for r in held}
+        train_ids = {r["id"] for r in train}
+        overlap = held_ids & train_ids
+        if overlap:
+            raise AssertionError("the fold %d's own items are in its fit: %s"
+                                 % (f, ", ".join(sorted(overlap)[:5])))
+        t, _ = fit_single_scalar(scorer, train, objective)
+        for rec in held:
+            per_item[rec["id"]] = t
+        table.append({"fold": f, "n": len(held), "temperature": t,
+                      "tiers": tier_mix(held),
+                      "hard_choice_items": sum(1 for r in held
+                                               if r["type"] == "choice" and r["tier"] == "hard")})
+    return per_item, table
+
+
 def score_with_official_scorer(scorer_path: Path, records: list[dict],
                                 distributions: dict[str, dict[str, float]]) -> dict:
     """-> the official scorer's summary, on the given distributions.
@@ -776,6 +842,29 @@ def main() -> int:
     ho_cal_before = calibration_by_type(scorer, outcomes(scorer, test30))
     ho_cal_after = calibration_by_type(scorer, ho_scaled)
 
+    # ---- the single-scalar arm: ONE temperature for all three types, the same
+    # objective, the same grid, the same seed, the same folds.  The roadmap asks for
+    # this comparison: if one scalar does as well as three, the three are not worth
+    # their complexity and the honest thing is to ship one and say so.
+    single_t, _ = fit_single_scalar(scorer, allrecs, args.objective, args.t_min, args.t_max)
+    single_per_item, single_table = cross_validate_single(scorer, allrecs, args.objective,
+                                                           args.folds, args.seed)
+    single_outs_before = outcomes(scorer, allrecs)
+    single_outs_after = outcomes(scorer, allrecs, 1.0, per_item=single_per_item)
+    single_dist = {r["id"]: scale(r["closed"], single_per_item[r["id"]]) for r in allrecs}
+    single = {
+        "temperature": single_t,
+        "out_of_fold": {
+            "ece_before": ece_by_type(scorer, single_outs_before),
+            "ece_after": ece_by_type(scorer, single_outs_after),
+            "calibration_before": calibration_by_type(scorer, single_outs_before),
+            "calibration_after": calibration_by_type(scorer, single_outs_after),
+            "folds": single_table,
+            "scorer": score_with_official_scorer(args.scorer, allrecs, single_dist),
+        },
+    }
+    print(f"[temperature] the single scalar (one T for all three types): {single_t}")
+
     # ---- how sure is the fit?  the items resampled, the temperature fitted again
     boot = {q: bootstrap_ece(scorer, by_type.get(q, []), q, args.objective,
                               args.bootstrap, args.seed, args.t_min, args.t_max) for q in TYPES}
@@ -876,6 +965,7 @@ def main() -> int:
             "bootstrap": boot,
             "paired_bootstrap_out_of_fold": boot_oof,
             "paired_control": paired,
+            "single_scalar": single,
             "official_scorer_baseline": base_summary,
             "official_scorer_in_sample_fitted": in_sample,
         },
@@ -1065,6 +1155,34 @@ def main() -> int:
             A(f"| {label} | {fmt(summary.get('capability'), 1)} | "
               f"{fmt(summary.get('intelligence'), 1)} | {fmt(summary.get('calibration'), 1)} |")
         A("")
+    A("## The single-scalar arm")
+    A("")
+    A("The roadmap asks for this comparison: **if per-type does not beat a single")
+    A("scalar, ship a single scalar and say so.**  This is that arm - ONE temperature")
+    A("for all three types, fitted on the pooled records with the same objective, the")
+    A("same grid, the same seed and the same five folds, so the two arms are measured")
+    A("the same way.")
+    A("")
+    A(f"The single scalar is **{single['temperature']}** (the per-type constants are "
+      f"{', '.join('%s %s' % (q, fitted[q]) for q in TYPES)}).")
+    A("")
+    A("| run | Capability | Intelligence | Calibration | choice | noul | score |")
+    A("|---|---:|---:|---:|---:|---:|---:|")
+    def single_row(label, summary, cal):
+        parts = summary.get("calibration_per_type") or {}
+        A(f"| {label} | {fmt(summary.get('capability'), 1)} | "
+          f"{fmt(summary.get('intelligence'), 1)} | {fmt(summary.get('calibration'), 1)} | "
+          f"{fmt(parts.get('choice'), 1)} | {fmt(parts.get('noul'), 1)} | "
+          f"{fmt(parts.get('score'), 1)} |")
+    single_row("the baseline arm (T = 1)", base_summary, None)
+    single_row(f"the per-type fit ({args.objective}), out-of-fold",
+               cv[args.objective]["scorer"], cv[args.objective]["calibration_after"])
+    single_row("the single scalar, out-of-fold",
+               single["out_of_fold"]["scorer"], single["out_of_fold"]["calibration_after"])
+    A("")
+    A("(the three right-hand columns are the scorer's own per-type calibration")
+    A("components, 0-100, higher is better.)")
+    A("")
     A("## The official scorer")
     A("")
     A("The out-of-fold predictions (all the items, each scaled by the temperature of the")

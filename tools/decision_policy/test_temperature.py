@@ -318,6 +318,49 @@ class NoLeakTests(unittest.TestCase):
         self.assertEqual(sum(row["n"] for row in table), len(records))
 
 
+# ------------------------------------------------------------------ the single scalar
+
+class SingleScalarTests(unittest.TestCase):
+    """The arm the roadmap asks for: if per-type does not beat ONE scalar, say so."""
+
+    def test_it_is_one_number_for_every_type(self):
+        records = synthetic_pool()
+        t, _ = tp.fit_single_scalar(None, records, "brier")
+        self.assertGreater(t, 0.0)
+        # the same records, per type, give three numbers
+        per_type = {q: tp.fit_temperature(None, [r for r in records if r["type"] == q], q, "brier")[0]
+                    for q in tp.TYPES}
+        self.assertEqual(len(per_type), 3)
+
+    def test_the_out_of_fold_scalar_is_leak_free(self):
+        records = synthetic_pool()
+        before, table = tp.cross_validate_single(None, records, "brier")
+        folds = tp.stratified_folds(records)
+        for f in range(tp.FOLDS):
+            train = [r for g in range(tp.FOLDS) if g != f for r in folds[g]]
+            expected, _ = tp.fit_single_scalar(None, train, "brier")
+            for rec in folds[f]:
+                self.assertEqual(before[rec["id"]], expected)
+            # the fold's own items get a flat distribution: the scalar fitted
+            # WITHOUT them must not move
+            held = {r["id"] for r in folds[f]}
+            changed = []
+            for rec in records:
+                copy = dict(rec)
+                if rec["id"] in held:
+                    copy["closed"] = {k: 1.0 / len(rec["closed"]) for k in rec["closed"]}
+                changed.append(copy)
+            after, _ = tp.cross_validate_single(None, changed, "brier")
+            for rec in folds[f]:
+                self.assertEqual(after[rec["id"]], before[rec["id"]])
+
+    def test_every_item_is_in_exactly_one_fold(self):
+        records = synthetic_pool()
+        per_item, table = tp.cross_validate_single(None, records, "brier")
+        self.assertEqual(len(per_item), len(records))
+        self.assertEqual(sum(row["n"] for row in table), len(records))
+
+
 # ------------------------------------------------------------------ the uncertainty
 
 class BootstrapTests(unittest.TestCase):
