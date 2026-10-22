@@ -2646,18 +2646,21 @@ when the question's population is unknown.
 ### 20.9 The artifacts, and where they are
 
 The pool run's files are the base arm for roadmap item 1.5's prompt experiment (the
-pool at T = 1 with today's template), and they are **kept, not overwritten**:
+pool at T = 1 with today's template), and they are **kept, not overwritten** (the
+temporary run directory; §8 defines `<opencode temp>`):
 
 ```
-C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.jsonl
-C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.runlog.jsonl
+<opencode temp>\decision_policy_training\run\p1b_pool_T1.jsonl
+<opencode temp>\decision_policy_training\run\p1b_pool_T1.runlog.jsonl
 ```
 
 The predictions file has one row per item, `{"id": ..., "probs": {...}}` - the shape
 the probe's `--base` argument reads - 1,500 rows, every item on the fast path.
 
 The rest of this run's files, in the same directory: `p1b_fit.json` and `p1b_fit.md`
-(the fit with the bootstrap off), `p1b_test_arms.md` (the arms of the test run),
+(the fit with the bootstrap **off** - its bootstrap tables are empty; the intervals
+quoted in §20.4 are in the committed `temperature_pool_report.md`, which was generated
+with the bootstrap on), `p1b_test_arms.md` (the arms of the test run),
 `p1b_jevbench_test_soft.jsonl` and its run log (the live run with the soft
 constants), `p1b_jevbench_test_soft_T1.jsonl` (the recovered T = 1 arm), and the
 235's arms `p1b_235_T1_from_current.jsonl`, `p1b_235_soft.jsonl`,
@@ -2975,27 +2978,42 @@ can serve**, and the fallback makes it worse still.
 
 The hypothesis from §21's breakdown was that the letter readout's distribution over
 the ordinal levels is **flatter**, which pulls the expected level toward the middle
-and flatters the scorer's nMAE term.  **Measured, the opposite is true: the letter
-readout is SHARPER.**  The entropy of the reported distribution, the mass on its mode,
-and (for the score questions) the distance of the expected level from the gold:
+and flatters the scorer's nMAE term.  **Measured, it is not flatter - but the
+apparent sharpness over the whole sample is mostly the fallback.**  The entropy of
+the reported distribution, the mass on its mode, and (for the score questions) the
+distance of the expected level from the gold:
 
 | | the direct arm | the letter arm |
 |---|---:|---:|
-| the choice questions' entropy | 0.531 bits | **0.188 bits** |
-| the choice questions' mass on the mode | 0.866 | **0.950** |
-| the yes/no questions' entropy | 0.312 bits | **0.251 bits** |
-| the score questions' entropy | 0.816 bits | **0.705 bits** |
-| the score questions' mass on the mode | 0.756 | **0.791** |
-| the score questions' argmax accuracy | **47.9%** | 47.3% |
-| the score questions' nMAE (the expected level's distance to the gold) | **0.2384** | 0.2450 |
-| the score questions' SIGNED distance (the expected level - the gold) | **+0.1348** | +0.2738 |
+| the choice questions' entropy, all 294 items | 0.531 bits | 0.188 bits |
+| ... the 150 items the letter path served | 0.401 bits | 0.368 bits |
+| ... the 80 served items with a human distribution | 0.541 bits | 0.504 bits |
+| the choice questions' mass on the mode, all 294 | 0.866 | 0.950 |
+| ... the 150 served | 0.902 | 0.903 |
+| ... the 80 served with a human distribution | 0.860 | 0.862 |
+| the yes/no questions' entropy | 0.312 bits | 0.251 bits |
+| the score questions' entropy | 0.816 bits | 0.705 bits |
+| the score questions' mass on the mode | 0.756 | 0.791 |
+| the score questions' argmax accuracy | 47.9% | 47.3% |
+| the score questions' nMAE (the expected level's distance to the gold) | 0.2384 | 0.2450 |
+| the score questions' SIGNED distance (the expected level - the gold) | +0.1348 | +0.2738 |
 
-On the items with a human distribution the shape is the whole story: the **humans are
-uncertain** (the choice questions' human distributions carry 1.144 bits of entropy),
-the direct readout answers with 0.803 bits on the same items, and the letter readout
-with **0.310 bits** - it is twice as certain as the direct readout and far more
-certain than the humans.  That is what the calibration component measures, and it is
-why the letter readout's choice calibration is 44.9 against the direct arm's 68.3.
+**The 0.531 -> 0.188 drop over all 294 choice items is not the letter readout.**  144
+of those items have more options than there are letters, so the letter arm answers
+them from the decode path with a degenerate 1.0/0.0 distribution; that is the drop.
+Over the **150 it served** the entropy is **0.401 -> 0.368 bits** and the mass on the
+mode **0.902 -> 0.903**; over the **80 served items that carry a human distribution**
+it is **0.541 -> 0.504** bits and **0.860 -> 0.862**.  The letter readout is only
+marginally sharper where it works, not twice as sharp.
+
+On the items with a human distribution the shape is not the whole story: the
+**humans are uncertain** (the choice questions' human distributions carry 1.144 bits
+of entropy), the direct readout answers with 0.541 bits on the 80 it served, and the
+letter readout with **0.504** - not the 0.310 the all-130 figure showed, which
+included the 50 `go_emotions` items the letter arm cannot serve.  That is what the
+calibration component measures: over the 130 choice items with a human distribution
+it is 44.9 against 68.3, and even over the 539 items the letter arm served it is
+70.7 against 78.1.
 
 And on the score questions the OpenDecisions effect does not transfer: on that sample
 the letter readout's sharper distribution happened to centre better (the nMAE 0.0908
