@@ -249,11 +249,17 @@ a config the data does not have, or a count the split cannot fill, is an error r
 ```sh
 python tools/decision_policy/trie_costs.py --items <items.jsonl>    # the trie walk's cost per item
 python tools/decision_policy/trie_examples.py --items <items.jsonl>  # the colliding questions, as tokens
+python tools/decision_policy/letter_costs.py --items <items.jsonl>  # the letter readout's cost per item
 ```
 
 `trie_costs.py` uses the shipped code (`serve/logits_first_token.py`) and the server's own tokenizer, so the
 numbers are the ones the endpoint will pay: how many extra engine requests the trie walk needs for every item
 whose options share a first token.
+
+`letter_costs.py` does the same for the **letter readout** (`serve/systemone_letters.py`, the config's
+`"systemone": {"readout": "letters"}`): the letters are one token each and no two of them are the same token,
+so the options cannot collide and the walk is never needed - 0 extra engine requests per item. The comparison
+is in the companion doc's section 20.
 
 ## Files
 
@@ -277,6 +283,7 @@ whose options share a first token.
 | `retemperature.py` | source | re-scales a run's distributions: the paired comparison of two temperature settings out of one run. |
 | `temperature_arms.py` | source | every candidate arm of one run, with the distance to the human distribution and the official scorer's numbers. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
+| `letter_costs.py` | source | the letter readout's engine-request cost over a set. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |
 | `jevbench.py` | source | the jev-bench sample harness: one item per request, the human label distribution and the distance to it. |

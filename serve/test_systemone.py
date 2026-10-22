@@ -13,9 +13,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import logits_first_token as lft   # noqa: E402
 from serve import systemone as sysone  # noqa: E402
+from serve import systemone_letters as sl  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import (ByteTokenizer, MockEngine, Service, systemone_multi_mode,  # noqa: E402
-                          systemone_temperatures)
+                          systemone_readout_mode, systemone_temperatures)
 from serve.structured import StructuredOutputError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,19 @@ def count_requests(svc: Service) -> list:
         calls.append(list(ids))
         return original(ids, max_new, sampling, cancel, embeddings)
     svc.engine.generate = counting
+    return calls
+
+
+def count_logits(svc: Service) -> list:
+    """Wrap the mock engine's logits() so a test can count the engine's requests of
+    the fast path: the answer position's row, and the trie walk's extra rows."""
+    calls = []
+    original = svc.engine.logits
+
+    def counting(ids, k, max_new, cancel):
+        calls.append(list(ids))
+        return original(ids, k, max_new, cancel)
+    svc.engine.logits = counting
     return calls
 
 
@@ -506,6 +520,212 @@ class OptionDescriptions(unittest.TestCase):
     def test_an_option_without_a_description_is_never_matched(self):
         with self.assertRaises(StructuredOutputError):
             sysone.parse_answer_text("None", self.QUESTIONS)
+
+
+class ReadoutFlag(unittest.TestCase):
+    """The config's "systemone": {"readout": ...}: how the model's answer is read."""
+
+    def test_the_default_is_the_tokens(self):
+        self.assertEqual(systemone_readout_mode({}), "tokens")
+        self.assertEqual(systemone_readout_mode({"systemone": {"enabled": True}}), "tokens")
+        self.assertEqual(systemone_readout_mode({"systemone": None}), "tokens")
+
+    def test_the_two_readouts(self):
+        self.assertEqual(systemone_readout_mode({"systemone": {"readout": "tokens"}}), "tokens")
+        self.assertEqual(systemone_readout_mode({"systemone": {"readout": "letters"}}), "letters")
+
+    def test_an_unknown_readout_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_readout_mode({"systemone": {"readout": "letter"}})
+
+
+class LetterReadout(unittest.TestCase):
+    """The letter readout: the options are shown as A, B, C ... and the model answers
+    with the letter.
+
+    The letter is one token and no two letters are the same token, so the options
+    cannot collide and the trie walk is not needed.  The client never sees the
+    letter: the response is the shape the endpoint already has.
+    """
+
+    RAW = {"tier": {"type": "choice", "instructions": "Which plan?",
+                    "criteria": {"basic": "The free tier", "pro": "The paid pro plan"}},
+           "mood": {"type": "score", "instructions": "How happy?",
+                    "criteria": ["unhappy", "neutral", "happy"]},
+           "urgent": {"type": "noul", "instructions": "Urgency?",
+                      "criteria": {"true": "outage", "false": "chit-chat"}}}
+
+    @classmethod
+    def setUpClass(cls):
+        _, cls.QUESTIONS = sysone.validate_request({"state": "x", "questions": cls.RAW})
+
+    def test_the_prompt_letters_the_options(self):
+        prompt = sl.render_answer_prompt("STATE", "tier", self.QUESTIONS[0][1])
+        self.assertIn('A) basic ("The free tier")', prompt)
+        self.assertIn('B) pro ("The paid pro plan")', prompt)
+        self.assertIn("answer with exactly one of these letters: A, B", prompt)
+        self.assertIn('start your answer line with exactly "tier:"', prompt)
+
+    def test_the_noul_and_the_score_are_lettered_too(self):
+        noul = sl.render_answer_prompt("STATE", "urgent", self.QUESTIONS[2][1])
+        self.assertIn('A) yes means "outage"', noul)
+        self.assertIn('B) no means "chit-chat"', noul)
+        score = sl.render_answer_prompt("STATE", "mood", self.QUESTIONS[1][1])
+        self.assertIn("A) unhappy", score)
+        self.assertIn("B) neutral", score)
+        self.assertIn("C) happy", score)
+        self.assertIn("answer with exactly one of these letters: A, B, C", score)
+
+    def test_the_letter_maps_back_to_the_option(self):
+        tier = [("tier", self.QUESTIONS[0][1])]
+        self.assertEqual(sl.parse_answer_text("A", tier), {"tier": "basic"})
+        self.assertEqual(sl.parse_answer_text("B", tier), {"tier": "pro"})
+        self.assertEqual(sl.parse_answer_text("b", tier), {"tier": "pro"})
+        self.assertEqual(sl.parse_answer_text("B)", tier), {"tier": "pro"})
+        self.assertEqual(sl.parse_answers("tier: B\n", tier), {"tier": "pro"})
+
+    def test_the_score_letter_is_the_level_index(self):
+        mood = [("mood", self.QUESTIONS[1][1])]
+        self.assertEqual(sl.parse_answer_text("A", mood), {"mood": 0})
+        self.assertEqual(sl.parse_answer_text("C", mood), {"mood": 2})
+
+    def test_the_noul_letter_is_yes_or_no(self):
+        urgent = [("urgent", self.QUESTIONS[2][1])]
+        self.assertEqual(sl.parse_answer_text("A", urgent), {"urgent": True})
+        self.assertEqual(sl.parse_answer_text("B", urgent), {"urgent": False})
+
+    def test_a_rate_is_still_a_rate(self):
+        # the calibration items are answered with the rate the state gives, and the
+        # letter path does not lose that: the value is not a letter, so the direct
+        # path's own rule applies
+        urgent = [("urgent", self.QUESTIONS[2][1])]
+        self.assertEqual(sl.parse_answer_text("0.7", urgent), {"urgent": 0.7})
+
+    def test_a_word_is_not_a_letter(self):
+        # "no" is not the letter N, and "Apple" is not the letter A: a value that is
+        # not a letter is read by the direct path's own rules
+        tier = [("tier", self.QUESTIONS[0][1])]
+        with self.assertRaises(StructuredOutputError):
+            sl.parse_answer_text("Apple", tier)
+
+    def test_past_26_options_the_question_is_answered_by_name(self):
+        # there are 26 letters, so a question with more options than that has no
+        # letter for every option: it is shown and answered by name, the way the
+        # direct path shows it
+        criteria = {f"opt_{i}": None for i in range(27)}
+        _, questions = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": criteria}}})
+        prompt = sl.render_answer_prompt("STATE", "q", questions[0][1])
+        self.assertIn("- opt_0", prompt)
+        self.assertNotIn("A) opt_0", prompt)
+        self.assertEqual(sl.parse_answer_text("opt_5", questions), {"q": "opt_5"})
+        # and the letter path declines the question: there is no letter for every
+        # option, so the direct path answers it
+        self.assertIsNone(sl.readings(questions, {65: 2.0}, ByteTokenizer(), "q:", 3.0))
+
+    def test_the_letters_are_one_token_each(self):
+        # the byte tokenizer of the tests gives every letter its own id, so the
+        # letters cannot collide: that is why the trie walk is not needed
+        ids = sl.letter_token_ids(["A", "B", "C"], ByteTokenizer(), "q:")
+        flat = [i for v in ids.values() for i in v]
+        self.assertTrue(all(ids.values()))
+        self.assertEqual(len(set(flat)), len(flat))
+
+    def test_the_letter_path_takes_one_engine_request(self):
+        # the options share their first token ("rule_1" and "rule_2" both start with
+        # " rule"), so the direct path needs the trie walk; the letters cannot
+        # collide, so one engine request answers the question
+        svc = svc_with("q: A\n")
+        svc.systemone_readout = "letters"
+        svc.engine.logits_topk = {65: 2.0, 66: 1.0}
+        calls = count_logits(svc)
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"rule_1": None, "rule_2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(len(calls), 1)                     # one engine request, no walk
+        self.assertEqual(body["answers"]["q"]["choice"], "rule_1")
+        self.assertTrue(body["calibrated"])
+
+    def test_the_direct_path_needs_the_walk_for_the_same_options(self):
+        # the same options, read as their own tokens: the first token cannot tell
+        # them apart, so the walk asks the engine again
+        svc = svc_with()
+        tok = svc.tok
+        ids = lft.option_token_ids(["rule_1", "rule_2"], tok, "q:")
+        a, b = ids["rule_1"], ids["rule_2"]
+        shared = 0
+        while shared < len(a) and shared < len(b) and a[shared] == b[shared]:
+            shared += 1
+        self.assertGreater(shared, 0)
+        rows = [({a[i]: 3.0}, 3.0) for i in range(shared)]
+        rows.append(({a[shared]: 2.0, b[shared]: 1.0}, 3.0))
+        svc.engine.logits_rows = rows
+        calls = count_logits(svc)
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"rule_1": None, "rule_2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertGreater(len(calls), 1)                    # the walk's extra requests
+
+    def test_a_garbled_answer_falls_back_the_same_way(self):
+        # the model wrote something that is not an answer: the readings answer it,
+        # the forced choice with the confidence carrying the doubt - the same as the
+        # direct path
+        svc = svc_with("q: hmm\n")
+        svc.systemone_readout = "letters"
+        svc.engine.logits_topk = {65: 2.0, 66: 1.0, 90: 9.0}     # 90 is not a letter
+        svc.engine.logits_tokens = svc.tok.encode("q: hmm")
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"rule_1": None, "rule_2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q"]["choice"], "rule_1")
+        self.assertLess(body["answers"]["q"]["confidence"], 0.5)
+
+    def test_the_answer_is_in_the_scorer_s_format(self):
+        # the harness's own mapping (tools/decision_policy/opendecisions.py): the
+        # choice's probabilities are keyed by the option names, so the official
+        # scorer reads the letter arm exactly like the direct one
+        from tools.decision_policy.opendecisions import to_probs
+        svc = svc_with("q: A\n")
+        svc.systemone_readout = "letters"
+        svc.engine.logits_topk = {65: 3.0, 66: 1.0}
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"rule_1": None, "rule_2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        item = {"question": {"type": "choice"}, "labels": ["rule_1", "rule_2"]}
+        probs = to_probs(item, body["answers"]["q"])
+        self.assertEqual(sorted(probs), ["rule_1", "rule_2"])
+        self.assertAlmostEqual(sum(probs.values()), 1.0)
+
+    def test_the_temperature_scales_the_letter_arm_too(self):
+        # the letter arm and the token arm have to report the same thing: the
+        # temperature scales the closed distribution on both, or the comparison
+        # between the arms would be a comparison of the temperatures
+        def run(temperature):
+            svc = svc_with("q: A\n")
+            svc.systemone_readout = "letters"
+            svc.systemone_temperature = {"choice": temperature, "noul": 1.0, "score": 1.0}
+            svc.engine.logits_topk = {65: 3.0, 66: 0.0}
+            code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                             "criteria": {"rule_1": None, "rule_2": None}}}),
+                                        threading.Event())
+            self.assertEqual(code, 200)
+            return body["answers"]["q"]["probabilities"]
+        plain, sharp = run(1.0), run(0.5)
+        self.assertGreater(sharp["rule_1"], plain["rule_1"])      # a temperature below 1 sharpens
+        self.assertAlmostEqual(sum(plain.values()), 1.0)
+        self.assertAlmostEqual(sum(sharp.values()), 1.0)
+
+    def test_the_flag_off_keeps_the_direct_path(self):
+        svc = svc_with()
+        self.assertEqual(svc.systemone_readout, "tokens")
+        self.assertIs(svc._systemone_readout(), sysone)
+        svc.systemone_readout = "letters"
+        self.assertIs(svc._systemone_readout(), sl)
 
 
 if __name__ == "__main__":

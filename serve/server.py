@@ -3531,6 +3531,7 @@ class Service:
         self.systemone_diagnostics = False            # opt-in: "systemone": {"diagnostics": true} adds the alternative reading
         self.systemone_multi = "separate"            # "systemone": {"multi": "shared"} turns on the old shared prompt for several questions
         self.systemone_temperature = {"choice": 1.0, "noul": 1.0, "score": 1.0}   # the config's "systemone": {"temperature": ...}
+        self.systemone_readout = "tokens"            # "systemone": {"readout": "letters"} reads the answer as a letter
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4588,13 +4589,25 @@ class Service:
             return None, len(plan["walk"]), lft.trie_failure_reason(plan, rows)
         return {name: readings}, len(plan["walk"]), None
 
+    def _systemone_readout(self):
+        """The module that reads the model's answer: the options' own tokens (the
+        default) or the letters.  Both have the same shape - the system message, the
+        prompt, the readings, the parser - so the caller cannot read one as the other
+        by accident."""
+        if getattr(self, "systemone_readout", "tokens") == "letters":
+            from serve import systemone_letters
+            return systemone_letters
+        from serve import systemone
+        return systemone
+
     def _systemone_classic(self, state_text, questions, model, cancel, reason=None):
         """The decode path: one prompt answers every question and the reply is the
         `name: answer` lines.  It is the fallback for a single question too, when the
         model wrote nothing at the answer position."""
         from serve import systemone as sysone
-        messages = [{"role": "system", "content": sysone.SYSTEM},
-                    {"role": "user", "content": sysone.render_prompt(state_text, questions)}]
+        readout = self._systemone_readout()
+        messages = [{"role": "system", "content": readout.system_message(questions)},
+                    {"role": "user", "content": readout.render_prompt(state_text, questions)}]
         max_new = min(sysone.MAX_TOKENS_PER_QUESTION * len(questions), sysone.MAX_TOKENS_CAP)
         self.load()
         ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
@@ -4606,7 +4619,7 @@ class Service:
         if finish != "stop":
             raise StructuredOutputError(f"/v1/systemone: the answer was cut off ({finish}); retry")
         text = collected["choices"][0]["message"]["content"] or ""
-        answers = sysone.parse_answers(text, questions)
+        answers = readout.parse_answers(text, questions)
         body = sysone.build_response(questions, answers, model, collected.get("usage") or {},
                                      collected.get("timings"))
         if reason and getattr(self, "systemone_diagnostics", False):
@@ -4630,14 +4643,18 @@ class Service:
         from serve import systemone as sysone
         from serve import logits_first_token as lft
         name, q = questions[0]
+        # The readout: the model's answer is read as the option's own tokens (the
+        # default) or as a letter (the config's "systemone": {"readout": "letters"}).
+        # Both have the same shape, so the rest of the path does not change.
+        readout = self._systemone_readout()
         # The answer line's prefix, prefilling the ASSISTANT's turn.  It ends at the
         # colon and NOT at a space: the answer's own space is part of the first token
         # the model writes (the merged " no"), so a prompt ending in a lone space
         # token after the colon is off-distribution - the model then wants to end the
         # turn (measured: <|im_end|> was the top token at the answer position).
         prefix = f"{name}:"
-        messages = [{"role": "system", "content": sysone.SYSTEM},
-                    {"role": "user", "content": sysone.render_answer_prompt(state_text, name, q)}]
+        messages = [{"role": "system", "content": readout.system_message(questions)},
+                    {"role": "user", "content": readout.render_answer_prompt(state_text, name, q)}]
         self.load()
         ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
                                               sysone.MAX_TOKENS_PER_QUESTION, force=prefix,
@@ -4672,15 +4689,17 @@ class Service:
                 # request taking the engine's turn in between would take that cache
                 # away, and the walk would run against a context that is not this
                 # question's.
-                readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz,
-                                                 temperature=self._decision_temperature(q["type"])) if topk else None
+                readings = readout.readings(questions, topk, self.tok, prefix, logz,
+                                             temperature=self._decision_temperature(q["type"])) if topk else None
                 walk = 0
                 trie_reason = None
-                if readings is None and topk:
+                if readings is None and topk and readout.TRIE:
                     # The options share their first token ("rule_1" and "rule_2" both
                     # start with " rule"), so the first-token row cannot separate them.
                     # The trie walk can: the options' token sequences form a trie, and
                     # the row at the node where they are told apart separates them.
+                    # The letter readout never needs it: distinct letters are distinct
+                    # tokens, so they cannot collide.
                     readings, walk, trie_reason = self._systemone_trie(questions, topk, logz,
                                                                         ids, prefix, cancel,
                                                                         fifo_held=True,
@@ -4743,11 +4762,11 @@ class Service:
         # The model's own text: the tokens THIS request generated are the answer, so no
         # second request is needed.  Only a request the engine FINISHED has an answer
         # in its tokens.
-        reason = lft.fallback_reason(questions, topk or {}, self.tok, prefix, logz, trie_reason)
+        reason = readout.fallback_reason(questions, topk or {}, self.tok, prefix, logz, trie_reason)
         text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if (tokens and tokens_are_the_answer) else ""
         if text.strip():
             try:
-                answers = sysone.parse_answer_text(text, questions)
+                answers = readout.parse_answer_text(text, questions)
             except StructuredOutputError:
                 # The model wrote something that is not an answer.  If the readings
                 # exist, they are the better answer: the forced choice, with the
@@ -4945,13 +4964,15 @@ class Service:
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             # the decision endpoint: is it on, does it report the alternative reading,
-            # does a request with several questions share one prompt, and is the
-            # reported distribution scaled by a temperature
+            # does a request with several questions share one prompt, is the reported
+            # distribution scaled by a temperature, and is the answer read as a letter
+            # or as the options' own tokens
             "systemone": {"enabled": bool(self.systemone_enabled),
                            "diagnostics": bool(self.systemone_diagnostics),
                            "multi": self.systemone_multi,
                            "temperature": {k: v for k, v in
-                                           (getattr(self, "systemone_temperature", None) or {}).items()}},
+                                           (getattr(self, "systemone_temperature", None) or {}).items()},
+                           "readout": self.systemone_readout},
             "activity": {"requests": totals["requests"] + running,
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -8359,6 +8380,27 @@ def systemone_temperatures(cfg: dict) -> dict[str, float]:
     return out
 
 
+def systemone_readout_mode(cfg: dict) -> str:
+    """The config's "systemone": {"readout": ...}: how the model's answer is read.
+
+    "tokens" (the default): the options are shown by their own names and the model
+    answers with the option's own tokens.  Two options that share their first token
+    ("rule_1" and "rule_2" both start with " rule") then need the trie walk, which
+    costs extra engine requests.
+
+    "letters": the options are shown as A, B, C ... and the model answers with the
+    letter.  The letter is one token and no two letters are the same token, so the
+    options cannot collide and the trie walk is not needed.
+    """
+    block = cfg.get("systemone")
+    mode = block.get("readout") if isinstance(block, dict) else None
+    if mode is None:
+        return "tokens"
+    if mode not in ("tokens", "letters"):
+        raise ValueError(f'"systemone": {{"readout": ...}} must be "tokens" or "letters", not {mode!r}')
+    return mode
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -8741,6 +8783,14 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         print("[strata] decisions: the reported distributions are scaled by a temperature ("
               + ", ".join(f"{k} {v}" for k, v in _scaled.items())
               + ') ("systemone": {"temperature": {...}} in the config)', flush=True)
+    # "tokens" (the default): the options are shown by name and the model answers
+    # with the option's own tokens.  "letters": the options are shown as A, B, C ...
+    # and the model answers with the letter - one token, no collision, so no trie
+    # walk.
+    try:
+        svc.systemone_readout = systemone_readout_mode(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
     if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
         print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
               flush=True)
@@ -8750,6 +8800,9 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     if svc.systemone_multi == "shared":
         print("[strata] decisions: several questions are answered by one shared prompt "
               "(\"systemone\": {\"multi\": \"shared\"}); their answers carry no probability", flush=True)
+    if svc.systemone_readout == "letters":
+        print("[strata] decisions: the answers are read as letters (\"systemone\": {\"readout\": \"letters\"})",
+              flush=True)
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to
