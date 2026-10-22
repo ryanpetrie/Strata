@@ -2521,6 +2521,13 @@ arm: Capability **+8.84 [+7.14, +10.56]** (100% > 0), Calibration **+20.20 [+17.
 +23.31]** (100% > 0), and Intelligence **-2.51 [-3.46, -1.52]** (0% > 0) - the
 flattening moves the score questions' expected level, and the scorer reads it.
 
+These intervals are the committed `tools/decision_policy/temperature_pool_report.md`
+(the fit with the bootstrap on).  The run-directory `p1b_fit.json` and `p1b_fit.md`
+were written with the bootstrap **off**: `paired_bootstrap_out_of_fold` is `{}` and
+the out-of-bag table has no rows.  The fit is otherwise the same - the constants and
+the out-of-fold ECEs agree - so the committed report is the copy with the numbers
+this section quotes.
+
 ### 20.5 The test sample, with the soft constants live
 
 **THE RUN (c), 2026-10-22.**  A fresh engine, the launch config with the **soft**
@@ -3026,14 +3033,14 @@ terms.
 
 | | the direct arm | the letter arm |
 |---|---:|---:|
-| engine requests for the 683 items | 683 + **2171** (the trie walk: 163 colliding items, 5 to 30 extra each) | **683** (one per item; 539 with a real distribution, 144 with a degenerate one) |
+| engine requests for the 683 items | 683 + **2171** (the trie walk: 163 colliding items, 1 to 30 extra each) | **683** (one per item; 539 with a real distribution, 144 with a degenerate one) |
 | latency median / p95 | 3137 / 9419 ms | 3293 / 6619 ms |
 | the paired median on the 539 served items | | **+209 ms** (the letter arm is slower) |
 | the paired median on the 144 fallback items | | **-1058 ms** (the letter arm is faster) |
 
 The letter readout makes **fewer engine requests** (683 against 2854: the direct path's
 trie walk costs 2171 extra rows on the 163 items whose options share their first
-token, up to 30 for one clinc150 item - a static count from the shipped code with the
+token, up to 30 for 24 clinc150 items - a static count from the shipped code with the
 server's own tokenizer, `tools/decision_policy/trie_costs.py`) and it has a better
 p95, but it is slower on the median of the items it serves.  The 144 fallbacks cost
 no second request: the model's own text came with the same turn.
