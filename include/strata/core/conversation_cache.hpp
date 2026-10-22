@@ -198,6 +198,13 @@ int64_t conversation_prefix(const ConversationCheckpoint& c, const std::vector<T
     return (int64_t) n;
 }
 
+/// The `park=0` request key (`src/program/generate.cpp`): may the session the engine holds be parked when the next
+/// request replaces it?  Parking is a switch-time decision, so the answer belongs to the request that READ the
+/// conversation, not to the one that parks it.  `park_key` is that request's key (true when absent).  A request that
+/// TOOK a parked conversation (`took_parked`) must put it back: the key suppresses only the park of a conversation
+/// read from scratch, never the re-park of one the cache served.
+inline bool conversation_park_allowed(bool park_key, bool took_parked) { return park_key || took_parked; }
+
 class ConversationCache {
 public:
     struct Match {

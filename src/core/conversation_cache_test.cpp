@@ -558,5 +558,18 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {   // park=0 (src/program/generate.cpp): a conversation read from scratch is not parked; one the cache served is
+        // parked again, whatever its request asked - the rule the engine's live_parkable carries between requests
+        check(conversation_park_allowed(true, false), "a request without park=0 leaves its conversation parkable");
+        check(!conversation_park_allowed(false, false), "park=0 suppresses the park of a conversation read from scratch");
+        check(conversation_park_allowed(false, true), "a conversation taken from the cache goes back, park=0 or not");
+        ConversationCache cache(1 << 20, 2);
+        check(cache.put(image({1,2,3})), "the chat is parked");
+        if (conversation_park_allowed(false, false)) cache.put(image({9,9,9}));
+        check(cache.size() == 1 && cache.best(std::vector<int32_t>{1,2,3,4}, {}, true).tokens == 3,
+              "a conversation that said park=0 takes no slot: the chat is still the one a new request restores");
+        if (conversation_park_allowed(false, true)) cache.put(image({7,7,7}));
+        check(cache.size() == 2, "a conversation taken from the cache is parked again");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

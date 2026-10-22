@@ -310,6 +310,13 @@ ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 
 # ------------------------------------------------------------------------------------------------ engines
+def decision_park_off() -> bool:
+    """`STRATA_DECISION_PARK=1`: the decision path asks the engine not to park its conversations (`park=0` on the
+    LOGITS line).  The engine key is opt-in per request and absent means today's line, byte for byte; this switch is
+    what the first measurement turns on (docs/research/conversation_cache_oneshot.md)."""
+    return os.environ.get("STRATA_DECISION_PARK", "0") not in ("", "0")
+
+
 class Engine(Protocol):
     max_context: int
     def generate(self, ids: list[int], max_new: int, sampling: dict, cancel: threading.Event) -> Iterator[int]: ...
@@ -350,10 +357,13 @@ class MockEngine:
                 time.sleep(self.delay)
             yield t
 
-    def logits(self, ids, k, max_new, cancel):
+    def logits(self, ids, k, max_new, cancel, park=True):
         """The scripted top-k logits and the generated tokens (tests): set
         `self.logits_topk = {token_id: value}`, optionally `self.logits_logz` (the
         normalizer) and `self.logits_tokens` (the ids the request generated).
+
+        `park=False` is the decision path's `park=0`: the engine key there, so a
+        scripted engine answers as before (the mock sees no line at all).
 
         `self.logits_rows` scripts the ROWS of a chain-rule walk: a list of
         (top-k, normalizer) pairs, one per request, the last one repeating.  The
@@ -2142,12 +2152,16 @@ class StrataEngine:
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
 
-    def logits(self, ids, k, max_new, cancel):
+    def logits(self, ids, k, max_new, cancel, park=True):
         """Runs the request for `ids` and returns (topk, logz, tokens):
         the top-k logits at the answer position as {token_id: logit_value}, the
         full-vocabulary log-sum-exp - the normalizer that turns a logit into the
         model's own probability (P = exp(logit - logz)) - and the token ids the
         request generated.
+
+        `park=False` adds the engine's `park=0` key: the conversation this request
+        reads is not parked for the next one (the decision path's short questions).
+        True (the default) writes the line exactly as before.
 
         The engine answers `Z <logz>`, `L <token_id> <value>` and `T <token_id>`
         lines, then DONE.  It is an ordinary GEN request that also reports the answer
@@ -2165,8 +2179,9 @@ class StrataEngine:
             # the distribution and the answer.  The three fields are the engine's
             # protocol (src/program/generate.cpp): a missing max_new is an ERR, and
             # the request never runs - the engine answers nothing and the caller
-            # falls back to the decode path.
-            self.proc.stdin.write(f"LOGITS {int(k)} {int(max_new)} "
+            # falls back to the decode path.  `park=0`, when asked for, is a request
+            # key beside max_new (the engine's keys come before the ids).
+            self.proc.stdin.write(f"LOGITS {int(k)} {int(max_new)}{'' if park else ' park=0'} "
                                   f"{','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
         except OSError:
@@ -4508,6 +4523,16 @@ class Service:
         return 200, out, ("fast" if set(paths) == {"fast"} else
                            "decode" if set(paths) == {"decode"} else "mixed")
 
+    def _engine_logits(self, ids, k, max_new, cancel):
+        """One LOGITS request on the engine, for the decision path.
+
+        `STRATA_DECISION_PARK=1` adds the engine's `park=0`: the conversation this
+        request reads is not parked for the next one.  Off (the default), the call is
+        today's, argument for argument, and so is the line the engine sees."""
+        if decision_park_off():
+            return self.engine.logits(ids, k, max_new, cancel, park=False)
+        return self.engine.logits(ids, k, max_new, cancel)
+
     def _logits_row(self, ids, cancel):
         """-> (top-k, normalizer) at the position after the last of `ids`, or
         (None, None) when the engine did not answer.
@@ -4518,7 +4543,7 @@ class Service:
         so the extra request reads the shared tokens, not the prompt."""
         from serve import logits_first_token as lft
         try:
-            topk, logz, _ = self.engine.logits(ids, lft.LOGITS_TOP_K, 1, cancel)
+            topk, logz, _ = self._engine_logits(ids, lft.LOGITS_TOP_K, 1, cancel)
         except Exception:
             return None, None
         if not topk:
@@ -4687,8 +4712,8 @@ class Service:
             # The decision's own turn: it is marked in the server's live state, so the
             # Monitor shows the engine working on a decision instead of saying "Idle".
             with self._decision_turn(deadline, cancel, len(ids), max_new):
-                topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
-                                                        sysone.MAX_TOKENS_PER_QUESTION, cancel)
+                topk, logz, tokens = self._engine_logits(ids, lft.LOGITS_TOP_K,
+                                                         sysone.MAX_TOKENS_PER_QUESTION, cancel)
                 segments.append(self._engine_segment())
                 if mark is not None:
                     # the tokens the conversation cache held for this question's turn
