@@ -460,9 +460,19 @@ Three further checks, all offline from the stored runs:
 **And it costs nothing on OpenDecisions**: the Capability is **80.7**, the same as a
 base re-run's, and **4 of the 235 picks move** (2 noul, 2 score), net zero on the
 noul. That is what a calibration fix should look like - the answers stay, the
-confidence gets honest. The one gap left is
-reproducibility: one run per arm, and the pre-registered rule's guards are single
-runs. **Not applied**: the branch's default is `base`, and enabling N4 is one config
+confidence gets honest.
+
+**And it reproduces on a fresh engine state** (2026-10-22, the 100-item check that was
+this item's one gap): a deterministic 100-item subset of the pool's 250
+human-distribution noul items, base and N4 on a fresh engine each arm: the mean TVD
+against the humans falls **0.3036 -> 0.2416**, a paired change of **-0.0620
+[-0.0827, -0.0423]** against the full design set's **-0.0687 [-0.0859, -0.0522]** -
+same sign, 90% of the size, overlapping interval, the same mechanism (the level moves,
+the ranking does not: AUC +0.0010). Eight answers move, **seven toward the gold**; the
+bias +0.292 -> +0.222; the gold answers 69 -> 75 of 100. Recorded in
+`docs/research/n4_repro_100.md`.
+
+**Not applied**: the branch's default is `base`, and enabling N4 is one config
 key (`"systemone": {"prompt": {"noul": "criteria-first"}}`) the operator adds.
 
 ---
@@ -536,32 +546,59 @@ slot count — not VRAM — is the binding constraint, and the "4 slots ≈ 484 
 the 1,024 MiB threshold" note under "Maybe / someday" should be re-checked for that
 framing.
 
-**The measurement** (fresh engine each arm, three runs per arm, alternating): four
-chat turns to over 2k tokens, then 20 short decisions with fresh state text, then
-chat turn five. **Before:** the fifth turn's reuse `M5 = 0`, `evictions ≥ 18`.
-**After:** `M5 ≥ 0.9 × N5`, `evictions = 0`, turn five from 5-30 s to ~0.2 s. Plus:
-the decision median within +0.2 s and p95 within +0.4 s; the 235-item sample at
-235/235 with identical answers and Capability inside the **1.8**-point spread, three
-passes per arm (~80 min for both arms). **Not worth it if** the before run's `M5`
-is already 0 for another reason, or `M5` does not rise, or the decision latency
-exceeds the margin.
+**Status: MEASURED (2026-10-22) and the fix works.** Built (CUDA; the first build was
+`CMAKE_CUDA_ARCHITECTURES=75` and its sm_75 SASS **died on the 4090** with
+`dequant launch: unspecified launch failure` — rebuilt for **89**), and measured with
+three runs an arm, a fresh engine each, alternating:
+
+| run | `park` | chat 5: `N = M reused + K read` | reuse | evictions | parked | `skip parking (park=0)` |
+|---|---|---|---:|---:|---:|---:|
+| A1 | off | 7,467 = **0** + 7,467 | 0.0% | **19** | 2 | 0 |
+| A2 | off | 7,477 = **0** + 7,477 | 0.0% | **19** | 2 | 0 |
+| A3 | off | 7,458 = **0** + 7,458 | 0.0% | **19** | 2 | 0 |
+| B1 | on | 7,453 = **7,423** + 30 | **99.6%** | **0** | 1 | 25 |
+| B2 | on | 7,459 = **7,429** + 30 | **99.6%** | **0** | 1 | 25 |
+| B3 | on | 7,461 = **7,430** + 31 | **99.6%** | **0** | 1 | 25 |
+
+**The walk's reuse is intact in both arms** — its steps read
+`1,877 = 1,867 reused + 10` and `1,879 = 1,878 reused + 1` (99.5% / 99.9%) — so the
+fix does not break the trie walk. All 25 requests answered in every run. The 235,
+one run per arm: **79.8** (before) and **78.3** (after), both 235/235 on the fast
+path, inside the 1.8-point spread (2 and 6 answers moved against the stored arm).
+
+**The plan's mechanism sentence was wrong, and the measurement says so.** A walk
+step does **not** continue the live session: it resumes a checkpoint 9-10 tokens back
+and therefore calls `park_current` on the base request's conversation too — which is
+why the key had to go on the steps as well, and why the 25 skips are 20 decision
+switches plus 5 walk steps. The key on the steps is still required and works; the
+plan's explanation of *why* was not.
+
+**Two forced departures from the recipe**, both recorded: (i) the config copies set
+`--resident-budget-gib 20` instead of 36, because with 36 plus the user's other
+session (9.6 GB) the host had **261 MiB** free and the engine refused **every** park
+(`skip parking (physical RAM admission; need 671 MiB plus 2560 MiB floor)`) — arm A
+could not have parked at all; (ii) the 20 decisions were 1,815-1,881 tokens, not
+under 500, because the shipping `--conversation-cache-min-tokens 1024` already skips
+short decisions, so the parked traffic at the shipping setting is the over-1k kind.
 
 **Order of work:** (1) the plan (done); (2) the config stopgap, which needs one
-restart to take effect and is the user's call; (3) the `park=0` key (a **CUDA and
-HIP** build — the same sources); (4) the server sends it, behind
-`STRATA_DECISION_PARK`; (5) the measurement; (6) make it the default and set the
-minimum-length threshold back to 0.
+restart to take effect and is the user's call; (3) the `park=0` key (done, CUDA
+built; **HIP not built** — no ROCm on this machine); (4) the server sends it, behind
+`STRATA_DECISION_PARK` (done); (5) the measurement (done, above); (6) **not done:**
+make it the default, and set the minimum-length threshold back to 0. That needs the
+engine rebuilt from the cache branch and the user's OK.
 
-**Exit criterion:** with the fix, a chat conversation survives a burst of decision
-requests — the engine's own `prompt N tokens = M reused + K read` line shows the
-chat's next turn reusing its prefix (M is most of N) where it now re-reads it
-(M = 0) — and the decision path's latency does not regress by more than the margin
-the plan states, with the fast-path rate still 235/235 on the sample.
+**Exit criterion: MET** — the chat's fifth turn reuses 99.6% of its prefix with the
+key on (0% with it off), the evictions are 0 (19), the walk's reuse is intact, and
+the 235 is 235/235 on the fast path inside the spread. The latency half was **not
+measured** (the card was shared, so a latency number would be meaningless) and is not
+claimed.
 
-**Risks:** an engine change means a build (CUDA; HIP/SYCL if the file is shared)
-and a GPU measurement slot, and the user must free the engine for it. The cache's
-`reused_kv_bytes=0` in the log is unexplained and the plan must say what it means
-before anything is changed.
+**Risks, updated:** an engine change means a build and a GPU slot; the CUDA build
+must be for the card's own architecture (sm_89 here — sm_75 builds and then dies at
+run time); HIP cannot be built here. The `reused_kv_bytes=0` question is answered in
+the companion doc §25 (it is the K/V a restored conversation already held, not how
+much of the cache a snapshot reuses).
 
 ---
 
@@ -854,7 +891,9 @@ decisive ones, which is why 1.1b and 1.5 are built that way.
 | 1.3 | The letter readout ships | Wins on two of three without losing the other | **Does not ship.** Met on OpenDecisions (82.7 vs 79.3, 0 extra requests); loses on jev-bench (48.3 vs 55.1). Opt-in flag stays |
 | 1.4 | The noul's TVD to the human distribution | Lower than **0.3844** (the shipping T = 1 arm; not 0.3897, which was the failed T = 0.67 arm) | **0.1234 out-of-sample** on the jev-bench test — and the same shift takes the 235 from 78.9 to 41.5 (wrong in sign there). **No constant ships** |
 | 1.4b | The score's TVD / the 235's score competence | Per-config location on `k/(K−1)`; TVD down and competence not down | not run |
-| 1.5 | A prompt variant ships | The pre-registered rule's (a)-(f) | **N4 `criteria-first` clears all six** (TVD −0.0687, AUC −0.0013, 2 items on half B, 235 = a base re-run, jev noul −0.0623). Not applied; one config key away |
+| 1.5 | A prompt variant ships | The pre-registered rule's (a)-(f) | **N4 `criteria-first` clears all six** (TVD -0.0687, AUC -0.0013, 2 items on half B, 235 = a base re-run, jev noul -0.0623), and **reproduces** at -0.0620 [-0.0827, -0.0423] on a fresh-engine 100-item run. Not applied; one config key away |
+| Cache | A chat survives a decision burst; the walk's reuse intact | `M5 ≥ 0.9 × N5`, `evictions = 0` for the fix; `M5 = 0`, `evictions ≥ 18` without | **MET**: 99.6% reuse (0%), 0 evictions (19), the walk 99.5%/99.9% intact, the 235 235/235. Not the default yet |
+| Cache | The decision path's latency | No regression beyond the margin | **not measured** (shared card); not claimed |
 | 2.3 | Capability | Beat 79.8; stretch toward 84 | not run |
 | 2.3b | Capability | Beat the self-distilled adapter (2.3) | not run |
 | 2.3 | Fast-path rate | Stay at 99%+ (no regression) | 235/235 today |
