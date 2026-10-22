@@ -138,6 +138,13 @@ class TheServersFlags(unittest.TestCase):
         self.assertIs(block["enabled"], False)
         self.assertIs(block["diagnostics"], False)
         self.assertEqual(block["multi"], "separate")
+        # the temperatures the endpoint is applying: 1.0 is "no temperature"
+        self.assertEqual(block["temperature"], {"choice": 1.0, "noul": 1.0, "score": 1.0})
+
+    def test_status_says_the_temperature(self):
+        self.svc.systemone_temperature = {"choice": 0.62, "noul": 0.67, "score": 0.77}
+        block = self.get("/v1/status")["systemone"]
+        self.assertEqual(block["temperature"], {"choice": 0.62, "noul": 0.67, "score": 0.77})
 
     def test_status_says_the_diagnostics_are_on(self):
         self.svc.systemone_enabled = True

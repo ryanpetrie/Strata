@@ -3530,6 +3530,7 @@ class Service:
         self.systemone_enabled = False                # opt-in: the config's "systemone": {"enabled": true} turns on POST /v1/systemone
         self.systemone_diagnostics = False            # opt-in: "systemone": {"diagnostics": true} adds the alternative reading
         self.systemone_multi = "separate"            # "systemone": {"multi": "shared"} turns on the old shared prompt for several questions
+        self.systemone_temperature = {"choice": 1.0, "noul": 1.0, "score": 1.0}   # the config's "systemone": {"temperature": ...}
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4347,6 +4348,21 @@ class Service:
         self._decision_bookkeeping(body, mark, "stop", path=path)
         return code, body
 
+    def _decision_temperature(self, qtype: str) -> float:
+        """The temperature for this question type: the config's
+        "systemone": {"temperature": {"choice": T, "noul": T, "score": T}}.
+
+        1.0 means "no temperature", and that is the default: the reported numbers are
+        then exactly the ones the endpoint reported before the feature existed.  The
+        temperature scales the closed distribution (the options renormalized over
+        themselves); the pick cannot change, because the map is monotone.
+        """
+        temps = getattr(self, "systemone_temperature", None) or {}
+        try:
+            return float(temps.get(qtype, 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
     def _decision_request_id(self) -> str:
         """The id of the request in flight: the API request monitor's own row when there
         is one (so both views name the same request), else a fresh one."""
@@ -4566,7 +4582,8 @@ class Service:
             return None, len(plan["walk"]), "the trie walk failed"
         if len(rows) != len(plan["walk"]) + 1:
             return None, len(rows) - 1, "the trie walk did not finish"
-        readings = lft.trie_readings(q, plan, rows)
+        readings = lft.trie_readings(q, plan, rows,
+                                     temperature=self._decision_temperature(q["type"]))
         if readings is None:
             return None, len(plan["walk"]), lft.trie_failure_reason(plan, rows)
         return {name: readings}, len(plan["walk"]), None
@@ -4655,7 +4672,8 @@ class Service:
                 # request taking the engine's turn in between would take that cache
                 # away, and the walk would run against a context that is not this
                 # question's.
-                readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz) if topk else None
+                readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz,
+                                                 temperature=self._decision_temperature(q["type"])) if topk else None
                 walk = 0
                 trie_reason = None
                 if readings is None and topk:
@@ -4927,10 +4945,13 @@ class Service:
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             # the decision endpoint: is it on, does it report the alternative reading,
-            # and does a request with several questions share one prompt
+            # does a request with several questions share one prompt, and is the
+            # reported distribution scaled by a temperature
             "systemone": {"enabled": bool(self.systemone_enabled),
                            "diagnostics": bool(self.systemone_diagnostics),
-                           "multi": self.systemone_multi},
+                           "multi": self.systemone_multi,
+                           "temperature": {k: v for k, v in
+                                           (getattr(self, "systemone_temperature", None) or {}).items()}},
             "activity": {"requests": totals["requests"] + running,
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -8304,6 +8325,40 @@ def systemone_multi_mode(cfg: dict) -> str:
     return mode
 
 
+def systemone_temperatures(cfg: dict) -> dict[str, float]:
+    """The config's "systemone": {"temperature": {"choice": T, "noul": T, "score": T}}.
+
+    One temperature per question type.  1.0 means "no temperature": the default, and the
+    path that stays byte-identical to the release before the feature.  A temperature
+    below 1 sharpens the reported distribution, one above 1 flattens it; the PICK never
+    changes (the map is monotone).
+
+    An invalid value is an error, not a silent default: a typo in a config must not
+    quietly change what the endpoint reports.
+    """
+    out = {t: 1.0 for t in ("choice", "noul", "score")}
+    block = cfg.get("systemone")
+    temps = block.get("temperature") if isinstance(block, dict) else None
+    if temps is None:
+        return out
+    if not isinstance(temps, dict):
+        raise ValueError('"systemone": {"temperature": ...} must be an object with one number '
+                         "per question type (choice, noul, score)")
+    for key, value in temps.items():
+        if key not in out:
+            raise ValueError(f'"systemone": {{"temperature": ...}} has an unknown question type '
+                             f"{key!r}: use choice, noul or score")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'"systemone": {{"temperature": {key!r}: ...}} must be a number, '
+                             f"not {value!r}")
+        t = float(value)
+        if not math.isfinite(t) or t <= 0.0:
+            raise ValueError(f'"systemone": {{"temperature": {key!r}: ...}} must be a number '
+                             f"above 0, not {value!r}")
+        out[key] = t
+    return out
+
+
 def with_component_engine(cfg: dict) -> dict:
     """A run config that names "component:strata-engine" gets the engine package for this PC: the path in `exe`, and
     the package's own folder first on the library path (the GPU runtime libraries ship beside the binary)."""
@@ -8677,6 +8732,15 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         svc.systemone_multi = systemone_multi_mode(cfg)
     except ValueError as e:
         raise SystemExit(f"[strata] config {e}")
+    try:
+        svc.systemone_temperature = systemone_temperatures(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    _scaled = {k: v for k, v in svc.systemone_temperature.items() if v != 1.0}
+    if _scaled:
+        print("[strata] decisions: the reported distributions are scaled by a temperature ("
+              + ", ".join(f"{k} {v}" for k, v in _scaled.items())
+              + ') ("systemone": {"temperature": {...}} in the config)', flush=True)
     if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
         print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
               flush=True)

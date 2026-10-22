@@ -648,6 +648,220 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertFalse(body["calibrated"])
 
 
+class Temperature(unittest.TestCase):
+    """The per-type temperature: the distribution over the options is scaled, the pick
+    is not.
+
+    The temperature divides the logits before the softmax, so the closed reading (the
+    options renormalized over themselves) becomes normalize(closed ** (1/T)).  That
+    identity is exact, which is why a temperature fitted offline on a stored run log
+    predicts what the endpoint reports.
+    """
+
+    def setUp(self):
+        self.tok = Tok()
+        _, self.qs = sysone.validate_request(req())
+        _, self.collide = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"rule_1": None, "rule_2": None}}}})
+
+    def _logits(self, values, prefix=PREFIX):
+        out = {}
+        for opt, v in values.items():
+            out[lft.first_token_ids([opt], self.tok, prefix)[opt]] = v
+        return out
+
+    def _trie_rows(self):
+        plan = lft.trie_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        ids = plan["tokens"]
+        rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}, 3.0)}
+        return plan, rows
+
+    # (a) the default is the path before the feature
+    def test_the_default_changes_nothing(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        plain = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)
+        scaled = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0, temperature=1.0)
+        self.assertEqual(plain["q"], scaled["q"])
+        self.assertNotIn("temperature", plain["q"])
+        # the same for the trie walk
+        plan, rows = self._trie_rows()
+        self.assertEqual(lft.trie_readings(self.collide[0][1], plan, rows),
+                         lft.trie_readings(self.collide[0][1], plan, rows, temperature=1.0))
+        # and the response is the same
+        self.assertEqual(lft.reading_response(plain["q"]),
+                         lft.reading_response(scaled["q"]))
+
+    # (b) the closed reading is exactly normalize(closed ** (1/T))
+    def test_the_closed_reading_is_the_scaled_one(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        plain = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)["q"]
+        for t in (0.5, 2.0, 3.7):
+            scaled = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0,
+                                           temperature=t)["q"]
+            weights = {o: plain["closed"][o] ** (1.0 / t) for o in plain["closed"]}
+            total = sum(weights.values())
+            for o in plain["closed"]:
+                self.assertAlmostEqual(scaled["closed"][o], weights[o] / total, places=12)
+            self.assertAlmostEqual(sum(scaled["closed"].values()), 1.0, places=12)
+
+    def test_the_trie_path_scales_the_closed_reading_too(self):
+        plan, rows = self._trie_rows()
+        plain = lft.trie_readings(self.collide[0][1], plan, rows)
+        scaled = lft.trie_readings(self.collide[0][1], plan, rows, temperature=2.0)
+        weights = {o: plain["closed"][o] ** 0.5 for o in plain["closed"]}
+        total = sum(weights.values())
+        for o in plain["closed"]:
+            self.assertAlmostEqual(scaled["closed"][o], weights[o] / total, places=12)
+        self.assertAlmostEqual(sum(scaled["closed"].values()), 1.0, places=12)
+
+    # (g) the identity the offline fit relies on
+    def test_the_logits_divided_by_T_are_the_closed_reading_at_T(self):
+        # dividing the raw logits by T at the softmax site gives exactly
+        # normalize(closed_1 ** (1/T)) - that is why the fit can be made offline
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        ids = lft.first_token_ids(["a", "b"], self.tok, PREFIX)
+        for t in (0.5, 2.0, 3.7):
+            readings = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, temperature=t)
+            scaled = [logits[ids[o]] / t for o in ("a", "b")]
+            m = max(scaled)
+            exps = [math.exp(v - m) for v in scaled]
+            s = sum(exps)
+            for i, o in enumerate(("a", "b")):
+                self.assertAlmostEqual(readings["q"]["closed"][o], exps[i] / s, places=12)
+
+    # (c) the pick does not change
+    def test_the_pick_does_not_change(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        plain = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)["q"]
+        pick = max(plain["closed"], key=plain["closed"].get)
+        for t in (0.1, 0.5, 1.0, 2.0, 10.0):
+            scaled = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0,
+                                           temperature=t)["q"]
+            self.assertEqual(max(scaled["closed"], key=scaled["closed"].get), pick)
+            self.assertEqual(lft.reading_response(scaled)["choice"],
+                             lft.reading_response(plain)["choice"])
+        plan, rows = self._trie_rows()
+        plain = lft.trie_readings(self.collide[0][1], plan, rows)
+        pick = max(plain["closed"], key=plain["closed"].get)
+        for t in (0.1, 0.5, 2.0, 10.0):
+            scaled = lft.trie_readings(self.collide[0][1], plan, rows, temperature=t)
+            self.assertEqual(max(scaled["closed"], key=scaled["closed"].get), pick)
+
+    # (d) the confidence stays inside the distribution
+    def test_the_confidence_stays_inside_the_distribution(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        for t in (0.1, 0.5, 1.0, 2.0, 10.0):
+            resp = lft.reading_response(lft.first_token_probs(
+                self.qs, logits, self.tok, PREFIX, logz=3.0, temperature=t)["q"])
+            self.assertGreaterEqual(resp["confidence"], 0.0)
+            self.assertLessEqual(resp["confidence"], 1.0)
+            self.assertLessEqual(resp["confidence"], max(resp["probabilities"].values()))
+
+    def test_a_larger_temperature_lowers_the_confidence(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        last = None
+        for t in (1.0, 1.5, 2.0, 4.0, 10.0):
+            resp = lft.reading_response(lft.first_token_probs(
+                self.qs, logits, self.tok, PREFIX, logz=3.0, temperature=t)["q"])
+            if last is not None:
+                self.assertLess(resp["confidence"], last)
+            last = resp["confidence"]
+
+    # (e) the noul's value is the scaled one
+    def test_the_noul_value_is_the_scaled_one(self):
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "noul", "instructions": "Is it?"}}})
+        logits = self._logits({"yes": 3.0, "no": 0.0})
+        plain = lft.first_token_probs(qs, logits, self.tok, PREFIX)["q"]
+        scaled = lft.first_token_probs(qs, logits, self.tok, PREFIX, temperature=2.0)["q"]
+        weights = {o: plain["closed"][o] ** 0.5 for o in plain["closed"]}
+        total = sum(weights.values())
+        self.assertAlmostEqual(scaled["closed"]["yes"], weights["yes"] / total, places=12)
+        # the response's value is the closed reading, so it is the scaled one
+        resp = lft.reading_response(scaled)
+        self.assertAlmostEqual(resp["noul"], weights["yes"] / total, places=12)
+        # a temperature below 1 sharpens: the yes grows
+        sharp = lft.first_token_probs(qs, logits, self.tok, PREFIX, temperature=0.5)["q"]
+        self.assertGreater(sharp["closed"]["yes"], plain["closed"]["yes"])
+
+
+class ServiceTemperature(unittest.TestCase):
+    """The temperature at the endpoint: the config's key, and every path that answers
+    a decision."""
+
+    def test_the_single_question_path_scales_the_distribution(self):
+        svc = svc_with()
+        svc.engine.logits_topk = {1000: 2.0, 1001: 1.0}
+        svc.engine.logits_logz = 3.0
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
+            code, body = svc.systemone(req(), threading.Event())
+            plain = body["answers"]["q"]["probabilities"]
+            svc.systemone_temperature = {"choice": 2.0, "noul": 2.0, "score": 2.0}
+            code, body = svc.systemone(req(), threading.Event())
+        self.assertEqual(code, 200)
+        scaled = body["answers"]["q"]["probabilities"]
+        weights = {o: plain[o] ** 0.5 for o in plain}
+        total = sum(weights.values())
+        for o in plain:
+            self.assertAlmostEqual(scaled[o], weights[o] / total, places=12)
+        self.assertEqual(body["answers"]["q"]["choice"], "a")      # the pick did not move
+
+    def test_the_merged_path_scales_the_distribution_too(self):
+        # several questions: every one of them runs the single-question path, so every
+        # answer carries the scaled distribution
+        svc = svc_with()
+        svc.engine.logits_rows = [({1000: 2.0, 1001: 1.0}, 3.0), ({1000: 1.0, 1001: 2.0}, 3.0)]
+        questions = {"q1": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}},
+                     "q2": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
+            code, body = svc.systemone(req(questions=questions), threading.Event())
+            plain = {name: body["answers"][name]["probabilities"] for name in ("q1", "q2")}
+            svc.systemone_temperature = {"choice": 2.0, "noul": 2.0, "score": 2.0}
+            svc.engine.logits_turns = 0            # the same rows again
+            code, body = svc.systemone(req(questions=questions), threading.Event())
+        self.assertEqual(code, 200)
+        for name in ("q1", "q2"):
+            probs = body["answers"][name]["probabilities"]
+            weights = {o: plain[name][o] ** 0.5 for o in plain[name]}
+            total = sum(weights.values())
+            for o in plain[name]:
+                self.assertAlmostEqual(probs[o], weights[o] / total, places=12)
+            # the closed reading at T = 2 is flatter than the one at T = 1
+            self.assertLessEqual(max(probs.values()), max(plain[name].values()))
+
+    def test_the_trie_path_scales_the_distribution(self):
+        svc = svc_with()
+        svc.systemone_temperature = {"choice": 2.0, "noul": 2.0, "score": 2.0}
+        tok = svc.tok
+        ids = lft.option_token_ids(["x1", "x2"], tok, PREFIX)
+        a, b = ids["x1"], ids["x2"]
+        shared = 0
+        while shared < len(a) and shared < len(b) and a[shared] == b[shared]:
+            shared += 1
+        rows = [({a[i]: 3.0}, 3.0) for i in range(shared)]
+        rows.append(({a[shared]: 2.0, b[shared]: 1.0}, 3.0))
+        svc.engine.logits_rows = rows
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"x1": None, "x2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertEqual(body["answers"]["q"]["choice"], "x1")
+        probs = body["answers"]["q"]["probabilities"]
+        # the distribution is flatter than the raw one: the pick's share fell
+        self.assertLess(probs["x1"], 1.0)
+        self.assertGreater(probs["x2"], 0.0)
+        self.assertAlmostEqual(sum(probs.values()), 1.0, places=12)
+
+    def test_the_default_temperature_is_one(self):
+        svc = svc_with()
+        self.assertEqual(svc._decision_temperature("choice"), 1.0)
+        svc.systemone_temperature = {"choice": 2.0}
+        self.assertEqual(svc._decision_temperature("choice"), 2.0)
+        self.assertEqual(svc._decision_temperature("noul"), 1.0)      # the rest is untouched
+
+
 class EngineWireFormat(unittest.TestCase):
     """The LOGITS command's wire format, against the real engine wrapper.
 

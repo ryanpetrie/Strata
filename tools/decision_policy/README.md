@@ -53,6 +53,55 @@ one is calibrated).
 `vram_headroom.py` watches the free VRAM while a run is going, because the conversation cache holds parked
 conversations and the engine's warning threshold is what decides how many slots the server can keep.
 
+## The per-type temperature
+
+The endpoint can scale the reported distribution per question type: the temperature divides the logits
+before the softmax, so the distribution over the options is flattened (T above 1) or sharpened (T below 1).
+The **pick never changes** - the map is monotone - so the answer is the same under every temperature.
+
+**The fit** (one scalar per type: choice, noul, score):
+
+```sh
+python tools/decision_policy/temperature.py \
+  --items <items.jsonl> --runlog <runlog.jsonl> --predictions <predictions.jsonl> \
+  --out-json tools/decision_policy/temperature_calibration.json \
+  --out-report tools/decision_policy/temperature_report.md
+```
+
+The script reads a baseline run (the run log and the predictions the official scorer takes), rebuilds each
+item's closed distribution, fits the temperature per type, cross-validates it (5 folds, stratified by type,
+seed 42; the fit never sees the item it is scored on), scores the out-of-fold predictions with the official
+`score.py`, and writes the constants and the report.  Three objectives are fitted and cross-validated
+(`--objective nll|brier|ece`): they disagree on this data, and the report says why and which one is used.
+
+**The application** - the launch config, per machine:
+
+```json
+"systemone": {
+  "enabled": true,
+  "diagnostics": true,
+  "temperature": {"choice": 0.62, "noul": 0.67, "score": 0.77}
+}
+```
+
+The key is **opt-in**: without it every type is 1.0, and 1.0 means "no temperature" - the reported numbers
+are then exactly the ones the endpoint reported before the feature existed.  A temperature that is not a
+number, is not above 0, or names a question type the endpoint does not have is a startup error, not a silent
+default.  The server prints the temperatures it is using at startup.
+
+The constants that were fitted for this model, with their provenance (the model, the date, the split rule,
+the seed, the ECE before and after), are in `temperature_calibration.json`.  To use them, copy the three
+numbers into the launch config's `"systemone": {"temperature": {...}}` and restart the server.
+
+Two things to know about the math:
+
+- The temperature is applied to the **option-level** effective logits (the closed distribution), not to the
+  per-trie-row logits: an option's weight is a product of per-node token probabilities and the per-row
+  normalizers differ per option.  For a single-row question the two forms are identical.
+- The **open reading** (the reported confidence) is the closed reading at T scaled by the mass the model put
+  on the options, measured at T = 1.  The model's own probability at temperature T would need the
+  full-vocabulary normalizer at T, which the server does not have.
+
 ## The other datasets
 
 `jevbench.py` and `jevbench_rewrites.py` run the two JevBench sets through the endpoint. They need the
@@ -108,6 +157,9 @@ whose options share a first token.
 | `opendecisions.py` | source | the evaluation harness: the OpenDecisions set through the endpoint, with a per-item run log. |
 | `readings_compare.py`, `readings_split.py` | source | the two readings of the confidence against the outcome. |
 | `vram_headroom.py` | source | the free VRAM during a run. |
+| `temperature.py` | source | the per-type temperature: the fit, the cross-validation, and the official scorer's numbers. |
+| `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
+| `temperature_report.md` | generated | the fit's report: the three objectives, the cross-validation, the limits. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |

@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import logits_first_token as lft   # noqa: E402
 from serve import systemone as sysone  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
-from serve.server import ByteTokenizer, MockEngine, Service, systemone_multi_mode  # noqa: E402
+from serve.server import (ByteTokenizer, MockEngine, Service, systemone_multi_mode,  # noqa: E402
+                          systemone_temperatures)
 from serve.structured import StructuredOutputError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -410,6 +411,50 @@ class ConfigFlag(unittest.TestCase):
     def test_an_unknown_mode_is_refused(self):
         with self.assertRaises(ValueError):
             systemone_multi_mode({"systemone": {"multi": "batch"}})
+
+
+class TemperatureConfig(unittest.TestCase):
+    """The config's "systemone": {"temperature": {...}}: one temperature per question
+    type.  1.0 means "no temperature", and that is the default - the path before the
+    feature reported the same numbers."""
+
+    def test_the_default_is_no_temperature(self):
+        self.assertEqual(systemone_temperatures({}), {"choice": 1.0, "noul": 1.0, "score": 1.0})
+        self.assertEqual(systemone_temperatures({"systemone": {"enabled": True}}),
+                         {"choice": 1.0, "noul": 1.0, "score": 1.0})
+        self.assertEqual(systemone_temperatures({"systemone": None}),
+                         {"choice": 1.0, "noul": 1.0, "score": 1.0})
+        self.assertEqual(systemone_temperatures({"systemone": {"temperature": None}}),
+                         {"choice": 1.0, "noul": 1.0, "score": 1.0})
+
+    def test_the_three_types(self):
+        got = systemone_temperatures({"systemone": {"temperature": {"choice": 0.62, "noul": 0.67,
+                                                                    "score": 0.77}}})
+        self.assertEqual(got, {"choice": 0.62, "noul": 0.67, "score": 0.77})
+
+    def test_one_type_leaves_the_others_alone(self):
+        got = systemone_temperatures({"systemone": {"temperature": {"choice": 2.0}}})
+        self.assertEqual(got["choice"], 2.0)
+        self.assertEqual(got["noul"], 1.0)
+        self.assertEqual(got["score"], 1.0)
+
+    def test_a_temperature_below_one_is_allowed(self):
+        # a temperature below 1 sharpens the reported distribution
+        got = systemone_temperatures({"systemone": {"temperature": {"choice": 0.5}}})
+        self.assertEqual(got["choice"], 0.5)
+
+    def test_an_invalid_temperature_is_refused(self):
+        for bad in (0.0, -1.0, "hot", None, True, float("inf"), float("nan")):
+            with self.assertRaises(ValueError):
+                systemone_temperatures({"systemone": {"temperature": {"choice": bad}}})
+
+    def test_an_unknown_question_type_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_temperatures({"systemone": {"temperature": {"guess": 2.0}}})
+
+    def test_a_temperature_that_is_not_an_object_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_temperatures({"systemone": {"temperature": 2.0}})
 
 
 class OptionDescriptions(unittest.TestCase):

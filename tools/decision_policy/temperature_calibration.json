@@ -1,0 +1,606 @@
+{
+  "version": 1,
+  "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+  "fitted_on": "2026-10-21",
+  "objective": "brier",
+  "objective_text": "the mean multiclass Brier score of the distribution against the gold label",
+  "grid": {
+    "min": 0.5,
+    "max": 10.0,
+    "step": 0.01
+  },
+  "seed": 42,
+  "folds": 5,
+  "split_rule": "5-fold cross-validation, stratified by type: every type's items are sorted by id, shuffled with random.Random(seed) and dealt round-robin into the five folds; the temperature of a fold is fitted on the other four folds and applied to the fold's own items. A 70/30 split (the same seed, stratified by type the same way) is the second check.",
+  "temperature": {
+    "choice": 0.62,
+    "noul": 0.67,
+    "score": 0.77
+  },
+  "temperature_by_objective": {
+    "nll": {
+      "choice": 1.16,
+      "noul": 1.57,
+      "score": 0.94
+    },
+    "brier": {
+      "choice": 0.62,
+      "noul": 0.67,
+      "score": 0.77
+    },
+    "ece": {
+      "choice": 0.58,
+      "noul": 0.67,
+      "score": 0.75
+    }
+  },
+  "source": {
+    "dataset": "jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42)",
+    "arm": "the serial first-token path, every item on the fast path",
+    "note": "the constants are fitted on these same items, so a re-run of the sample is IN-SAMPLE; the honest number is the out-of-fold one below"
+  },
+  "validation": {
+    "out_of_fold": {
+      "nll": {
+        "ece_before": {
+          "choice": 0.13127217543588357,
+          "noul": 0.07561924931885602,
+          "score": 0.10818720700054921
+        },
+        "ece_after": {
+          "choice": 0.14517589618424231,
+          "noul": 0.11277367945883525,
+          "score": 0.062246976298393354
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 48,
+            "temperatures": {
+              "choice": 0.84,
+              "noul": 1.57,
+              "score": 0.94
+            },
+            "tiers": {
+              "choice/easy": 2,
+              "choice/hard": 15,
+              "choice/judge": 3,
+              "choice/standard": 2,
+              "noul/easy": 3,
+              "noul/hard": 3,
+              "noul/judge": 6,
+              "noul/standard": 2,
+              "score/easy": 2,
+              "score/hard": 7,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 15
+          },
+          {
+            "fold": 1,
+            "n": 48,
+            "temperatures": {
+              "choice": 1.3,
+              "noul": 1.81,
+              "score": 0.91
+            },
+            "tiers": {
+              "choice/easy": 3,
+              "choice/hard": 13,
+              "choice/judge": 2,
+              "choice/standard": 4,
+              "noul/easy": 2,
+              "noul/hard": 6,
+              "noul/judge": 4,
+              "noul/standard": 2,
+              "score/easy": 1,
+              "score/hard": 8,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 13
+          },
+          {
+            "fold": 2,
+            "n": 47,
+            "temperatures": {
+              "choice": 1.22,
+              "noul": 1.58,
+              "score": 0.98
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 9,
+              "choice/judge": 5,
+              "choice/standard": 1,
+              "noul/easy": 2,
+              "noul/hard": 4,
+              "noul/judge": 3,
+              "noul/standard": 5,
+              "score/easy": 1,
+              "score/hard": 6,
+              "score/judge": 3,
+              "score/standard": 2
+            },
+            "hard_choice_items": 9
+          },
+          {
+            "fold": 3,
+            "n": 47,
+            "temperatures": {
+              "choice": 1.18,
+              "noul": 1.08,
+              "score": 0.92
+            },
+            "tiers": {
+              "choice/easy": 7,
+              "choice/hard": 6,
+              "choice/judge": 5,
+              "choice/standard": 3,
+              "noul/easy": 4,
+              "noul/hard": 3,
+              "noul/judge": 4,
+              "noul/standard": 3,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 2,
+              "score/standard": 2
+            },
+            "hard_choice_items": 6
+          },
+          {
+            "fold": 4,
+            "n": 45,
+            "temperatures": {
+              "choice": 1.18,
+              "noul": 1.75,
+              "score": 0.95
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 10,
+              "choice/judge": 5,
+              "noul/easy": 3,
+              "noul/hard": 5,
+              "noul/judge": 5,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 3
+            },
+            "hard_choice_items": 10
+          }
+        ],
+        "scorer": {
+          "capability": 79.05641025614048,
+          "intelligence": 78.32303387513217,
+          "calibration": 79.78978663714878,
+          "competence_per_type": {
+            "choice": 86.70504752978981,
+            "noul": 80.47619047619048,
+            "score": 67.78786361941621
+          },
+          "calibration_per_type": {
+            "choice": 70.96482076315154,
+            "noul": 77.44526410823295,
+            "score": 90.95927504006184
+          },
+          "accuracy_per_type": {
+            "choice": 89.7196261682243,
+            "noul": 91.30434782608695,
+            "score": 79.66101694915254
+          },
+          "items": 235,
+          "predicted": 235,
+          "calibration_items_tvd": 0.2296030549691052,
+          "calibration_items": 13
+        }
+      },
+      "brier": {
+        "ece_before": {
+          "choice": 0.13127217543588357,
+          "noul": 0.07561924931885602,
+          "score": 0.10818720700054921
+        },
+        "ece_after": {
+          "choice": 0.12242071972391312,
+          "noul": 0.07861192725678798,
+          "score": 0.06491506140958729
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 48,
+            "temperatures": {
+              "choice": 0.68,
+              "noul": 0.81,
+              "score": 0.95
+            },
+            "tiers": {
+              "choice/easy": 2,
+              "choice/hard": 15,
+              "choice/judge": 3,
+              "choice/standard": 2,
+              "noul/easy": 3,
+              "noul/hard": 3,
+              "noul/judge": 6,
+              "noul/standard": 2,
+              "score/easy": 2,
+              "score/hard": 7,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 15
+          },
+          {
+            "fold": 1,
+            "n": 48,
+            "temperatures": {
+              "choice": 0.88,
+              "noul": 1.01,
+              "score": 0.78
+            },
+            "tiers": {
+              "choice/easy": 3,
+              "choice/hard": 13,
+              "choice/judge": 2,
+              "choice/standard": 4,
+              "noul/easy": 2,
+              "noul/hard": 6,
+              "noul/judge": 4,
+              "noul/standard": 2,
+              "score/easy": 1,
+              "score/hard": 8,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 13
+          },
+          {
+            "fold": 2,
+            "n": 47,
+            "temperatures": {
+              "choice": 0.74,
+              "noul": 0.5,
+              "score": 0.76
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 9,
+              "choice/judge": 5,
+              "choice/standard": 1,
+              "noul/easy": 2,
+              "noul/hard": 4,
+              "noul/judge": 3,
+              "noul/standard": 5,
+              "score/easy": 1,
+              "score/hard": 6,
+              "score/judge": 3,
+              "score/standard": 2
+            },
+            "hard_choice_items": 9
+          },
+          {
+            "fold": 3,
+            "n": 47,
+            "temperatures": {
+              "choice": 0.5,
+              "noul": 0.7,
+              "score": 0.57
+            },
+            "tiers": {
+              "choice/easy": 7,
+              "choice/hard": 6,
+              "choice/judge": 5,
+              "choice/standard": 3,
+              "noul/easy": 4,
+              "noul/hard": 3,
+              "noul/judge": 4,
+              "noul/standard": 3,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 2,
+              "score/standard": 2
+            },
+            "hard_choice_items": 6
+          },
+          {
+            "fold": 4,
+            "n": 45,
+            "temperatures": {
+              "choice": 0.5,
+              "noul": 0.62,
+              "score": 0.7
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 10,
+              "choice/judge": 5,
+              "noul/easy": 3,
+              "noul/hard": 5,
+              "noul/judge": 5,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 3
+            },
+            "hard_choice_items": 10
+          }
+        ],
+        "scorer": {
+          "capability": 81.47271023072254,
+          "intelligence": 79.43021801276801,
+          "calibration": 83.51520244867707,
+          "competence_per_type": {
+            "choice": 86.70504752978981,
+            "noul": 80.47619047619048,
+            "score": 71.10941603232376
+          },
+          "calibration_per_type": {
+            "choice": 75.51585605521738,
+            "noul": 84.2776145486424,
+            "score": 90.75213674217144
+          },
+          "accuracy_per_type": {
+            "choice": 89.7196261682243,
+            "noul": 91.30434782608695,
+            "score": 79.66101694915254
+          },
+          "items": 235,
+          "predicted": 235,
+          "calibration_items_tvd": 0.24843072975459377,
+          "calibration_items": 13
+        }
+      },
+      "ece": {
+        "ece_before": {
+          "choice": 0.13127217543588357,
+          "noul": 0.07561924931885602,
+          "score": 0.10818720700054921
+        },
+        "ece_after": {
+          "choice": 0.13007784611238699,
+          "noul": 0.08237794423684712,
+          "score": 0.04981654825345105
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 48,
+            "temperatures": {
+              "choice": 0.63,
+              "noul": 0.67,
+              "score": 0.8
+            },
+            "tiers": {
+              "choice/easy": 2,
+              "choice/hard": 15,
+              "choice/judge": 3,
+              "choice/standard": 2,
+              "noul/easy": 3,
+              "noul/hard": 3,
+              "noul/judge": 6,
+              "noul/standard": 2,
+              "score/easy": 2,
+              "score/hard": 7,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 15
+          },
+          {
+            "fold": 1,
+            "n": 48,
+            "temperatures": {
+              "choice": 0.63,
+              "noul": 0.63,
+              "score": 0.74
+            },
+            "tiers": {
+              "choice/easy": 3,
+              "choice/hard": 13,
+              "choice/judge": 2,
+              "choice/standard": 4,
+              "noul/easy": 2,
+              "noul/hard": 6,
+              "noul/judge": 4,
+              "noul/standard": 2,
+              "score/easy": 1,
+              "score/hard": 8,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 13
+          },
+          {
+            "fold": 2,
+            "n": 47,
+            "temperatures": {
+              "choice": 1.24,
+              "noul": 0.51,
+              "score": 0.8
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 9,
+              "choice/judge": 5,
+              "choice/standard": 1,
+              "noul/easy": 2,
+              "noul/hard": 4,
+              "noul/judge": 3,
+              "noul/standard": 5,
+              "score/easy": 1,
+              "score/hard": 6,
+              "score/judge": 3,
+              "score/standard": 2
+            },
+            "hard_choice_items": 9
+          },
+          {
+            "fold": 3,
+            "n": 47,
+            "temperatures": {
+              "choice": 0.5,
+              "noul": 0.67,
+              "score": 0.8
+            },
+            "tiers": {
+              "choice/easy": 7,
+              "choice/hard": 6,
+              "choice/judge": 5,
+              "choice/standard": 3,
+              "noul/easy": 4,
+              "noul/hard": 3,
+              "noul/judge": 4,
+              "noul/standard": 3,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 2,
+              "score/standard": 2
+            },
+            "hard_choice_items": 6
+          },
+          {
+            "fold": 4,
+            "n": 45,
+            "temperatures": {
+              "choice": 0.63,
+              "noul": 0.67,
+              "score": 0.69
+            },
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 10,
+              "choice/judge": 5,
+              "noul/easy": 3,
+              "noul/hard": 5,
+              "noul/judge": 5,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 3
+            },
+            "hard_choice_items": 10
+          }
+        ],
+        "scorer": {
+          "capability": 81.22377552565871,
+          "intelligence": 79.18477552446403,
+          "calibration": 83.26277552685337,
+          "competence_per_type": {
+            "choice": 86.70504752978981,
+            "noul": 80.47619047619048,
+            "score": 70.37308856741183
+          },
+          "calibration_per_type": {
+            "choice": 73.9844307775226,
+            "noul": 83.52441115263058,
+            "score": 92.27948465040697
+          },
+          "accuracy_per_type": {
+            "choice": 89.7196261682243,
+            "noul": 91.30434782608695,
+            "score": 79.66101694915254
+          },
+          "items": 235,
+          "predicted": 235,
+          "calibration_items_tvd": 0.24543818880746957,
+          "calibration_items": 13
+        }
+      }
+    },
+    "holdout_30": {
+      "ece_before": {
+        "choice": 0.16963933723354874,
+        "noul": 0.1790937406353074,
+        "score": 0.17828935366930282
+      },
+      "ece_after": {
+        "choice": 0.03740923176450464,
+        "noul": 0.17208964155821507,
+        "score": 0.10311875144867158
+      },
+      "temperatures": {
+        "choice": 0.5,
+        "noul": 0.6,
+        "score": 0.88
+      },
+      "train_items": {
+        "choice": 75,
+        "noul": 48,
+        "score": 41
+      },
+      "test_items": {
+        "choice": 32,
+        "noul": 21,
+        "score": 18
+      }
+    },
+    "bootstrap": {
+      "choice": {
+        "resamples": 1000,
+        "share_better": 0.717,
+        "difference_p05": -0.029321612911744482,
+        "difference_p95": 0.07373540518775985
+      },
+      "noul": {
+        "resamples": 1000,
+        "share_better": 0.754,
+        "difference_p05": -0.017460597971714648,
+        "difference_p95": 0.035707658044023566
+      },
+      "score": {
+        "resamples": 1000,
+        "share_better": 0.782,
+        "difference_p05": -0.0343029813449765,
+        "difference_p95": 0.09671683256961283
+      }
+    },
+    "official_scorer_baseline": {
+      "capability": 79.8319081369493,
+      "intelligence": 78.01193371774609,
+      "calibration": 81.6518825561525,
+      "competence_per_type": {
+        "choice": 86.70504752978981,
+        "noul": 80.47619047619048,
+        "score": 66.85456314725799
+      },
+      "calibration_per_type": {
+        "choice": 73.7455649128233,
+        "noul": 84.8761501362288,
+        "score": 86.3339326194054
+      },
+      "accuracy_per_type": {
+        "choice": 89.7196261682243,
+        "noul": 91.30434782608695,
+        "score": 79.66101694915254
+      },
+      "items": 235,
+      "predicted": 235,
+      "calibration_items_tvd": 0.22385735366881526,
+      "calibration_items": 13
+    },
+    "official_scorer_in_sample_fitted": {
+      "capability": 82.06607343921561,
+      "intelligence": 79.20616749669965,
+      "calibration": 84.9259793817316,
+      "competence_per_type": {
+        "choice": 86.70504752978981,
+        "noul": 80.47619047619048,
+        "score": 70.43726448411866
+      },
+      "calibration_per_type": {
+        "choice": 77.44062755004848,
+        "noul": 86.88710852835388,
+        "score": 90.45020206679244
+      },
+      "accuracy_per_type": {
+        "choice": 89.7196261682243,
+        "noul": 91.30434782608695,
+        "score": 79.66101694915254
+      },
+      "items": 235,
+      "predicted": 235,
+      "calibration_items_tvd": 0.239738376167947,
+      "calibration_items": 13
+    }
+  }
+}
