@@ -2359,3 +2359,217 @@ should not be shipped.  The noul's constant in the config should go back to 1.0.
   best temperature for the human distribution would be - only that the fitted one
   is worse than none.  No second model, no engine change, no new dependency.
 
+
+---
+
+## 20. The letter readout (2026-10-21)
+
+Roadmap item 1.3, the letter-readout benchmark: most decision readouts in the
+literature show the options as lettered choices and read the probability of the
+letter.  Strata shows the options by their own names and reads the probability of
+the option's own tokens, and when two options share their first token ("rule_1" and
+"rule_2" both start with " rule") it walks the options' trie to tell them apart
+(§10.6).  The question this section answers: **is the letter readout better?**
+
+**The answer: on the official scorer it is, by 3.4 Capability points, and it is
+faster and simpler.  But the win is not in the picks** - the letter readout picked
+204 items right and the direct readout 206 - **it is in the score questions'
+distance to the gold level and in the calibration.**  The details are below, and
+§20.8 says what the result does and does not settle.
+
+### 20.1 What was compared
+
+Two arms, one session, on the same engine state, on the same 235 ids, one question
+per request, and **no temperature in either arm**.
+
+The temperature is out because it is not being shipped: §19 measured the fitted
+constants against the human labels on jev-bench and they were worse on every type
+and every config, so the `"systemone": {"temperature": ...}` key was taken out of
+the launch config.  Measuring at T = 1 compares the letter readout against the
+readout that actually ships, and keeps the readout the only variable.  The launch
+config's `systemone` block now reads `{"enabled": true, "diagnostics": true}`.
+
+The arms differ in exactly one key of the launch config:
+
+| arm | the config's `systemone` block |
+|---|---|
+| the direct readout (today's) | `{"enabled": true, "diagnostics": true}` |
+| the letter readout | `{"enabled": true, "diagnostics": true, "readout": "letters"}` |
+
+The letter readout is `serve/systemone_letters.py`: the options are shown as
+`A) option_name ("description")`, the model answers with the letter, and the letter
+is mapped back to the option by its place.  The client never sees the letter - the
+response is the shape the endpoint already has, so the official scorer reads both
+arms unchanged.  The design, the tokenization and the letter set are in
+`docs/research/letter_readout.md`.
+
+### 20.2 The run
+
+**ENGINE FRESHLY RESTARTED before each arm** (§12.5): the server tree was stopped
+(the engine process exited with it), the server was started again, and the model was
+loaded from scratch before the run.
+
+| | the direct arm | the letter arm |
+|---|---|---|
+| the server started | 20:57:09 | 21:19:10 |
+| the model loaded | ~37 s later | ~42 s later |
+| the run | 1084 s, ended 21:17:33 | 892 s, ended 21:35:06 |
+| the minimum free VRAM | 1113 MiB | 1101 MiB (the engine's threshold is 1024) |
+
+Both arms used the same build (the letter readout on top of this branch), the same
+model, the same ids and the same harness.  The commands:
+
+```
+python tools/decision_policy/opendecisions.py --items <opendecisions.jsonl> \
+  --out <arm>.jsonl --ids-file <sample10.txt> --batch-k 1
+python <score.py> <arm>.jsonl --data <sample10_items.jsonl>
+```
+
+**Both arms: 235 of 235 answered, 0 failures, no 502, every item on the fast path.**
+The harness omits a failed request from the predictions file and the scorer counts
+a missing answer as wrong, so the 235 is the whole sample.
+
+### 20.3 The Capability
+
+| run | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---|---|---|
+| the stored baseline, re-scored | 79.8 | 78.0 | 81.7 | 89.7% / 73.7 | 91.3% / 84.9 | 79.7% / 86.3 |
+| **the direct arm, measured today** | 79.3 | 77.4 | 81.1 | 89.7% / 75.0 | 91.3% / 83.0 | 79.7% / 85.3 |
+| **the letter arm, measured today** | **82.7** | **82.4** | **83.0** | 90.7% / 78.2 | 92.8% / 85.8 | 72.9% / 84.9 |
+
+(per type: accuracy and the scorer's calibration component.)
+
+**The letter readout is 3.4 Capability points above the direct readout measured on
+the same engine, the same day, the same minute.**  It is also 2.9 above the stored
+baseline, and the direct arm's own number today (79.3) is 0.5 below the stored one
+(79.8) - the run-to-run spread of this sample is about 0.6 points (§10.8: the arms
+measured on it read 78.9, 79.1, 79.2, 79.5, 79.6, 79.8, 80.4), so the gap is well
+outside the spread.
+
+### 20.4 Where the win comes from - and where it does not
+
+**The letter readout did not pick more right answers.**  It picked **204** of the 235
+right, the direct readout **206**.  221 picks are the same and 14 moved; on those 14
+the direct readout was right 8 times and the letter readout 6.  The +5 Intelligence
+comes from somewhere else, and it is worth being exact about where:
+
+* **The score questions.**  The scorer's score competence is not "was the argmax
+  right" - it is the **distance from the expected level to the gold level**
+  (`score.py`'s NMAE against a mid-scale guess).  The letter readout's mean
+  normalized distance is **0.0908**, the direct readout's **0.1013**, so the
+  competence is 74.1 against 65.1 - while the letter readout picks the right level
+  on **43 of 59** score items and the direct readout on **47 of 59**.  The letter
+  readout's distribution over the levels sits closer to the gold level even where
+  its argmax is the wrong level.
+* **The yes/no questions.**  64 of 69 on the right side against 63 of 69, and the
+  tier weights turn that into 86.7 against 80.5: the letter readout has one wrong
+  hard-tier yes/no, the direct readout three.
+* **The choice questions.**  A wash: 86.5 against 86.7.
+* **The calibration.**  83.0 against 81.1, mostly the choice questions' ECE
+  (78.2 against 75.0).
+
+So the honest reading: **the letter readout's distribution over the options is
+better shaped, and the scorer's metrics reward that** - but it is not the model
+deciding more items correctly.  A consumer that only wants the argmax gets the
+direct readout's 206, not the letter readout's 204.
+
+**Two numbers go the other way.**  The mean TVD to the known true probabilities on
+the 13 calibration items is **0.256** for the letter arm against **0.216** for the
+direct arm: where the state fixes the answer distribution exactly, the letter
+readout's distribution is further from it.  And the score questions' raw accuracy
+is worse (72.9% against 79.7%).
+
+**No position bias.**  The letter readout picked the first letter on **25.3%** of
+the 166 choice and score items; an unbiased readout would pick it 24.5% of the time.
+
+### 20.5 The latency
+
+| | the direct arm | the letter arm | the stored baseline |
+|---|---:|---:|---:|
+| median per question | 3951 ms | **3606 ms** | 3121 ms |
+| p95 per question | 7288 ms | **5427 ms** | 5682 ms |
+
+**Against the arm measured in the same session, the letter readout is faster**: the
+median is 345 ms lower, the p95 1861 ms lower, it was faster on **168 of the 235
+items**, and the paired median difference is **-229 ms**.
+
+**Against the stored baseline the medians do not agree**: 3121 ms (stored) against
+3606 ms (today's letter arm) - the letter readout is 485 ms slower there, and 255 ms
+faster on the p95.  The stored run is a different day and a different engine state,
+and today's direct arm is 830 ms slower than the stored one on the median, so the
+machine today is slower than when the baseline was measured.  The same-session
+comparison is the one to read; the stored baseline says the two are a wash.
+
+**The direct arm's run had a slow patch**: 16 consecutive items (118 to 130) took
+7 to 42 seconds each, against 1.8 to 4 seconds elsewhere in the run.  It is
+environmental - the picks in that window are ordinary - and it inflates the direct
+arm's median and p95.  Without those 16 items the direct arm's median is 3826 ms
+and the letter arm's 3595 ms on the same 219 items: the letter readout is still
+faster, by 231 ms.
+
+### 20.6 The simplicity, and the engine requests
+
+The letter readout needs **one engine request per question**.  That is structural,
+not a measurement: the letters are one token each and no two of them are the same
+token, so the options cannot collide and the trie walk is never needed.  Computed
+over the 235 sample items with the server's own tokenizer
+(`tools/decision_policy/letter_costs.py`): **235 items, 0 with a first-token
+collision, 0 extra engine requests.**  The direct path over the same items
+(`tools/decision_policy/trie_costs.py`): **72 items collide, 113 extra engine
+requests** (one to seven per colliding item).
+
+The latency shows the walk's price: on the 72 colliding items the direct arm's
+median was 4316 ms and the letter arm's 3774 ms (the paired difference -551 ms);
+on the 163 items that need no walk, 3762 ms against 3572 ms (-165 ms).
+
+The letter readout is also simpler in the parts that are not measured: the prompt
+does not depend on how the options happen to tokenize (the direct path has to walk
+a trie over them), and the answer is one token instead of an option name of ~3.1
+tokens on average.
+
+### 20.7 The exit criterion
+
+The roadmap's rule: **ship the letter readout only if it wins on at least two of
+{Capability, latency, simplicity} without losing the other.**
+
+| | verdict |
+|---|---|
+| Capability | **wins**: 82.7 against 79.3, the same session (- and 79.8 stored) |
+| latency | **wins** against the same-session arm (median 3606 against 3951 ms, p95 5427 against 7288 ms); a wash against the stored baseline |
+| simplicity | **wins**: one engine request per question, 0 extra over the 235 items against the direct path's 113 |
+
+**Two of three, and the third does not lose: the exit criterion is met.**  The
+letter readout is shipped as the opt-in readout it is - the config's `"systemone":
+{"readout": "letters"}` - and the default path stays as it is.
+
+### 20.8 The limits
+
+* **The win is in the distribution, not in the picks** (§20.4).  The letter readout
+  picked 204 items right against the direct readout's 206.  A reader who wants the
+  Capability number should read it as "the letter readout's distribution over the
+  options is better shaped", not as "the model decides more items correctly".
+* **One run per arm.**  The direct arm's own spread on this sample is 0.5 points
+  (79.8 stored, 79.3 today) and the letter arm's advantage is 3.4, but a second run
+  of each arm would say how much of the 3.4 is the run.  The same day's two runs
+  are paired item by item (14 moved picks), which cancels the item mix but not the
+  engine's run-to-run wobble on the items that moved.
+* **The 13 calibration items go the other way**: the mean TVD to the known true
+  probabilities is 0.256 for the letter arm against 0.216 for the direct arm.  The
+  endpoint is also used for uncertainty, not only for a pick.
+* **The score questions' raw accuracy is worse** (72.9% against 79.7%): the letter
+  readout's argmax is the wrong level more often, even though its expected level
+  sits closer to the gold.
+* **This is the OpenDecisions sample, which says not to fit on it and is
+  validation-only.**  Nothing was fitted here - the two readouts were measured as
+  they are - but the sample is still a validation set, and the jev-bench check
+  (§19) is the one that decides a change of the shipped readout.
+* **The machine.**  Today's runs are slower than the stored baseline's (the direct
+  arm's median 3951 ms against the stored 3121 ms), so the latency numbers are a
+  property of this session, not of the endpoint.  The comparison that matters is
+  the same-session one.
+* **What was not run.**  No second run of either arm; no jev-bench run with the
+  letter readout (that is the independent check, and it is the obvious next step);
+  no run with a temperature (the temperature is not being shipped); no GPU build
+  (no engine file changed); no test with more than 26 options against a live model
+  (the sample's widest question has 7 options, so that path was not exercised
+  live); no second model.

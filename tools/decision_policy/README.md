@@ -166,11 +166,17 @@ missing answer as wrong), and neither retries a request that produced an answer.
 ```sh
 python tools/decision_policy/trie_costs.py --items <items.jsonl>    # the trie walk's cost per item
 python tools/decision_policy/trie_examples.py --items <items.jsonl>  # the colliding questions, as tokens
+python tools/decision_policy/letter_costs.py --items <items.jsonl>  # the letter readout's cost per item
 ```
 
 `trie_costs.py` uses the shipped code (`serve/logits_first_token.py`) and the server's own tokenizer, so the
 numbers are the ones the endpoint will pay: how many extra engine requests the trie walk needs for every item
 whose options share a first token.
+
+`letter_costs.py` does the same for the **letter readout** (`serve/systemone_letters.py`, the config's
+`"systemone": {"readout": "letters"}`): the letters are one token each and no two of them are the same token,
+so the options cannot collide and the walk is never needed - 0 extra engine requests per item. The comparison
+is in the companion doc's section 20.
 
 ## Files
 
@@ -190,6 +196,7 @@ whose options share a first token.
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
 | `temperature_report.md` | generated | the fit's report: the three objectives, the cross-validation, the limits. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
+| `letter_costs.py` | source | the letter readout's engine-request cost over a set. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |
 | `jevbench.py` | source | the jev-bench sample harness: one item per request, the human label distribution and the distance to it. |
