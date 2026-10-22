@@ -46,8 +46,12 @@ import importlib.util
 import json
 import math
 import statistics
+import sys
 from collections import defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import temperature  # noqa: E402  (same folder: the one place that knows the transform)
 
 TYPES = ("choice", "noul", "score")
 TEMPERATURE = {"choice": 0.62, "noul": 0.67, "score": 0.77}
@@ -69,25 +73,24 @@ def load_scorer(path: Path):
 
 
 def temper(closed: dict, t: float) -> dict:
-    """The server's own transform: closed_T(i) = normalize(closed_1(i) ** (1/T))."""
-    if t == 1.0:
-        return dict(closed)
-    weights = {k: (v ** (1.0 / t) if v > 0.0 else 0.0) for k, v in closed.items()}
-    total = sum(weights.values())
-    if total <= 0.0:
-        return dict(closed)
-    return {k: v / total for k, v in weights.items()}
+    """The server's own transform: closed_T(i) = normalize(closed_1(i) ** (1/T)).
+
+    It is the FIT's function, and the fit's is the server's
+    (serve/logits_first_token.py::apply_temperature, imported, not copied), so
+    there is ONE copy of the arithmetic in the tools: a second implementation
+    could drift from the served one, and this one is checked against the run's
+    own numbers below.
+    """
+    return temperature.scale(closed, t)
 
 
 def untemper(closed_t: dict, t: float) -> dict:
-    """The inverse: closed_1(i) = normalize(closed_T(i) ** T)."""
-    if t == 1.0:
-        return dict(closed_t)
-    weights = {k: (v ** t if v > 0.0 else 0.0) for k, v in closed_t.items()}
-    total = sum(weights.values())
-    if total <= 0.0:
-        return dict(closed_t)
-    return {k: v / total for k, v in weights.items()}
+    """The inverse: closed_1(i) = normalize(closed_T(i) ** T).
+
+    Also the fit's: the inverse of "apply T" is "apply 1/T", and the fit's
+    undo_temperature() is the server's function called that way.
+    """
+    return temperature.undo_temperature(closed_t, t)
 
 
 def closed_of(it: dict, probs: dict) -> dict:
