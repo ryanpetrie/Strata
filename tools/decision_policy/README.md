@@ -199,6 +199,7 @@ whose options share a first token.
 | `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |
 | `first_token_report.md`, `first_token_analysis.json` | generated | the first-token study's results. |
+| `lora_spike.py` | source | roadmap item 2.2, step 0: the feasibility spike. The engine's run-to-run determinism (the engine started standalone, the `T`/`L`/`Z` lines compared byte for byte) and the adapter's arithmetic against a numpy reference. |
 
 ## Labels are synthetic
 
