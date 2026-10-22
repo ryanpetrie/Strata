@@ -1,5 +1,11 @@
 {
   "purpose": "The fitting pool for the per-type temperature (roadmap item 1.1b): 500 items of every question type, drawn from the jev-bench VALIDATION split, with the per-config counts and the seed fixed here so the run is reproducible. The data itself stays outside the repository.",
+  "notes": [
+    "The pool keeps only licences that oblige nothing beyond attribution: every config named here is Apache-2.0, MIT, CC0, CC BY, or free-for-any-purpose. The share-alike configs (boolq, arc_challenge) and the non-commercial ones (chaosnli) and the research-use ones (mnli, yelp5) and the undeclared ones (sst5, stsb, sms_spam, fever_evidence) are out, with the reason in the excluded block.",
+    "boolq was in the first version of this plan (80 noul items) and was swapped out for 80 more paws items. The swap was made before any compute: no run, no fit and no measurement used the boolq items, so nothing is contaminated by it.",
+    "The swap changed the noul's per-config counts (paws 90 -> 170, boolq 80 -> 0) and no other count: the type mix is still 500 choice, 500 noul, 500 score, the total is still 1500, and the human distribution is still on 250 items of every type. WHICH ITEMS those are is a different question - see the next note.",
+    "ONE GENERATOR FOR THE WHOLE PLAN, so changing a count moves the items drawn after it: the choice type is drawn first and its 500 items are untouched, the noul draws shift (boolq's 80 go out, 120 different noul items come in), and the score draws shift with them (68 of the 500 score items are different). Measured: 1232 of the 1500 ids are the same as in the first version of the plan, 268 are different. The pool is reproducible for a GIVEN plan; it is not a superset of an earlier one."
+  ],
   "dataset": "Praveenrajus/jev-bench (HuggingFace)",
   "split": "validation",
   "seed": 20261021,
@@ -15,8 +21,7 @@
     },
     "noul": {
       "civil_comments": 250,
-      "paws": 90,
-      "boolq": 80,
+      "paws": 170,
       "strategyqa_closed": 50,
       "strategyqa_grounded": 30
     },
@@ -78,11 +83,11 @@
     },
     "boolq": {
       "spdx": "cc-by-sa-3.0",
-      "verdict": "usable with a note",
+      "verdict": "not in the pool",
       "quote": "BoolQ is released under the [Creative Commons Share-Alike 3.0](https://creativecommons.org/licenses/by-sa/3.0/) license.",
       "source": "https://huggingface.co/datasets/google/boolq/raw/main/README.md",
-      "owes": "share-alike on a derived WORK. A fitted temperature is one number per question type and carries no boolq text, so the conservative share-alike rule (the licence record 5.2, which keeps share-alike data out of a released ADAPTER) does not bite. The 80 items are here because the pool's counts are fixed by the roadmap item; swapping them for 80 more paws items is a one-line change here, before any compute.",
-      "note": "the same category as arc_challenge (cc-by-sa-4.0), which the pool excludes"
+      "owes": "share-alike",
+      "note": "it was in the first version of this plan (80 noul items) and was SWAPPED OUT for 80 more paws items, before any compute: the pool keeps only licences that oblige nothing beyond attribution, and this is the same share-alike category as arc_challenge, which the pool excludes. The swap is one line in the pool's counts (noul: paws 90 -> 170, boolq 80 -> 0) and it does not change the type mix or the number of items."
     },
     "strategyqa_closed": {
       "spdx": "mit",
@@ -128,7 +133,8 @@
     "fever_evidence": "the card carries cc-by-sa-3.0 AND gpl-3.0, and which of them covers the rows is not verified: out.",
     "stsb": "the hub mirror declares no licence; jev-bench records cc-by-sa-4.0 (STS Benchmark), not read from the STS source: out.",
     "sms_spam": "the card declares `license: unknown`: out.",
-    "arc_challenge": "cc-by-sa-4.0 (share-alike): out for the released-adapter rule, like the other share-alike configs.",
+    "arc_challenge": "cc-by-sa-4.0 (share-alike): out.",
+    "boolq": "cc-by-sa-3.0 (share-alike): out. It was in the first version of this plan and was swapped out for 80 more paws items before any compute - the pool keeps only licences that oblige nothing beyond attribution. The verdict and the quote are in the licence block above.",
     "mmlu": "MIT, so licence-clean, but the roadmap item fixes the per-config counts and the choice quota is already full. Available if the plan changes."
   }
 }
