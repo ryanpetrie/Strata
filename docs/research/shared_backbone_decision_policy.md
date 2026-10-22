@@ -3068,3 +3068,349 @@ next steps are: read the questions with more than 26 options the direct way inst
 of falling back to the decode path, and then measure the letter readout again on both
 populations - the OpenDecisions sample (where it won) and jev-bench (where it lost) -
 with that fix in, on one engine state, so the two can be compared paired.
+
+## 23. The prompt probe and the noul's arms (2026-10-22)
+
+Roadmap item 1.5: the server's per-type template, varied one axis at a time, and
+measured against the licence-clean pool.  The design, the variant list, the
+measurement design and the pre-registered rule are in
+[prompt_variants.md](prompt_variants.md).  This section is the record: what was
+run, what came out, and what it means.
+
+**Every number here comes out of a run on this machine on 2026-10-22**, and the
+files it came from are named.  The base arm is item 1.1b's pool run: the pool at
+T = 1, the direct readout, today's template, 1,500 items, in
+`...\decision_policy_training\run\p1b_pool_T1.jsonl` (and its run log beside it).
+The design set is the pool's **500 noul items** in two halves: **half A**, the 250
+`civil_comments` items with a human distribution (the humans' mean P(yes) 0.1096,
+a 9.2% gold "yes" rate), and **half B**, the 250 `paws` and `strategyqa` items
+with a hard label at a 45.2% gold "yes" rate.  Half A is where the bias is
+measured; half B is where a base-rate shift shows up as a loss.
+
+### 23.1 The probe (P1): the noul's template, mirrored
+
+The design's §6 made the probe the first thing to run, because it can kill the
+order axis before three hours of arms are spent.  P1 is the noul's template with
+the two sides' order reversed in the criteria line **and** in the answer line;
+the answer tokens do not change, so the two arms are two presentations of the
+same question.
+
+The arm is a launch-config value, so it is a server start: a copy of the live
+config with `"systemone": {"prompt": {"noul": "swap"}}`, and the server started
+from the worktree with it.  The server printed
+`[strata] decisions: the questions are rendered in another prompt variant (noul swap)`
+and `/v1/status` carried `"prompt": {"noul": "swap", "choice": "base", "score": "base"}`.
+
+```
+python tools/decision_policy/prompt_probe.py \
+  --items ...\decision_policy_training\items\p1b_pool.jsonl \
+  --out ...\decision_policy_training\run\p1b_pool_swap.jsonl \
+  --base ...\decision_policy_training\run\p1b_pool_T1.jsonl \
+  --report ...\decision_policy_training\run\p1b_pool_swap_report.md \
+  --half A --config ...\strata-unsloth-ud-iq4_xs-swap.json
+```
+
+250 items, **250 answered, 0 failures**, 1,136 s; the fast path on **250 of 250**;
+the median latency 2,394 ms; the prompt tokens median 257 (the base arm's, on the
+same items: the median latency 3,248 ms, the prompt tokens median 257 - the swap
+costs no tokens).
+
+### 23.2 The probe's three readouts, and the base arm beside them
+
+| | the base arm | the probe (swap) |
+|---|---:|---:|
+| the mean P(yes) | 0.4142 | 0.3930 |
+| the bias (P(yes) - the humans') | +0.3047 | +0.2834 |
+| the mean TVD to the human distribution | 0.3313 | 0.3125 |
+| the AUC against the humans' hard label | 0.8435 | 0.8426 |
+| the picks that moved | - | **15 of 250 (6.0%)** |
+| the **swap gap** `mean(P_yes(base) - P_yes(swap))` | - | **+0.0212** |
+
+The base arm's numbers are the pool run's, on the same 250 items.
+
+**The flips, item by item.**  The 15 items whose pick moved were all items where
+the humans say "no"; on them the base arm's accuracy was 0.133 and the swap
+arm's 0.867 - **13 got better and 2 got worse**, and the accuracy against the
+humans' majority went from 0.620 to 0.664 (+11 items of 250).  The flipped items
+were not coin flips: their median distance from the 0.5 threshold was 0.100, and
+only 1 of the 250 items sat within 0.02 of the threshold.
+
+**The effect's size against the engine's own noise.**  The swap's per-item change
+in P(yes) is a mean |change| of 0.0433 (SD 0.0743); the engine's own run-to-run
+wobble, measured on the jev-bench noul slice, is a mean |change| of 0.0193 (SD
+0.0337).  So the order is **2.2 times the engine's own noise** - a real effect,
+not a re-run of the same template.
+
+**And it does not move the ranking at all.**  The AUC went 0.8435 -> 0.8426: a
+change of **-0.0010**, where the AUC's own noise on 250 items is about 0.047.  A
+lever that moves the level and not the ranking is, in the design's own words, a
+**base-rate** effect.
+
+### 23.3 The base rate's own check, and the reading
+
+The design's §6 priced the probe at one arm on half A.  The measurement came back
+between the design's two branches, and half B is where the design's own rule (c)
+lives, so **the probe's arm was run on half B as well** (250 items, 249 answered
+and 1 already done, 0 failures, 679 s).  The arm list changed; the rule did not.
+
+| half B (the 45.2% "yes" population) | the base arm | the probe (swap) |
+|---|---:|---:|
+| the mean P(yes) | 0.4872 | 0.4961 |
+| the accuracy against the hard label | 84.4% | **82.0%** |
+| the ECE of P(yes) | 0.0743 | **0.1045** |
+| the picks that moved | - | 10 of 250 |
+
+Of the 10 flips on half B, **2 got better and 8 got worse**.
+
+**The pre-registered rules, applied to the probe's arm:**
+
+| rule | the numbers | verdict |
+|---|---|---|
+| (a) calibration, on half A | the TVD 0.3313 -> 0.3125 (+0.0188), the bias toward zero +0.0212; the margin 0.007 | **PASS** |
+| (b) ranking, on half A | the AUC 0.8435 -> 0.8426 (-0.0010); the margin -0.05 | **PASS** |
+| (c) the base rate, on half B | the accuracy 84.4% -> 82.0% (**6 items** worse), the ECE 0.0743 -> 0.1045 (**+0.0301**); the margins 3 items and 0.02 | **FAIL** |
+
+**The reading: the position is a real component, and the order arms stay.**  The
+design's §6 set one conjunction for killing the order axis: the swap gap "below
+**0.05** in absolute value **and** the flip rate is near the engine's own 1%
+wobble".  The gap is 0.0212, below 0.05, but the flip rate is **6.0%**, six times
+the floor, so **the conjunction did not fire**.  The design's §3.4 names the
+branch the measurement is in:
+
+> the flip rate is well above 1% and `mean(d)` is clearly positive -> the
+> **position** of the two sides is a real, measurable component of the bias.  N1
+> and N2 are worth their runs, and `mean(d)` prices them.
+
+The gap is +0.0212 with a per-item SD of 0.0743, so its SE on 250 items is
+0.0047: the gap is **4.5 SE from zero**.  The level moved, the ranking did not
+(the AUC -0.0010, against an AUC noise of about 0.047 at this n), and the effect
+is 2.2 times the engine's own per-item noise.  That is a real order effect.  The
+probe's half B **fails rule (c)**, and that is recorded; but (c) is a **shipping**
+guard, the design says in words that the probe "is **not** a shipping candidate",
+and the probe is N1 and N2 **together**.  Its half-B failure therefore cannot be
+charged to either arm: N1 rewrites the criteria line, half B has no criteria line,
+and N1 is inert there by construction.  The probe's half-B loss belongs to N2 and
+to the mirror as a whole.  Killing N1 and N2 on the combined arm's (c) would be a
+rule tightened after the numbers were seen, which §6 forbids.  **N1 and N2 are
+run.**
+
+**A correction, made before N1 and N2 were run.**  An earlier version of this
+section, committed as `909d77d4`, read the same numbers as "the order axis is
+DEAD", because the probe's arm fails (c) on half B.  That reading applied a
+shipping guard to a diagnostic arm, and it treated N1 + N2 together as if it were
+each of them.  The pre-registered trigger did not fire, §3.4's second branch
+applies, and this section is corrected on 2026-10-22 **before the two arms were
+run**.  The probe's own numbers in 23.1-23.3 stand; only their reading changes.
+
+### 23.4 The arm list (written down before the arms ran)
+
+**Run: all five.**  N1 `criteria-order`, N2 `answer-order`, N3 `rule-form`, N4
+`criteria-first` and N5 `decision-rule`.  The probe kept the order axis (23.3),
+so N1 and N2 are run; N3, N4 and N5 were always in the list.  Each is one axis,
+500 noul items (half A and half B) on a freshly restarted engine.  The probe
+changed **no rule**; it changed the reading of the arm list, and that reading is
+written above before any of the five was scored.  (**N2 was later cut off by the
+engine hand-back; it is incomplete and not compared - 23.5.**)
+
+**The rule is unchanged.**  The pre-registered rules (a) to (f) of the design's
+§6 apply to each arm exactly as they were written:
+
+- (a) half A's mean TVD falls by more than **0.007** and its mean signed
+  difference moves toward zero by more than **0.007**;
+- (b) half A's AUC does not fall by more than **0.05** (a non-inferiority check:
+  the AUC's MDE at n = 250 is about 0.13, so an improvement is not measurable and
+  is not asked for);
+- (c) half B's accuracy does not fall by more than **3 items** of 250 and half
+  B's ECE does not rise by more than **0.02**;
+- (d) the 235's noul accuracy does not fall by more than **2 items** of 69 and
+  the 235's Capability does not fall by more than **0.6 points**;
+- (e) the jev-bench test sample's noul: the mean TVD to the human distribution
+  does not rise by more than **0.005** and the ECE of P(yes) does not rise by
+  more than **0.02**;
+- (f) the fast-path rate does not fall and the median latency does not rise by
+  more than **10%**.
+
+The base arm's numbers for the yardsticks are the stored ones: the 235's
+`p1b_235_T1_from_current.jsonl` (Capability **78.9**, Intelligence 75.9,
+Calibration 81.8, the noul's accuracy 61 of 69) and the jev-bench test sample's
+`p1b_jevbench_test_soft_T1.jsonl` (the noul's mean TVD **0.3836** on the 100
+`civil_comments` items, the ECE 0.3941, the AUC 0.6413).
+
+**One change to a variant's text, made before any arm was scored** (2026-10-22):
+N5's added rule line said *"answer yes only when the state satisfies the \"yes\"
+criterion"*, and a noul without criteria has no such criterion - the words had no
+referent on half of the design set.  The two options were to make N5 inert
+without criteria (so half B could not catch N5's base-rate shift and rule (c)
+would lean on the 235 for it) or to reword the line.  **The line was reworded**
+to *"answer yes only when the state supports the yes answer; otherwise answer no"*:
+the rule now names the ANSWER, not the criterion, so it is well formed on both
+halves, and the axis is unchanged.  N5 therefore stays live on half B and rule
+(c) applies to it unchanged.
+
+### 23.5 The arms
+
+**Four of the five arms are complete; `answer-order` is not.** Each completed arm
+ran 500 noul items (half A and half B) on a freshly restarted engine, answered
+**500 of 500, 0 failures, 500 of 500 on the fast path**, and was compared item by
+item against the same base arm (`p1b_pool_T1.jsonl`). The command is the probe's,
+with `--half both`:
+
+```
+python tools/decision_policy/prompt_probe.py \
+  --items ...\decision_policy_training\items\p1b_pool.jsonl \
+  --out ...\run\p1b_pool_<variant>.jsonl --arm <variant> --half both \
+  --base ...\run\p1b_pool_T1.jsonl \
+  --config ...\strata-unsloth-ud-iq4_xs-<variant>.json
+```
+
+and the numbers are `prompt_arm.py`'s on the same two files.
+
+**The design set.** The base arm's half A: mean P(yes) 0.4142, the bias +0.3047,
+the TVD 0.3313, the AUC 0.8435, the accuracy against the humans' majority 155 of
+250; half B: accuracy 84.4% (211 of 250), ECE 0.0743.
+
+| variant | half A P(yes) | half A bias | half A TVD | half A AUC | half A acc | half B acc | half B ECE | (a) | (b) | (c) |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|
+| base | 0.4142 | +0.3047 | 0.3313 | 0.8435 | 155/250 | 84.4% | 0.0743 | - | - | - |
+| N1 `criteria-order` | 0.3748 | +0.2652 | 0.2967 | 0.8412 | 168/250 | 83.6% | 0.0800 | PASS | PASS | PASS |
+| N3 `rule-form` | 0.3925 | +0.2829 | 0.3140 | 0.8328 | 164/250 | 82.4% | 0.0943 | PASS | PASS | **FAIL** |
+| N4 `criteria-first` | 0.3363 | +0.2268 | 0.2626 | 0.8422 | 177/250 | 83.6% | 0.0847 | PASS | PASS | PASS |
+| N5 `decision-rule` | 0.3870 | +0.2775 | 0.3086 | 0.8395 | 161/250 | 82.8% | 0.0922 | PASS | PASS | **FAIL** |
+
+**The yardsticks.** The jev-bench noul's base: mean TVD 0.3836, ECE 0.3941. The
+235's base is two runs, because rule (d)'s validity clause asked for a repeat and
+the repeat did not settle it (last part of this section).
+
+| variant | 235 noul | 235 Capability | jev TVD | jev ECE | (d) | (e) |
+|---|---:|---:|---:|---:|---|---|
+| base run 1 (stored) | 61/69 (88.4%) | 78.9 | 0.3836 | 0.3941 | - | - |
+| base run 2 (repeat) | 63/69 (91.3%) | 80.7 | - | - | - | - |
+| N1 `criteria-order` | 61/69 (88.4%) | 78.0 | 0.3509 | 0.3518 | **FAIL** | PASS |
+| N3 `rule-form` | 60/69 (87.0%) | 78.6 | 0.3669 | 0.3783 | PASS/FAIL | PASS |
+| N4 `criteria-first` | 63/69 (91.3%) | 80.7 | 0.3212 | 0.3192 | **PASS** | PASS |
+| N5 `decision-rule` | 62/69 (89.9%) | 78.5 | 0.3510 | 0.3451 | PASS/FAIL | PASS |
+
+**Rule (f), the cost.** Every completed arm's fast-path rate is **100%** (500 of
+500, and 100 of 100 on the jev noul), and every arm's median latency is below the
+base arm's, so (f) passes for all four. The latencies are **not comparable across
+arms**: the engine was shared with a local chat client through most of the
+session (the client's prompts are in the engine log), so the queue time is not the
+arm's. The fast-path rates and the prompt-token counts are the comparable part:
+100% everywhere, and the token medians base 251, N1 251, N3 254, N4 251, N5 267.
+
+**The verdicts.**
+
+- **N1 `criteria-order` does not ship: guard (d) fails.** (a) and (b) pass by a
+  wide mark (TVD +0.0346, the bias toward zero +0.0394, the AUC -0.0023), (c)
+  passes (2 items, ECE +0.0057; N1 is inert on half B, so that is noise), and half
+  A's accuracy rises 155 -> 168 of 250. On the 235 the noul's accuracy is 61 of 69
+  - level with base run 1 and 2 items below the repeat, exactly at the item margin
+  - but Capability is **78.0**, **-0.9** against run 1 and **-2.7** against the
+  repeat, past the 0.6 margin either way. **FAIL whichever base is used.** The
+  fall is not all in the type N1 touches - the choice's calibration is 75.4 (run
+  1: 78.9) and N1 changes no choice prompt - but the noul is 2 items lower too.
+  **Recorded as a population-specific effect**: the order lever helps the
+  9.2%-yes population and does not clear the 55.1%-yes one.
+- **N2 `answer-order` is INCOMPLETE and is not part of the comparison.** It was
+  stopped by the orchestrator's engine hand-back. It answered **13 of 500 items**
+  in its first attempt (the shared engine; kept as
+  `p1b_pool_answer-order.jsonl.partial-shared`), and the restarted attempt wrote
+  **9 rows - the same first 9 ids, re-measured** - before the server was stopped
+  (kept as `p1b_pool_answer-order.jsonl`). **At most 13 distinct items of 500 were
+  answered**, and no number from the arm is used. There is no design-set, 235 or
+  jev-bench result for N2. **N2's question - whether the answer line's order
+  carries the effect N1 did not - is therefore unanswered.**
+- **N3 `rule-form` does not ship: guard (c) fails.** (a) passes (TVD +0.0173, bias
+  +0.0217) and (b) passes (-0.0107), but half B loses **5 items** (84.4% ->
+  82.4%; the margin is 3) and its ECE rises **+0.01996** (inside 0.02 by 0.00004).
+  On the 235 it loses 1 noul item and 0.3 Capability against run 1, 3 items and
+  2.1 against the repeat - (d) turns on the base - but (c) decides it. The
+  jev-bench noul improves (TVD -0.0166, ECE -0.0158). It is the design's picture
+  of a base-rate shift: the level falls on half A and the accuracy falls on half
+  B, and the yardsticks do not see it.
+- **N4 `criteria-first` SHIPS.** It is the only arm that passes (a) to (f). The
+  half A bias falls 0.3047 -> 0.2268 (toward zero by 0.0779, eleven times the
+  0.007 margin), the TVD 0.3313 -> 0.2626, the AUC is flat (-0.0013) and the
+  accuracy against the humans' majority rises 155 -> 177 of 250; the jev-bench
+  noul's TVD falls 0.0623 and its ECE 0.0749. On the 235 it **does not fall**: its
+  noul is 63 of 69, **equal to the repeat** and 2 above run 1, and its Capability
+  is **80.7, equal to the repeat** and 1.8 above run 1. Rule (d) is a
+  non-inferiority guard, so that is a **PASS**; the *size* of the 235 "gain"
+  against run 1 is not established, because 1.8 is exactly the base's own spread
+  (below). It is a **weighing** effect and not a base-rate shift. N4 is **inert on
+  half B by construction** (half B has no criteria line to move), so half B's
+  2-item loss and +0.0104 ECE are noise and (c) is a noise check for this arm; the
+  base-rate evidence is the **235**, the 55.1%-yes population, where the variant
+  **does not lose**. The rule's warning - that a variant which lowers the yes rate
+  to match half A will cost the 235 - did not happen here: this one lowers half
+  A's mean P(yes) from 0.4142 to 0.3363 and the 235 stays level. The bias is cut
+  by about a quarter, not removed.
+- **N5 `decision-rule` does not ship: guard (c) fails.** (a) and (b) pass (TVD
+  +0.0227, bias +0.0272, AUC -0.0040); half B loses **4 items** and its ECE rises
+  +0.0179 (the ECE is inside 0.02, the accuracy is not). On the 235 it gains 1
+  noul item and loses 0.4 Capability against run 1; against the repeat it loses 1
+  item and 2.2 Capability - (d) turns on the base, but (c) decides it. The
+  jev-bench noul improves (TVD -0.0326, ECE -0.0490). The added rule line pushes
+  the base rate down on **both** halves - half A's mean P(yes) 0.4142 -> 0.3870
+  and half B's 0.4872 -> 0.4536 - and half B is where that shows.
+
+**The N5 line, and why it stayed live on half B.** The decision (in 23.4) was to
+**reword**, not to make N5 inert without criteria: the line is *"answer yes only
+when the state supports the yes answer; otherwise answer no"*, it is well formed
+on both halves, and (c) applies to N5 unchanged. It names the answer, not the
+criterion, so the axis is still "the template states when to answer yes". No
+neighbour's text was changed and no neighbour had to be re-interpreted; the
+comparison stays one-axis. The change was made before any arm was scored.
+
+**The base 235 run, and a finding against the rule's 0.6 margin.** Rule (d) says
+the base arm's own 235 run must land within **0.6** of the stored 79.8 or it is
+invalid and repeated. The stored base run, `p1b_235_T1_from_current.jsonl`, scores
+**78.9** - 0.9 outside - so it was repeated on a freshly restarted engine
+(`p1b_235_base-rerun.jsonl`). **The repeat scores 80.7** - 0.9 outside on the
+other side. Two fresh-engine base runs of the same 235, same code, same template,
+span **1.8 Capability points** (78.9 and 80.7) and **2 noul items** (61 and 63 of
+69), with two noul picks moving. The pre-registered window is 0.6, three times
+narrower than the base's own spread as realized here, and **neither base run is
+inside it**. The clause cannot be satisfied on this tree; the honest reading is
+that **the 235's overall Capability is not a 0.6-point instrument at this n**, not
+that either run is broken. Every (d) reading above is given against **both** base
+runs. The two verdicts that decide the item are stable across the choice: **N1
+fails (d) against both** (-0.9 and -2.7) and **N4 passes against both** (does not
+fall: +1.8 and 0.0). N3's and N5's (d) turn on the base, and both already fail
+(c). The noul's accuracy margin (2 items of 69) is likewise at the base's own
+2-item wobble. Nothing in §6 is changed: this is a fact about the yardstick, for
+the roadmap owner.
+
+**The conditions, and the interruption.** The arm configs in the worktree contain
+**no `--conversation-cache-min-tokens` argument** (checked after the stop), so the
+arms were started without the flag the orchestrator added mid-experiment. If that
+change reached any of the runs by another path, it reached their **latency** and
+not their picks: every latency figure here is labelled as a shared-engine figure,
+none is used for a verdict, and (f) rests on the **100% fast-path rate** in every
+arm. The engine was shared with a local chat client through much of the session,
+so no latency is presented as an isolated measurement. The `answer-order` arm was
+cut off by the engine hand-back and is incomplete, as stated above; the live
+config is the orchestrator's and is not edited by this session.
+
+### 23.6 What was not run
+
+- The **choice's and the score's arms** (C1-C4, S1-S4) are implemented and
+  tested, but not run: the design's §6 says they need their own pre-registration,
+  and the noul's arms come first.
+- **`answer-order` (N2)**: incomplete, 13 distinct items of 500, and **not part of
+  the comparison** (23.5). Its question is unanswered. It was cut off by the
+  engine hand-back, not by a failure of the arm.
+- **The base arm's pool run** was not re-run: item 1.1b's 500-item run is the base
+  arm. **The 235's base was re-run**, because rule (d)'s validity clause required
+  it; both runs are in 23.5, and together they show the 0.6-point margin is
+  smaller than the base's own spread.
+- **Combinations** (N1 + N4, N4 + N5, and the like) were not run: one axis per
+  arm, and a combination is a new pre-registration.
+- **No second seed, no second engine state per arm**, beyond the base 235's
+  repeat.
+- **No temperature.**  Every arm ran at T = 1, the direct readout, the same model
+  and the same quantization as the base arm.
+- **The engine was shared with a local chat client** through most of the arms
+  (the client's prompts are in the engine log). No latency figure is presented as
+  an isolated measurement; the fast-path rate is 100% everywhere, and the client
+  does not change the model's logits beyond the measured run-to-run wobble.

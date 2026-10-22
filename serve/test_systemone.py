@@ -16,7 +16,7 @@ from serve import systemone as sysone  # noqa: E402
 from serve import systemone_letters as sl  # noqa: E402
 from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import (ByteTokenizer, MockEngine, Service, systemone_multi_mode,  # noqa: E402
-                          systemone_readout_mode, systemone_temperatures)
+                          systemone_readout_mode, systemone_prompt_variants, systemone_temperatures)
 from serve.structured import StructuredOutputError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -726,6 +726,371 @@ class LetterReadout(unittest.TestCase):
         self.assertIs(svc._systemone_readout(), sysone)
         svc.systemone_readout = "letters"
         self.assertIs(svc._systemone_readout(), sl)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class PromptVariants(unittest.TestCase):
+    """The per-type prompt variants (docs/research/prompt_variants.md §3).
+
+    The base variant is today's text, byte for byte, and the first test below is the
+    one that matters: the default path must not change.  The expected strings in
+    BASE_* were taken from the module as it was BEFORE the variants existed, so they
+    are the bytes the endpoint has always sent - not a copy of the new code.
+
+    The per-variant tests pin the WHOLE line list of the question, so a variant that
+    changed one line too many would fail.
+    """
+
+    RAW = {"urgent": {"type": "noul", "instructions": "Urgency?",
+                      "criteria": {"true": "outage", "false": "chit-chat"}},
+           "dept": {"type": "choice", "instructions": "Which team?",
+                    "criteria": {"billing": "charges", "technical": None}},
+           "mood": {"type": "score", "instructions": "How happy?",
+                    "criteria": ["unhappy", "neutral", "happy"]}}
+    PLAIN = {"plain": {"type": "noul", "instructions": "Is the answer yes?"}}
+
+    PREAMBLE = ("State:\nSTATE\n\n\nAnswer the question on its own line as `name: answer`, "
+                "and nothing else. Copy each question name exactly. Do not repeat the question, "
+                "the type, or the instructions.\n\n\nQuestions:\n")
+
+    BASE_Noul = (PREAMBLE +
+                 '[urgent | noul] Urgency?\n'
+                 '  yes means "outage" ; no means "chit-chat"\n'
+                 '  answer yes or no\n'
+                 '  start your answer line with exactly "urgent:"')
+    BASE_CHOICE = (PREAMBLE +
+                   '[dept | choice] Which team?\n'
+                   '  answer with exactly one of these option names\n'
+                   '  - billing ("charges")\n'
+                   '  - technical\n'
+                   '  start your answer line with exactly "dept:"')
+    BASE_SCORE = (PREAMBLE +
+                  '[mood | score] How happy?\n'
+                  '  answer with exactly one of these level names, lowest first\n'
+                  '  - unhappy\n'
+                  '  - neutral\n'
+                  '  - happy\n'
+                  '  start your answer line with exactly "mood:"')
+    BASE_PLAIN = (PREAMBLE +
+                  '[plain | noul] Is the answer yes?\n'
+                  '  answer yes or no\n'
+                  '  start your answer line with exactly "plain:"')
+    BASE_SHARED = ("State:\nSTATE\n\n\nAnswer every question on its own line as `name: answer`, "
+                   "and nothing else. Copy each question name exactly. Do not repeat the question, "
+                   "the type, or the instructions.\n\n\nQuestions:\n"
+                   '[urgent | noul] Urgency?\n'
+                   '  yes means "outage" ; no means "chit-chat"\n'
+                   '  answer yes or no\n'
+                   '  start your answer line with exactly "urgent:"\n'
+                   '[dept | choice] Which team?\n'
+                   '  answer with exactly one of these option names\n'
+                   '  - billing ("charges")\n'
+                   '  - technical\n'
+                   '  start your answer line with exactly "dept:"\n'
+                   '[mood | score] How happy?\n'
+                   '  answer with exactly one of these level names, lowest first\n'
+                   '  - unhappy\n'
+                   '  - neutral\n'
+                   '  - happy\n'
+                   '  start your answer line with exactly "mood:"\n'
+                   "\nValid line starts: urgent, dept, mood. Reply with exactly one line per "
+                   "question and nothing else.")
+
+    @classmethod
+    def setUpClass(cls):
+        _, cls.QUESTIONS = sysone.validate_request({"state": "x", "questions": cls.RAW})
+        _, cls.PLAIN_Q = sysone.validate_request({"state": "x", "questions": cls.PLAIN})
+        cls.BY_TYPE = {q["type"]: (name, q) for name, q in cls.QUESTIONS}
+
+    def render(self, qtype: str, variant: str) -> str:
+        name, q = self.BY_TYPE[qtype]
+        return sysone.render_answer_prompt("STATE", name, q, variant)
+
+    def question_lines(self, prompt: str) -> list[str]:
+        """The question's own lines: everything after the preamble."""
+        lines = prompt.split("\n")
+        return lines[lines.index("Questions:") + 1:]
+
+    @staticmethod
+    def lines_after(prompt: str) -> list[str]:
+        """The lines of a one-question prompt, after the preamble."""
+        lines = prompt.split("\n")
+        return lines[lines.index("Questions:") + 1:]
+
+    # ---------------------------------------------------------------- the base arm
+
+    def test_the_base_prompt_is_byte_identical(self):
+        """The default path sends exactly the bytes it sent before the variants."""
+        for qtype, expected in (("noul", self.BASE_Noul), ("choice", self.BASE_CHOICE),
+                                 ("score", self.BASE_SCORE)):
+            name, q = self.BY_TYPE[qtype]
+            with self.subTest(qtype=qtype):
+                self.assertEqual(sysone.render_answer_prompt("STATE", name, q), expected)
+                self.assertEqual(sysone.render_answer_prompt("STATE", name, q, "base"), expected)
+                self.assertEqual(sysone.render_answer_prompt("STATE", name, q, variant="base"),
+                                 expected)
+
+    def test_the_shared_prompt_is_byte_identical(self):
+        self.assertEqual(sysone.render_prompt("STATE", self.QUESTIONS), self.BASE_SHARED)
+        self.assertEqual(sysone.render_prompt("STATE", self.QUESTIONS, {}), self.BASE_SHARED)
+        self.assertEqual(sysone.render_prompt("STATE", self.QUESTIONS,
+                                              {"noul": "base", "choice": "base", "score": "base"}),
+                         self.BASE_SHARED)
+
+    def test_the_absent_config_is_byte_identical(self):
+        """No "prompt" key in the config: the endpoint reads the same bytes."""
+        resolved = systemone_prompt_variants({})
+        self.assertEqual(resolved, {"noul": "base", "choice": "base", "score": "base"})
+        for qtype, expected in (("noul", self.BASE_Noul), ("choice", self.BASE_CHOICE),
+                                 ("score", self.BASE_SCORE)):
+            name, q = self.BY_TYPE[qtype]
+            with self.subTest(qtype=qtype):
+                self.assertEqual(
+                    sysone.render_answer_prompt("STATE", name, q, resolved[qtype]), expected)
+        self.assertEqual(sysone.render_prompt("STATE", self.QUESTIONS, resolved), self.BASE_SHARED)
+
+    def test_a_noul_without_criteria_is_byte_identical(self):
+        name, q = self.PLAIN_Q[0]
+        self.assertEqual(sysone.render_answer_prompt("STATE", name, q), self.BASE_PLAIN)
+        self.assertEqual(sysone.render_answer_prompt("STATE", name, q, "base"), self.BASE_PLAIN)
+
+    # ---------------------------------------------------------------- the noul's arms
+
+    NOUL_LINES = {
+        "base": ['[urgent | noul] Urgency?',
+                 '  yes means "outage" ; no means "chit-chat"',
+                 '  answer yes or no',
+                 '  start your answer line with exactly "urgent:"'],
+        "criteria-order": ['[urgent | noul] Urgency?',
+                           '  no means "chit-chat" ; yes means "outage"',
+                           '  answer yes or no',
+                           '  start your answer line with exactly "urgent:"'],
+        "answer-order": ['[urgent | noul] Urgency?',
+                         '  yes means "outage" ; no means "chit-chat"',
+                         '  answer no or yes',
+                         '  start your answer line with exactly "urgent:"'],
+        "rule-form": ['[urgent | noul] Urgency?',
+                      '  answer yes if the state is "outage"; answer no if the state is "chit-chat"',
+                      '  answer yes or no',
+                      '  start your answer line with exactly "urgent:"'],
+        "criteria-first": ['  yes means "outage" ; no means "chit-chat"',
+                           '[urgent | noul] Urgency?',
+                           '  answer yes or no',
+                           '  start your answer line with exactly "urgent:"'],
+        "decision-rule": ['[urgent | noul] Urgency?',
+                          '  yes means "outage" ; no means "chit-chat"',
+                          '  answer yes only when the state supports the yes answer; '
+                          'otherwise answer no',
+                          '  answer yes or no',
+                          '  start your answer line with exactly "urgent:"'],
+        "swap": ['[urgent | noul] Urgency?',
+                 '  no means "chit-chat" ; yes means "outage"',
+                 '  answer no or yes',
+                 '  start your answer line with exactly "urgent:"'],
+    }
+
+    def test_the_noul_variants(self):
+        for variant, expected in self.NOUL_LINES.items():
+            with self.subTest(variant=variant):
+                self.assertEqual(self.question_lines(self.render("noul", variant)), expected)
+
+    def test_a_noul_without_criteria(self):
+        """No criteria: the variants that rewrite or move the criteria line are inert,
+        and the ones that touch the answer line still apply."""
+        name, q = self.PLAIN_Q[0]
+        inert = ['[plain | noul] Is the answer yes?',
+                 '  answer yes or no',
+                 '  start your answer line with exactly "plain:"']
+        for variant in ("base", "criteria-order", "rule-form", "criteria-first"):
+            with self.subTest(variant=variant):
+                self.assertEqual(
+                    self.lines_after(sysone.render_answer_prompt("STATE", name, q, variant)), inert)
+        self.assertEqual(
+            self.lines_after(sysone.render_answer_prompt("STATE", name, q, "answer-order")),
+            ['[plain | noul] Is the answer yes?',
+             '  answer no or yes',
+             '  start your answer line with exactly "plain:"'])
+        self.assertEqual(
+            self.lines_after(sysone.render_answer_prompt("STATE", name, q, "decision-rule")),
+            ['[plain | noul] Is the answer yes?',
+             '  answer yes only when the state supports the yes answer; otherwise answer no',
+             '  answer yes or no',
+             '  start your answer line with exactly "plain:"'])
+        self.assertEqual(
+            self.lines_after(sysone.render_answer_prompt("STATE", name, q, "swap")),
+            ['[plain | noul] Is the answer yes?',
+             '  answer no or yes',
+             '  start your answer line with exactly "plain:"'])
+
+    # ------------------------------------------------------- the choice's and the score's arms
+
+    CHOICE_LINES = {
+        "base": ['[dept | choice] Which team?',
+                 '  answer with exactly one of these option names',
+                 '  - billing ("charges")',
+                 '  - technical',
+                 '  start your answer line with exactly "dept:"'],
+        "options-order": ['[dept | choice] Which team?',
+                          '  answer with exactly one of these option names',
+                          '  - technical',
+                          '  - billing ("charges")',
+                          '  start your answer line with exactly "dept:"'],
+        "evidence": ['[dept | choice] Which team?',
+                     '  answer with exactly one of these option names',
+                     '  pick the option the state best supports; if none fits, pick the closest',
+                     '  - billing ("charges")',
+                     '  - technical',
+                     '  start your answer line with exactly "dept:"'],
+        "one-best": ['[dept | choice] Which team?',
+                     '  answer with exactly one of these option names, the one the state best supports',
+                     '  - billing ("charges")',
+                     '  - technical',
+                     '  start your answer line with exactly "dept:"'],
+        "options-first": ['  - billing ("charges")',
+                          '  - technical',
+                          '[dept | choice] Which team?',
+                          '  answer with exactly one of these option names',
+                          '  start your answer line with exactly "dept:"'],
+    }
+
+    SCORE_LINES = {
+        "base": ['[mood | score] How happy?',
+                 '  answer with exactly one of these level names, lowest first',
+                 '  - unhappy',
+                 '  - neutral',
+                 '  - happy',
+                 '  start your answer line with exactly "mood:"'],
+        "direction": ['[mood | score] How happy?',
+                      '  answer with exactly one of these level names, highest first',
+                      '  - happy',
+                      '  - neutral',
+                      '  - unhappy',
+                      '  start your answer line with exactly "mood:"'],
+        "wording": ['[mood | score] How happy?',
+                    '  answer with exactly one of these level names',
+                    '  - unhappy',
+                    '  - neutral',
+                    '  - happy',
+                    '  start your answer line with exactly "mood:"'],
+        "levels-first": ['  - unhappy',
+                         '  - neutral',
+                         '  - happy',
+                         '[mood | score] How happy?',
+                         '  answer with exactly one of these level names, lowest first',
+                         '  start your answer line with exactly "mood:"'],
+        "full-scale": ['[mood | score] How happy?',
+                       '  answer with exactly one of these level names, lowest first',
+                       '  answer with exactly one of these level names; the state may support '
+                       'any of them, not only the ends',
+                       '  - unhappy',
+                       '  - neutral',
+                       '  - happy',
+                       '  start your answer line with exactly "mood:"'],
+    }
+
+    def test_the_choice_variants(self):
+        for variant, expected in self.CHOICE_LINES.items():
+            with self.subTest(variant=variant):
+                self.assertEqual(self.question_lines(self.render("choice", variant)), expected)
+
+    def test_the_score_variants(self):
+        for variant, expected in self.SCORE_LINES.items():
+            with self.subTest(variant=variant):
+                self.assertEqual(self.question_lines(self.render("score", variant)), expected)
+
+    # ---------------------------------------------------------------- the refusals
+
+    def test_an_unknown_variant_is_refused(self):
+        for qtype in ("noul", "choice", "score"):
+            with self.subTest(qtype=qtype):
+                with self.assertRaises(ValueError):
+                    self.render(qtype, "no-such-variant")
+        # a variant that belongs to another type is not accepted either
+        with self.assertRaises(ValueError):
+            self.render("choice", "answer-order")
+
+    def test_the_variant_names_are_the_ones_the_config_knows(self):
+        for qtype, names in sysone.PROMPT_VARIANTS.items():
+            with self.subTest(qtype=qtype):
+                self.assertEqual(names[0], "base")
+                self.assertIn(qtype, ("noul", "choice", "score"))
+                for name in names:
+                    self.assertIn(name, systemone_prompt_variants(
+                        {"systemone": {"prompt": {qtype: name}}})[qtype])
+
+
+class PromptVariantConfig(unittest.TestCase):
+    """The config's "systemone": {"prompt": {...}} - one variant per question type."""
+
+    def test_the_default_is_base(self):
+        self.assertEqual(systemone_prompt_variants({}),
+                         {"noul": "base", "choice": "base", "score": "base"})
+        self.assertEqual(systemone_prompt_variants({"systemone": {"enabled": True}}),
+                         {"noul": "base", "choice": "base", "score": "base"})
+        self.assertEqual(systemone_prompt_variants({"systemone": None}),
+                         {"noul": "base", "choice": "base", "score": "base"})
+
+    def test_the_three_types(self):
+        for qtype in ("noul", "choice", "score"):
+            for name in sysone.PROMPT_VARIANTS[qtype]:
+                with self.subTest(qtype=qtype, variant=name):
+                    got = systemone_prompt_variants({"systemone": {"prompt": {qtype: name}}})
+                    self.assertEqual(got[qtype], name)
+                    self.assertEqual(got["noul" if qtype != "noul" else "choice"], "base")
+
+    def test_an_unknown_type_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_prompt_variants({"systemone": {"prompt": {"nope": "base"}}})
+
+    def test_an_unknown_variant_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_prompt_variants({"systemone": {"prompt": {"noul": "swap-everything"}}})
+        with self.assertRaises(ValueError):
+            # a variant that belongs to another type
+            systemone_prompt_variants({"systemone": {"prompt": {"choice": "answer-order"}}})
+
+    def test_a_value_that_is_not_a_name_is_refused(self):
+        for bad in (1, True, None, ["base"], {"base": 1}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    systemone_prompt_variants({"systemone": {"prompt": {"noul": bad}}})
+
+    def test_a_block_that_is_not_an_object_is_refused(self):
+        with self.assertRaises(ValueError):
+            systemone_prompt_variants({"systemone": {"prompt": "base"}})
+
+    def test_the_status_reports_the_resolved_variants(self):
+        svc = svc_with()
+        self.assertEqual(svc.v1_status()["systemone"]["prompt"],
+                         {"noul": "base", "choice": "base", "score": "base"})
+        svc.systemone_prompt = systemone_prompt_variants(
+            {"systemone": {"prompt": {"noul": "swap"}}})
+        self.assertEqual(svc.v1_status()["systemone"]["prompt"],
+                         {"noul": "swap", "choice": "base", "score": "base"})
+
+    def test_the_service_picks_the_variant_by_type(self):
+        """The call site's own rule: the question's TYPE picks the variant, and a
+        type that is not in the config is on "base"."""
+        svc = svc_with()
+        self.assertEqual(svc._decision_prompt_variant("noul"), "base")
+        self.assertEqual(svc._decision_prompt_variant("choice"), "base")
+        self.assertEqual(svc._decision_prompt_variant("score"), "base")
+        svc.systemone_prompt = systemone_prompt_variants(
+            {"systemone": {"prompt": {"noul": "swap", "score": "direction"}}})
+        self.assertEqual(svc._decision_prompt_variant("noul"), "swap")
+        self.assertEqual(svc._decision_prompt_variant("score"), "direction")
+        self.assertEqual(svc._decision_prompt_variant("choice"), "base")
+        # and the prompt it renders with it is the variant's
+        _, questions = sysone.validate_request({"state": "x", "questions": {
+            "urgent": {"type": "noul", "instructions": "Urgency?",
+                       "criteria": {"true": "outage", "false": "chit-chat"}}}})
+        name, q = questions[0]
+        self.assertIn('  no means "chit-chat" ; yes means "outage"',
+                      sysone.render_answer_prompt("STATE", name, q,
+                                                  svc._decision_prompt_variant("noul")))
 
 
 if __name__ == "__main__":

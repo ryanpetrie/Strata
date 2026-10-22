@@ -158,6 +158,60 @@ Every candidate arm is recovered out of one run: the T = 1 arm, the temperature 
 any candidate (the transform is invertible, so one run carries them all).  For each arm the script reports
 the mean total variation distance to the HUMAN distribution - overall, per type and per config - and the
 official scorer's Capability, Intelligence and Calibration.  The inversion is validated, not assumed.
+## The per-type prompt variant
+
+The endpoint can render a question's own lines in a few alternative ways, one per question type.  The
+default, `base`, is **today's text, byte for byte**; the launch config picks the others:
+
+```json
+"systemone": {
+  "enabled": true,
+  "diagnostics": true,
+  "prompt": {"noul": "criteria-order", "choice": "base", "score": "base"}
+}
+```
+
+The key is **opt-in**: without it every type is on `base`, and `base` is the prompt the endpoint has
+always sent - `serve/test_systemone.py` pins those bytes against the module as it was before the
+feature.  A variant that is not a name, or a question type the endpoint does not have, is a startup
+error, not a silent default.  The server prints the variants it is using at startup, and
+`/v1/status` carries them beside the temperature.
+
+The variants, one axis each, and what each one changes (the full design, the measurement and the
+pre-registered rule are in `docs/research/prompt_variants.md`):
+
+| type | variant | what it changes |
+| --- | --- | --- |
+| noul | `criteria-order` | the two sides of the criteria line are presented in the other order |
+| noul | `answer-order` | the answer line names "no" before "yes" |
+| noul | `rule-form` | the criteria read as a rule ("answer yes if the state is ...") |
+| noul | `criteria-first` | the criteria line comes before the question's header |
+| noul | `decision-rule` | the template states when to answer yes |
+| noul | `swap` | **the probe**: `criteria-order` and `answer-order` together.  It measures the order component of the noul's bias and is **not** a shipping candidate |
+| choice | `options-order` | the options are listed in the other order |
+| choice | `evidence` | a line is added: pick the option the state best supports |
+| choice | `one-best` | the existing line gains ", the one the state best supports" |
+| choice | `options-first` | the option lines come before the question's header |
+| score | `direction` | the levels are listed highest-first, and the line says so |
+| score | `wording` | the line loses ", lowest first"; the list order stays |
+| score | `levels-first` | the level lines come before the question's header |
+| score | `full-scale` | a line is added: the state may support any level, not only the ends |
+
+The probe's two tools:
+
+```sh
+python tools/decision_policy/prompt_design_set.py --items <the pool's p1b_pool.jsonl>
+python tools/decision_policy/prompt_probe.py --items <p1b_pool.jsonl> --out <swap.jsonl> --dry-run
+python tools/decision_policy/prompt_probe.py --items <p1b_pool.jsonl> --out <swap.jsonl> \
+  --base <the base arm's predictions.jsonl> --report <report.md>
+```
+
+`prompt_design_set.py` prints the design set's composition (the noul's 500 items in two halves, at a
+9.2% and a 45.2% gold "yes" rate - the base-rate check).  `prompt_probe.py` runs the **swap** arm on
+the design set's half A and reports the three readouts: the **flip rate** (the share of items whose
+pick changes between the two arms), the **swap gap** `mean(P_yes(base) - P_yes(swap))`, and the
+**AUC** of P(yes) against the humans' hard label.  The variant is a launch-config value, so the
+probe's arm is a server start: the server must be running with `"prompt": {"noul": "swap"}`.
 
 ## The other datasets
 
@@ -276,6 +330,9 @@ is in the companion doc's section 20.
 | `readings_compare.py`, `readings_split.py` | source | the two readings of the confidence against the outcome. |
 | `vram_headroom.py` | source | the free VRAM during a run. |
 | `temperature.py` | source | the per-type temperature: the fit, the cross-validation, and the official scorer's numbers. |
+| `prompt_probe.py` | source | the prompt probe: the noul's template mirrored, the design set's half A, and the three readouts (the flip rate, the swap gap, the AUC). |
+| `prompt_design_set.py` | source | the design set's composition: the noul's two halves and their base rates. |
+| `test_prompt_probe.py` | source | the probe's arithmetic: the readouts and the pre-registered reading of them. |
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
 | `temperature_report.md` | generated | the fit's report: the objectives, the cross-validation, the limits. |
 | `temperature_pool_calibration.json` | generated | the same, for the fit on the jev-bench validation pool (the constants that are NOT shipped). |

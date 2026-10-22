@@ -76,6 +76,7 @@ from serve.structured import StructuredOutputError, prepare_format, validated_js
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
 from serve import images as images_api  # noqa: E402
+from serve.systemone import PROMPT_VARIANTS  # noqa: E402
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -3532,6 +3533,7 @@ class Service:
         self.systemone_multi = "separate"            # "systemone": {"multi": "shared"} turns on the old shared prompt for several questions
         self.systemone_temperature = {"choice": 1.0, "noul": 1.0, "score": 1.0}   # the config's "systemone": {"temperature": ...}
         self.systemone_readout = "tokens"            # "systemone": {"readout": "letters"} reads the answer as a letter
+        self.systemone_prompt = {t: "base" for t in PROMPT_VARIANTS}   # the config's "systemone": {"prompt": ...}
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4364,6 +4366,15 @@ class Service:
         except (TypeError, ValueError):
             return 1.0
 
+    def _decision_prompt_variant(self, qtype: str) -> str:
+        """The prompt variant for this question type: the config's
+        "systemone": {"prompt": {"noul": V, "choice": V, "score": V}}.
+
+        "base" means "today's text", and it is the default: the path that stays
+        byte-identical to the release before the feature.
+        """
+        return (getattr(self, "systemone_prompt", None) or {}).get(qtype, "base")
+
     def _decision_request_id(self) -> str:
         """The id of the request in flight: the API request monitor's own row when there
         is one (so both views name the same request), else a fresh one."""
@@ -4607,7 +4618,8 @@ class Service:
         from serve import systemone as sysone
         readout = self._systemone_readout()
         messages = [{"role": "system", "content": readout.system_message(questions)},
-                    {"role": "user", "content": readout.render_prompt(state_text, questions)}]
+                    {"role": "user", "content": readout.render_prompt(
+                        state_text, questions, getattr(self, "systemone_prompt", None))}]
         max_new = min(sysone.MAX_TOKENS_PER_QUESTION * len(questions), sysone.MAX_TOKENS_CAP)
         self.load()
         ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
@@ -4654,7 +4666,8 @@ class Service:
         # turn (measured: <|im_end|> was the top token at the answer position).
         prefix = f"{name}:"
         messages = [{"role": "system", "content": readout.system_message(questions)},
-                    {"role": "user", "content": readout.render_answer_prompt(state_text, name, q)}]
+                    {"role": "user", "content": readout.render_answer_prompt(
+                        state_text, name, q, self._decision_prompt_variant(q["type"]))}]
         self.load()
         ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
                                               sysone.MAX_TOKENS_PER_QUESTION, force=prefix,
@@ -4965,14 +4978,16 @@ class Service:
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             # the decision endpoint: is it on, does it report the alternative reading,
             # does a request with several questions share one prompt, is the reported
-            # distribution scaled by a temperature, and is the answer read as a letter
-            # or as the options' own tokens
+            # distribution scaled by a temperature, is the answer read as a letter or as
+            # the options' own tokens, and which prompt variant is in force
             "systemone": {"enabled": bool(self.systemone_enabled),
                            "diagnostics": bool(self.systemone_diagnostics),
                            "multi": self.systemone_multi,
                            "temperature": {k: v for k, v in
                                            (getattr(self, "systemone_temperature", None) or {}).items()},
-                           "readout": self.systemone_readout},
+                           "readout": self.systemone_readout,
+                           "prompt": {k: v for k, v in
+                                      (getattr(self, "systemone_prompt", None) or {}).items()}},
             "activity": {"requests": totals["requests"] + running,
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -8399,6 +8414,35 @@ def systemone_readout_mode(cfg: dict) -> str:
     if mode not in ("tokens", "letters"):
         raise ValueError(f'"systemone": {{"readout": ...}} must be "tokens" or "letters", not {mode!r}')
     return mode
+def systemone_prompt_variants(cfg: dict) -> dict[str, str]:
+    """The config's "systemone": {"prompt": {"noul": V, "choice": V, "score": V}}.
+
+    One prompt variant per question type.  "base" means "today's text": the default,
+    and the path that stays byte-identical to the release before the feature.  The
+    variants are the per-type alternatives in serve/systemone.py's PROMPT_VARIANTS
+    (docs/research/prompt_variants.md has the list and the measurement design).
+
+    An invalid value is an error, not a silent default: a typo in a config must not
+    quietly change the prompt the model reads.
+    """
+    out = {t: "base" for t in PROMPT_VARIANTS}
+    block = cfg.get("systemone")
+    variants = block.get("prompt") if isinstance(block, dict) else None
+    if variants is None:
+        return out
+    if not isinstance(variants, dict):
+        raise ValueError('"systemone": {"prompt": ...} must be an object with one variant name '
+                         "per question type (choice, noul, score)")
+    for key, value in variants.items():
+        if key not in out:
+            raise ValueError(f'"systemone": {{"prompt": ...}} has an unknown question type '
+                             f"{key!r}: use choice, noul or score")
+        if not isinstance(value, str) or value not in PROMPT_VARIANTS[key]:
+            raise ValueError(f'"systemone": {{"prompt": {key!r}: ...}} must be one of '
+                             + ", ".join(repr(v) for v in PROMPT_VARIANTS[key])
+                             + f", not {value!r}")
+        out[key] = value
+    return out
 
 
 def with_component_engine(cfg: dict) -> dict:
@@ -8791,6 +8835,20 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
         svc.systemone_readout = systemone_readout_mode(cfg)
     except ValueError as e:
         raise SystemExit(f"[strata] config {e}")
+    try:
+        svc.systemone_prompt = systemone_prompt_variants(cfg)
+    except ValueError as e:
+        raise SystemExit(f"[strata] config {e}")
+    _variants = {k: v for k, v in svc.systemone_prompt.items() if v != "base"}
+    if _variants and svc.systemone_readout == "letters":
+        raise SystemExit('[strata] config "systemone": {"readout": "letters"} and a prompt '
+                         "variant cannot be used together: the variants are the direct readout's "
+                         "lines, and the letter template is its own.  Set the readout to "
+                         '"tokens", or set every variant back to "base".')
+    if _variants:
+        print("[strata] decisions: the questions are rendered in another prompt variant ("
+              + ", ".join(f"{k} {v}" for k, v in _variants.items())
+              + ') ("systemone": {"prompt": {...}} in the config)', flush=True)
     if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
         print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
               flush=True)

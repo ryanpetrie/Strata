@@ -101,10 +101,17 @@ def question_lines(name: str, q: dict) -> list[str]:
     return lines
 
 
-def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
+def render_answer_prompt(state_text: str, name: str, q: dict,
+                         variant: str = "base") -> str:
     """A single-question prompt with the options lettered.  The answer line's prefix
     ("name: ") is NOT here: it prefills the ASSISTANT's turn, so the next token the
-    model writes is the answer itself (the letter)."""
+    model writes is the answer itself (the letter).
+
+    `variant` is accepted for the same call shape as serve/systemone.py and is not
+    used: the per-type prompt variants are the DIRECT readout's lines, and the letter
+    template is its own.  serve/server.py refuses a start-up where a variant is
+    configured and the letter readout is on, so this can never silently ignore one.
+    """
     parts = ["State:\n" + state_text + "\n",
              "\nAnswer the question on its own line as `name: answer`, and nothing else. "
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
@@ -113,9 +120,13 @@ def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
     return "\n".join(parts)
 
 
-def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
+def render_prompt(state_text: str, questions: list[tuple[str, dict]],
+                  variants: dict | None = None) -> str:
     """One prompt for the whole request: the state once, then every question, with the
-    options lettered."""
+    options lettered.
+
+    `variants` is accepted for the same call shape as serve/systemone.py and is not
+    used (see render_answer_prompt)."""
     parts = ["State:\n" + state_text + "\n",
              "\nAnswer every question on its own line as `name: answer`, and nothing else. "
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
