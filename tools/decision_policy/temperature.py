@@ -778,6 +778,15 @@ def main() -> int:
     if model is None and args.config.exists():
         model = json.loads(args.config.read_text(encoding="utf-8")).get("model_name")
 
+    # the three inputs must be there: a missing run log means the run did not
+    # finish, and a traceback would hide that behind a stack of frames
+    for label, path in (("items", args.items), ("runlog", args.runlog),
+                        ("predictions", args.predictions)):
+        if not path.exists():
+            raise SystemExit("the %s file is not there: %s" % (label, path))
+    if not args.scorer.exists():
+        raise SystemExit("the official scorer is not there: %s" % args.scorer)
+
     scorer = load_scorer(args.scorer)
     items = read_jsonl(args.items)
     runlog = read_jsonl(args.runlog)
