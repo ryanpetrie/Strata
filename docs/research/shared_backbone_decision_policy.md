@@ -3353,7 +3353,10 @@ arm's. The fast-path rates and the prompt-token counts are the comparable part:
   jev-bench noul improves (TVD -0.0166, ECE -0.0158). It is the design's picture
   of a base-rate shift: the level falls on half A and the accuracy falls on half
   B, and the yardsticks do not see it.
-- **N4 `criteria-first` SHIPS.** It is the only arm that passes (a) to (f). The
+- **N4 `criteria-first` clears the pre-registered rule; it is not applied.** It is
+  the only arm that passes (a) to (f). The branch's default is `base` and the live
+  config carries no `prompt` key; enabling it is one config key
+  (`"systemone": {"prompt": {"noul": "criteria-first"}}`). The
   half A bias falls 0.3047 -> 0.2268 (toward zero by 0.0779, eleven times the
   0.007 margin), the TVD 0.3313 -> 0.2626, the AUC is flat (-0.0013) and the
   accuracy against the humans' majority rises 155 -> 177 of 250; the jev-bench
