@@ -1,10 +1,12 @@
 # Per-type prompt variants: a pre-registered ablation
 
-**Status:** the design is written, **the mechanism is built** (2026-10-21) and **the
-probe and the first arms have been run** (2026-10-22). The record of the runs is
-in the companion doc **§20**; this document holds the design, the variants and the
-pre-registered rule, and points at the results. Every number below is either
-**measured** (and says where) or **static analysis** (and says so).
+**Status:** the design is written, **the mechanism is built** (2026-10-21), and
+**the probe and four of the five noul arms have been measured** (2026-10-22);
+`answer-order` (N2) is **incomplete** and is not part of the comparison. The
+record of the runs is in the companion doc **§20**; this document holds the design,
+the variants and the pre-registered rule, and §9 holds the results in one table.
+Every number below is either **measured** (and says where) or **static analysis**
+(and says so).
 
 This is the plan for roadmap item 1.5
 ([decision_policy_roadmap.md](decision_policy_roadmap.md) §1.5). It is a plan, not
@@ -930,7 +932,7 @@ script does the comparison, writes the report and exits 0.
 
 ### 4.6 What changed from the design
 
-Three things, and one of them is a defect the implementation found.
+Four things, and one of them is a defect the implementation found.
 
 1. **`swap` is now a launch-config name** (§4.2). The design said the probe must
    not be reachable from a config; the implementation needs it to be, because the
@@ -939,7 +941,8 @@ Three things, and one of them is a defect the implementation found.
 2. **The choice's and the score's arms are implemented** (C1-C4, S1-S4), not only
    the noul's. The mechanism generalised cleanly, and §6's last paragraph says the
    choice's and the score's arms need their own pre-registration before they are
-   run; that is still true, and nothing has been run.
+   run; that is still true. The **noul's** arms were run on 2026-10-22; the
+   choice's and the score's were not.
 3. **N5's rule line was reworded, before any arm was scored.** The design's text
    said *"answer yes only when the state satisfies the \"yes\" criterion"*, and a
    noul without criteria has no such criterion - the words had no referent on half
@@ -956,8 +959,15 @@ Three things, and one of them is a defect the implementation found.
 4. **The probe's arm was also run on half B** (2026-10-22). The design priced the
    probe at one arm on half A; the measurement came back between the design's two
    branches, and half B is where the design's own rule (c) lives, so the probe's
-   arm was run there as well. The arm list, and the rule that applies to it, are
-   in the companion doc §20.
+   arm was run there as well. **The reading kept the order axis**: the swap gap is
+   +0.0212, under 0.05, but the flip rate is 6.0%, not the engine's 1% wobble, so
+   §6's conjunction did not fire and §3.4's second branch applies. **The five noul
+   arms were started; four completed** - `answer-order` was cut off by the engine
+   hand-back after 13 of 500 items (the restarted attempt re-answered the first 9
+   before the server was stopped) and is not part of the comparison. The arm list,
+   the numbers and the rule are in the companion doc §20 and §9 below. A first
+   reading of the probe, committed as `909d77d4`, called the axis dead; the
+   companion doc §20.3 records the correction, made before N1 and N2 were run.
 
 ---
 
@@ -1310,9 +1320,10 @@ base-rate guard, and without them the discipline is a formality.
 
 ## 8. The limits
 
-- **Nothing here has been run.** The probe has not been run, no variant has been
-  rendered into a live server, and the GPU numbers are budgets computed from
-  other runs' measured rates, not measurements of this design.
+- **The noul is measured; the choice and the score are not.** The probe and the
+  five noul arms were run on 2026-10-22 (companion doc §20, and §9 below). The
+  choice's and the score's arms (C1-C4, S1-S4) are implemented and tested but not
+  run: §6 says each needs its own pre-registration first.
 - **Every mechanism claim in §2 and §3 is static analysis.** The hypotheses are
   what the arms would test. The one thing §2.4 establishes is a code-reading
   result: the readout cannot invert the sign.
@@ -1332,3 +1343,65 @@ base-rate guard, and without them the discipline is a formality.
   licences that oblige nothing beyond attribution, and the `test` split of every
   source stays a yardstick. OpenDecisions says in plain words that it is not for
   training, and it is used here only as a yardstick, never to choose a variant.
+
+---
+
+## 9. The results (2026-10-22)
+
+The probe and the noul arms were run on the licence-clean pool, each completed arm
+on a freshly restarted engine, 500 of 500 items answered, 0 failures, 100% on the
+fast path. The record, the commands and the per-arm detail are in the companion
+doc **§20**.
+
+**The probe (P1).** Half A, 250 items: the base arm's mean P(yes) 0.4142, the
+probe's 0.3930; the swap gap **+0.0212** (per-item SD 0.0743, so 4.5 SE from
+zero); **15 of 250 picks moved** (13 better, 2 worse); the AUC 0.8435 -> 0.8426.
+Half B, the 45.2%-yes population: the accuracy 84.4% -> 82.0% (**6 items** worse)
+and the ECE 0.0743 -> 0.1045 (**+0.0301**), so the probe **fails rule (c)**. The
+pre-registered trigger for killing the order axis - the gap below 0.05 **and** the
+flip rate near the engine's 1% wobble - **did not fire**: the gap is 0.0212 but
+the flips are **6.0%**, six times the floor. §3.4's second branch applies ("the
+flip rate is well above 1% and `mean(d)` is clearly positive"), so the position is
+a real component and **N1 and N2 were run**. The probe's half-B failure is N1 + N2
+together and cannot be charged to N1, which is inert on half B.
+
+**The arms.** Against the base arm (half A: P(yes) 0.4142, bias +0.3047, TVD
+0.3313, AUC 0.8435; half B: 84.4%, ECE 0.0743):
+
+| variant | (a) calibration | (b) ranking | (c) base rate | (d) the 235 | (e) jev noul | (f) cost | verdict |
+|---|---|---|---|---|---|---|---|
+| **N1 `criteria-order`** | PASS +0.0346 | PASS -0.0023 | PASS 2 items, +0.0057 | **FAIL** -0.9 and -2.7 | PASS -0.0326, -0.0422 | PASS | **does not ship** (population-specific) |
+| **N2 `answer-order`** | not run | not run | not run | not run | not run | not run | **incomplete, 13 of 500; not compared** |
+| **N3 `rule-form`** | PASS +0.0173 | PASS -0.0107 | **FAIL 5 items**, +0.01996 | PASS/FAIL on the base | PASS -0.0166, -0.0158 | PASS | **does not ship** |
+| **N4 `criteria-first`** | PASS +0.0687 | PASS -0.0013 | PASS 2 items, +0.0104 | **PASS** +1.8 and 0.0 | PASS -0.0623, -0.0749 | PASS | **SHIPS** |
+| **N5 `decision-rule`** | PASS +0.0227 | PASS -0.0040 | **FAIL 4 items**, +0.0179 | PASS/FAIL on the base | PASS -0.0326, -0.0490 | PASS | **does not ship** |
+
+**N4 `criteria-first` is the one shipping candidate.** It cuts half A's bias from
++0.3047 to +0.2268 and its TVD from 0.3313 to 0.2626, leaves the AUC flat, and
+**does not lose on the 55.1%-yes population**: its 235 noul is 63 of 69 (equal to
+the repeated base run) and its Capability is 80.7 (equal to that run, 1.8 above
+the first). The jev-bench test split agrees (TVD -0.0623, ECE -0.0749). It is a
+weighing effect, not a base-rate shift. The bias is cut by about a quarter, not
+removed: the rest is still item 1.4's problem. The live config is left with **no
+`prompt` key and no `temperature` key**; applying N4 is one config key the roadmap
+owner can add.
+
+**N1 and N2.** N1 passes (a), (b), (c) and (e) but fails (d): its 235 Capability
+is 78.0, 0.9 below the first base run and 2.7 below the repeat, and its noul is 2
+items below the repeat. It helps the 9.2%-yes half (accuracy 155 -> 168 of 250)
+and does not clear the 55.1%-yes population, so it is recorded as a
+**population-specific effect**, not shipped. **N2 `answer-order` is incomplete**:
+**13 distinct items of 500** were answered before the engine hand-back (the
+restarted attempt re-answered the first 9 and then the server was stopped). No
+number from it is used, and the question of whether the answer line carries what
+N1 did not is **unanswered**.
+
+**A finding about the 235 as an instrument.** Rule (d) invalidates the base arm's
+own 235 run if it is more than 0.6 from the stored 79.8. The stored run scores
+78.9; the repeat, on a fresh engine, **80.7**. Two base runs span **1.8 Capability
+points** and 2 noul items, so the 0.6 margin is three times narrower than the
+base's own spread and **neither run is inside the window**. The clause cannot be
+satisfied on this tree, and the 235's overall Capability is not a 0.6-point
+instrument at n = 69 noul / 235 total. Every (d) reading is given against both
+base runs; the decisive verdicts are stable (N1 fails both, N4 passes both). This
+is recorded for the roadmap owner and does not change §6.

@@ -2500,7 +2500,8 @@ run**.  The probe's own numbers in 20.1-20.3 stand; only their reading changes.
 so N1 and N2 are run; N3, N4 and N5 were always in the list.  Each is one axis,
 500 noul items (half A and half B) on a freshly restarted engine.  The probe
 changed **no rule**; it changed the reading of the arm list, and that reading is
-written above before any of the five was scored.
+written above before any of the five was scored.  (**N2 was later cut off by the
+engine hand-back; it is incomplete and not compared - 20.5.**)
 
 **The rule is unchanged.**  The pre-registered rules (a) to (f) of the design's
 §6 apply to each arm exactly as they were written:
@@ -2539,18 +2540,168 @@ halves, and the axis is unchanged.  N5 therefore stays live on half B and rule
 
 ### 20.5 The arms
 
-(filled in as they are run)
+**Four of the five arms are complete; `answer-order` is not.** Each completed arm
+ran 500 noul items (half A and half B) on a freshly restarted engine, answered
+**500 of 500, 0 failures, 500 of 500 on the fast path**, and was compared item by
+item against the same base arm (`p1b_pool_T1.jsonl`). The command is the probe's,
+with `--half both`:
+
+```
+python tools/decision_policy/prompt_probe.py \
+  --items ...\decision_policy_training\items\p1b_pool.jsonl \
+  --out ...\run\p1b_pool_<variant>.jsonl --arm <variant> --half both \
+  --base ...\run\p1b_pool_T1.jsonl \
+  --config ...\strata-unsloth-ud-iq4_xs-<variant>.json
+```
+
+and the numbers are `prompt_arm.py`'s on the same two files.
+
+**The design set.** The base arm's half A: mean P(yes) 0.4142, the bias +0.3047,
+the TVD 0.3313, the AUC 0.8435, the accuracy against the humans' majority 155 of
+250; half B: accuracy 84.4% (211 of 250), ECE 0.0743.
+
+| variant | half A P(yes) | half A bias | half A TVD | half A AUC | half A acc | half B acc | half B ECE | (a) | (b) | (c) |
+|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|
+| base | 0.4142 | +0.3047 | 0.3313 | 0.8435 | 155/250 | 84.4% | 0.0743 | - | - | - |
+| N1 `criteria-order` | 0.3748 | +0.2652 | 0.2967 | 0.8412 | 168/250 | 83.6% | 0.0800 | PASS | PASS | PASS |
+| N3 `rule-form` | 0.3925 | +0.2829 | 0.3140 | 0.8328 | 164/250 | 82.4% | 0.0943 | PASS | PASS | **FAIL** |
+| N4 `criteria-first` | 0.3363 | +0.2268 | 0.2626 | 0.8422 | 177/250 | 83.6% | 0.0847 | PASS | PASS | PASS |
+| N5 `decision-rule` | 0.3870 | +0.2775 | 0.3086 | 0.8395 | 161/250 | 82.8% | 0.0922 | PASS | PASS | **FAIL** |
+
+**The yardsticks.** The jev-bench noul's base: mean TVD 0.3836, ECE 0.3941. The
+235's base is two runs, because rule (d)'s validity clause asked for a repeat and
+the repeat did not settle it (last part of this section).
+
+| variant | 235 noul | 235 Capability | jev TVD | jev ECE | (d) | (e) |
+|---|---:|---:|---:|---:|---|---|
+| base run 1 (stored) | 61/69 (88.4%) | 78.9 | 0.3836 | 0.3941 | - | - |
+| base run 2 (repeat) | 63/69 (91.3%) | 80.7 | - | - | - | - |
+| N1 `criteria-order` | 61/69 (88.4%) | 78.0 | 0.3509 | 0.3518 | **FAIL** | PASS |
+| N3 `rule-form` | 60/69 (87.0%) | 78.6 | 0.3669 | 0.3783 | PASS/FAIL | PASS |
+| N4 `criteria-first` | 63/69 (91.3%) | 80.7 | 0.3212 | 0.3192 | **PASS** | PASS |
+| N5 `decision-rule` | 62/69 (89.9%) | 78.5 | 0.3510 | 0.3451 | PASS/FAIL | PASS |
+
+**Rule (f), the cost.** Every completed arm's fast-path rate is **100%** (500 of
+500, and 100 of 100 on the jev noul), and every arm's median latency is below the
+base arm's, so (f) passes for all four. The latencies are **not comparable across
+arms**: the engine was shared with a local chat client through most of the
+session (the client's prompts are in the engine log), so the queue time is not the
+arm's. The fast-path rates and the prompt-token counts are the comparable part:
+100% everywhere, and the token medians base 251, N1 251, N3 254, N4 251, N5 267.
+
+**The verdicts.**
+
+- **N1 `criteria-order` does not ship: guard (d) fails.** (a) and (b) pass by a
+  wide mark (TVD +0.0346, the bias toward zero +0.0394, the AUC -0.0023), (c)
+  passes (2 items, ECE +0.0057; N1 is inert on half B, so that is noise), and half
+  A's accuracy rises 155 -> 168 of 250. On the 235 the noul's accuracy is 61 of 69
+  - level with base run 1 and 2 items below the repeat, exactly at the item margin
+  - but Capability is **78.0**, **-0.9** against run 1 and **-2.7** against the
+  repeat, past the 0.6 margin either way. **FAIL whichever base is used.** The
+  fall is not all in the type N1 touches - the choice's calibration is 75.4 (run
+  1: 78.9) and N1 changes no choice prompt - but the noul is 2 items lower too.
+  **Recorded as a population-specific effect**: the order lever helps the
+  9.2%-yes population and does not clear the 55.1%-yes one.
+- **N2 `answer-order` is INCOMPLETE and is not part of the comparison.** It was
+  stopped by the orchestrator's engine hand-back. It answered **13 of 500 items**
+  in its first attempt (the shared engine; kept as
+  `p1b_pool_answer-order.jsonl.partial-shared`), and the restarted attempt wrote
+  **9 rows - the same first 9 ids, re-measured** - before the server was stopped
+  (kept as `p1b_pool_answer-order.jsonl`). **At most 13 distinct items of 500 were
+  answered**, and no number from the arm is used. There is no design-set, 235 or
+  jev-bench result for N2. **N2's question - whether the answer line's order
+  carries the effect N1 did not - is therefore unanswered.**
+- **N3 `rule-form` does not ship: guard (c) fails.** (a) passes (TVD +0.0173, bias
+  +0.0217) and (b) passes (-0.0107), but half B loses **5 items** (84.4% ->
+  82.4%; the margin is 3) and its ECE rises **+0.01996** (inside 0.02 by 0.00004).
+  On the 235 it loses 1 noul item and 0.3 Capability against run 1, 3 items and
+  2.1 against the repeat - (d) turns on the base - but (c) decides it. The
+  jev-bench noul improves (TVD -0.0166, ECE -0.0158). It is the design's picture
+  of a base-rate shift: the level falls on half A and the accuracy falls on half
+  B, and the yardsticks do not see it.
+- **N4 `criteria-first` SHIPS.** It is the only arm that passes (a) to (f). The
+  half A bias falls 0.3047 -> 0.2268 (toward zero by 0.0779, eleven times the
+  0.007 margin), the TVD 0.3313 -> 0.2626, the AUC is flat (-0.0013) and the
+  accuracy against the humans' majority rises 155 -> 177 of 250; the jev-bench
+  noul's TVD falls 0.0623 and its ECE 0.0749. On the 235 it **does not fall**: its
+  noul is 63 of 69, **equal to the repeat** and 2 above run 1, and its Capability
+  is **80.7, equal to the repeat** and 1.8 above run 1. Rule (d) is a
+  non-inferiority guard, so that is a **PASS**; the *size* of the 235 "gain"
+  against run 1 is not established, because 1.8 is exactly the base's own spread
+  (below). It is a **weighing** effect and not a base-rate shift. N4 is **inert on
+  half B by construction** (half B has no criteria line to move), so half B's
+  2-item loss and +0.0104 ECE are noise and (c) is a noise check for this arm; the
+  base-rate evidence is the **235**, the 55.1%-yes population, where the variant
+  **does not lose**. The rule's warning - that a variant which lowers the yes rate
+  to match half A will cost the 235 - did not happen here: this one lowers half
+  A's mean P(yes) from 0.4142 to 0.3363 and the 235 stays level. The bias is cut
+  by about a quarter, not removed.
+- **N5 `decision-rule` does not ship: guard (c) fails.** (a) and (b) pass (TVD
+  +0.0227, bias +0.0272, AUC -0.0040); half B loses **4 items** and its ECE rises
+  +0.0179 (the ECE is inside 0.02, the accuracy is not). On the 235 it gains 1
+  noul item and loses 0.4 Capability against run 1; against the repeat it loses 1
+  item and 2.2 Capability - (d) turns on the base, but (c) decides it. The
+  jev-bench noul improves (TVD -0.0326, ECE -0.0490). The added rule line pushes
+  the base rate down on **both** halves - half A's mean P(yes) 0.4142 -> 0.3870
+  and half B's 0.4872 -> 0.4536 - and half B is where that shows.
+
+**The N5 line, and why it stayed live on half B.** The decision (in 20.4) was to
+**reword**, not to make N5 inert without criteria: the line is *"answer yes only
+when the state supports the yes answer; otherwise answer no"*, it is well formed
+on both halves, and (c) applies to N5 unchanged. It names the answer, not the
+criterion, so the axis is still "the template states when to answer yes". No
+neighbour's text was changed and no neighbour had to be re-interpreted; the
+comparison stays one-axis. The change was made before any arm was scored.
+
+**The base 235 run, and a finding against the rule's 0.6 margin.** Rule (d) says
+the base arm's own 235 run must land within **0.6** of the stored 79.8 or it is
+invalid and repeated. The stored base run, `p1b_235_T1_from_current.jsonl`, scores
+**78.9** - 0.9 outside - so it was repeated on a freshly restarted engine
+(`p1b_235_base-rerun.jsonl`). **The repeat scores 80.7** - 0.9 outside on the
+other side. Two fresh-engine base runs of the same 235, same code, same template,
+span **1.8 Capability points** (78.9 and 80.7) and **2 noul items** (61 and 63 of
+69), with two noul picks moving. The pre-registered window is 0.6, three times
+narrower than the base's own spread as realized here, and **neither base run is
+inside it**. The clause cannot be satisfied on this tree; the honest reading is
+that **the 235's overall Capability is not a 0.6-point instrument at this n**, not
+that either run is broken. Every (d) reading above is given against **both** base
+runs. The two verdicts that decide the item are stable across the choice: **N1
+fails (d) against both** (-0.9 and -2.7) and **N4 passes against both** (does not
+fall: +1.8 and 0.0). N3's and N5's (d) turn on the base, and both already fail
+(c). The noul's accuracy margin (2 items of 69) is likewise at the base's own
+2-item wobble. Nothing in §6 is changed: this is a fact about the yardstick, for
+the roadmap owner.
+
+**The conditions, and the interruption.** The arm configs in the worktree contain
+**no `--conversation-cache-min-tokens` argument** (checked after the stop), so the
+arms were started without the flag the orchestrator added mid-experiment. If that
+change reached any of the runs by another path, it reached their **latency** and
+not their picks: every latency figure here is labelled as a shared-engine figure,
+none is used for a verdict, and (f) rests on the **100% fast-path rate** in every
+arm. The engine was shared with a local chat client through much of the session,
+so no latency is presented as an isolated measurement. The `answer-order` arm was
+cut off by the engine hand-back and is incomplete, as stated above; the live
+config is the orchestrator's and is not edited by this session.
 
 ### 20.6 What was not run
 
 - The **choice's and the score's arms** (C1-C4, S1-S4) are implemented and
   tested, but not run: the design's §6 says they need their own pre-registration,
   and the noul's arms come first.
-- **The 235 and the jev-bench test sample were not re-run for the base arm.**
-  The stored runs of item 1.1b are the base arm, and a re-run would have cost an
-  engine slot for a number that is already measured.
-- **No second seed, no second engine state per arm.**  Each arm is one run on a
-  freshly restarted engine, and the engine's own run-to-run wobble is the
-  yardstick the margins are set against.
+- **`answer-order` (N2)**: incomplete, 13 distinct items of 500, and **not part of
+  the comparison** (20.5). Its question is unanswered. It was cut off by the
+  engine hand-back, not by a failure of the arm.
+- **The base arm's pool run** was not re-run: item 1.1b's 500-item run is the base
+  arm. **The 235's base was re-run**, because rule (d)'s validity clause required
+  it; both runs are in 20.5, and together they show the 0.6-point margin is
+  smaller than the base's own spread.
+- **Combinations** (N1 + N4, N4 + N5, and the like) were not run: one axis per
+  arm, and a combination is a new pre-registration.
+- **No second seed, no second engine state per arm**, beyond the base 235's
+  repeat.
 - **No temperature.**  Every arm ran at T = 1, the direct readout, the same model
   and the same quantization as the base arm.
+- **The engine was shared with a local chat client** through most of the arms
+  (the client's prompts are in the engine log). No latency figure is presented as
+  an isolated measurement; the fast-path rate is 100% everywhere, and the client
+  does not change the model's logits beyond the measured run-to-run wobble.
