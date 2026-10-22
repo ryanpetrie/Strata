@@ -1796,3 +1796,256 @@ Measured:
 | the graded score | 0.923 | 0.923 |
 | the 235-item OpenDecisions sample | 79.8 | 79.2 (inside the noise floor) |
 | the suite | - | 1,014 tests, 0 failures |
+
+---
+
+## 18. The per-type temperature (2026-10-21)
+
+### 18.1 What was missing
+
+The endpoint reported the model's own distribution and nothing adjusted it.  The
+roadmap's item 1.1 asked for one temperature per question type, fitted on the
+235-item OpenDecisions sample and applied at serve time, so that the reported
+distribution is calibrated.
+
+**The premise turned out to be wrong, and the measurement says so.**  The plan was
+that the model is over-confident, so a temperature above 1 (the dataset's own README
+quotes letter-readout temperatures of 5.96, 7.2444 and 7.2444, fitted on other data).
+On this sample the opposite is true: the model's errors sit in the **middle** of the
+confidence range, where it is UNDER-confident, so the temperature that helps is
+**below 1**.  The three objectives that were fitted disagree, and the disagreement is
+the finding:
+
+| objective | what it minimizes | choice | noul | score |
+|---|---|---:|---:|---:|
+| nll | the negative log-likelihood of the gold label | 1.16 | 1.57 | 0.94 |
+| **brier** | the multiclass Brier score | **0.62** | **0.67** | **0.77** |
+| ece | the scorer's own ECE for the type | 0.58 | 0.67 | 0.75 |
+
+The NLL is the textbook objective and it is dominated by the items the model gets
+wrong with confidence (a wrong item at p = 0.99 costs -log(0.01) = 4.6), while the
+ECE is a per-bin average that treats every bin alike.  The Brier score is between the
+two: smooth and proper, like the NLL, but quadratic, so a confidently wrong item
+costs a bounded amount.  **The Brier score is the one that is served**, and all three
+are cross-validated in `tools/decision_policy/temperature_report.md`.
+
+### 18.2 What was done
+
+**The serving side.**  The launch config carries one temperature per question type:
+
+```json
+"systemone": {"enabled": true, "diagnostics": true,
+              "temperature": {"choice": 0.62, "noul": 0.67, "score": 0.77}}
+```
+
+The key is **opt-in**: without it every type is 1.0, and 1.0 means "no temperature" -
+the reported numbers are then exactly the ones §10 reported (the default path is
+byte-identical).  A temperature that is not a number, is not above 0, or names a
+question type the endpoint does not have is a startup error, not a silent default.
+
+The temperature is applied to the **option-level** effective logits, which is the
+closed reading (the options renormalized over themselves):
+
+```
+closed_T(i) = normalize(closed_1(i) ** (1/T))
+```
+
+That is exact, and it is why the fit could be made offline on a stored run log and
+the server reproduces it: the same expression, the same order of operations.  For the
+**trie walk** the two possible forms are NOT the same thing: an option's weight is a
+product of per-node token probabilities, so "divide each node's logit by T" divides
+by a different normalizer per option (the options' paths have different numbers of
+nodes).  The option-level form is the coherent one, and the only one that can be
+reproduced offline.  For a single-row question the two forms are identical.
+
+**The open reading, plainly.**  The open reading is the model's OWN probability of each
+option, `P = exp(logit - logz)`, with the full-vocabulary normalizer `logz`.  At
+temperature T it would be `exp(logit/T) / Z(T)`, and **Z(T) is not available**: the
+server has the engine's top-k window and the T = 1 normalizer, not the whole 248,320
+token vocabulary.  So the mass the model put on the options (measured at T = 1) is
+kept and the closed reading at T is what it is scaled by:
+
+```
+open_T(i) = closed_T(i) * M,    M = the mass on the options at T = 1
+```
+
+**That is NOT the model's own probability at temperature T.**  It keeps the three
+properties the endpoint promises - the confidence is in [0, 1], it never exceeds the
+reported distribution's maximum, and a larger T lowers it - and it is the number the
+diagnostics and the response report.  The mass outside the options (`stop`,
+`outside`) is left at its T = 1 value: the temperature reshapes the distribution OVER
+the options.
+
+**The PICK cannot change**: the map is monotone, so the answer is the same under
+every temperature.  One thing it does move is the scorer's **Intelligence for a
+`score` question**, because the scorer reads the EXPECTED level, and the expected
+level moves with the temperature.  Measured below, not assumed.
+
+The **decode path** (the fallback, when the model wrote something that is not an
+option) reports the degenerate 1.0/0.0 distribution, and a temperature is a
+mathematical no-op on it (1^(1/T) = 1, 0^(1/T) = 0), so it is not scaled.
+
+### 18.3 The fit
+
+`tools/decision_policy/temperature.py` reads the baseline run log and the baseline
+predictions, rebuilds each item's closed distribution (cross-checked against the run
+log's own readings: 235 items, 0 mismatches), fits one scalar per type, validates it
+and writes the constants with their provenance.
+
+| | |
+|---|---|
+| the model | `qwen3.8-flash-next-unsloth-ud-iq4_xs` |
+| the arm | the serial first-token path, 235/235 predicted, every item on the fast path |
+| the objective | the mean multiclass Brier score of the distribution against the gold label |
+| the grid | [0.5, 10.0], step 0.01 (the optimum is below 1, so the grid has to reach there) |
+| the split rule | 5-fold cross-validation, stratified by type: every type's items sorted by id, shuffled with `random.Random(42)` and dealt round-robin into the five folds; the temperature of a fold is fitted on the other four folds and applied to the fold's own items.  A 70/30 split (the same seed, the same stratification) is the second check. |
+| the seed | 42 |
+| the constants | choice 0.62, noul 0.67, score 0.77 |
+
+The constants and their provenance are in
+`tools/decision_policy/temperature_calibration.json`; the fit's own report, with every
+table, is in `tools/decision_policy/temperature_report.md`.
+
+### 18.4 The validation: the fit never sees the item it is scored on
+
+The ECEs are the scorer's own (its `ece` function, on the same pairs it uses: the
+top-label ECE on the **hard tier only** for choice - 53 of the 107 choice items - the
+ECE of P(yes) for noul, the top-level ECE for score).  Out-of-fold over the five
+folds, and a 70/30 split as the second check:
+
+| type | ECE at T = 1 | ECE, the fitted constants (in-sample) | ECE, out-of-fold (5 folds) | ECE, 70/30 held out |
+|---|---:|---:|---:|---:|
+| choice | 0.1313 | 0.1128 | **0.1224** | **0.0374** (from 0.1696) |
+| noul | 0.0756 | 0.0656 | 0.0786 | **0.1721** (from 0.1791) |
+| score | 0.1082 | 0.0682 | **0.0649** | **0.1031** (from 0.1783) |
+
+(the third column is the fit on every item of the type, so it is in-sample; the fourth
+is the honest one; the fifth is the 70/30 held-out slice, which is thin - 32 choice
+items of which about 15 are hard, 21 noul, 18 score - so its ECEs are much larger than
+the full sample's for that reason alone.)
+
+The official scorer, on the out-of-fold predictions (every item scaled by the
+temperature of the fold it was **not** in):
+
+| run | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|
+| the baseline arm (T = 1) | 79.8 | 78.0 | 81.7 |
+| the out-of-fold fit (nll) | 79.1 | 78.3 | 79.8 |
+| **the out-of-fold fit (brier)** | **81.5** | **79.4** | **83.5** |
+| the out-of-fold fit (ece) | 81.2 | 79.2 | 83.3 |
+| the in-sample fit (what the server gets) | 82.1 | 79.2 | 84.9 |
+
+Per type, out-of-fold: the calibration 73.7 -> **75.5** (choice), 84.9 -> 84.3 (noul),
+86.3 -> **90.8** (score); the competence 86.7 -> 86.7 (choice), 80.5 -> 80.5 (noul),
+**66.9 -> 71.1** (score - the expected level moves towards the pick when the
+distribution is sharpened, and the scorer reads the expected level).
+
+**The NLL arm is the interesting one: it makes things worse** (Capability 79.1 against
+the baseline's 79.8) and its ECE is worse for the choice and the noul.  A reader who
+fits a temperature on this sample with the textbook objective and ships it will lose
+0.7 Capability points.
+
+How sure is the fit?  The items of the type resampled with replacement, the
+temperature fitted again on each resample, the ECE measured on it at T = 1 and at the
+fitted temperature: the temperature lowers the ECE in **72%** (choice), **75%** (noul)
+and **78%** (score) of 1,000 resamples.  The direction is right; the size is inside
+the sample's noise.
+
+### 18.5 The re-run of the 235-item sample (IN-SAMPLE)
+
+ENGINE FRESHLY RESTARTED on 2026-10-21: the server tree was stopped, the engine
+process exited (the card went back to 23,219 MiB free), and the server was started
+again, so the model was loaded from scratch before the run (§12.5).  The fitted
+constants in the launch config, the same 235 ids, one question per request, the
+official `score.py` on `sample10_items.jsonl`.
+
+**235 of 235 answered, 0 failures, every item on the fast path.**  The commands:
+
+```
+python tools/decision_policy/opendecisions.py --items <opendecisions.jsonl> \
+  --out <fix_serial_temp.jsonl> --ids-file <sample10.txt> --batch-k 1
+python <score.py> <fix_serial_temp.jsonl> --data <sample10_items.jsonl>
+```
+
+| run | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---|---|---|
+| the baseline arm, re-scored (T = 1) | 79.8 | 78.0 | 81.7 | 89.7% / 73.7 | 91.3% / 84.9 | 79.7% / 86.3 |
+| **the same run with the temperature undone (T = 1)** | 78.9 | 75.9 | 81.8 | 88.8% / 78.9 | 88.4% / 79.2 | 78.0% / 87.4 |
+| **the re-run with the temperature (T = 0.62 / 0.67 / 0.77)** | **80.1** | **77.0** | **83.1** | 88.8% / **80.8** | 88.4% / **81.8** | 78.0% / 86.7 |
+
+(per type: accuracy and the scorer's calibration component.)
+
+**The middle row is the one that measures the temperature.**  It is the SAME run with
+the temperature undone - the same engine, the same picks, the same logits, the
+temperature's own arithmetic removed from the distributions (the closed reading put
+back through `normalize(closed_T ** T)`) - so the difference between the middle row
+and the bottom row is the temperature and nothing else:
+
+| | Capability | Intelligence | Calibration | choice cal. | noul cal. | score cal. | score comp. |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| the temperature's own effect on this run | **+1.2** | **+1.1** | **+1.3** | +1.9 | +2.6 | -0.7 | +3.2 |
+
+The re-run against the baseline arm is **+0.3** Capability, which is inside the
+run-to-run spread of this sample (§10.8: about 0.6 points, and the arms measured on
+this sample read 78.9, 79.1, 79.2, 79.5, 79.6, 79.8, 80.4).
+
+**The picks: 5 of 235 moved against the baseline arm** (230 the same, none lost).
+The temperature cannot move a pick - the map is monotone - so those 5 are the
+engine's own run-to-run wobble (§10.8: the KV cache's layout changes the logits a
+little and a near-tie flips).  All five are near-ties, and in every one of them the
+new run's top two options are the same pair as the baseline's, in the other order:
+
+| item | type | the baseline's top two | the new run's top two | margin |
+|---|---|---|---|---:|
+| `jb16-jaggedness-526f673178` | choice | thursday 0.249 / tuesday 0.234 | tuesday 0.334 / thursday 0.237 | 0.015 |
+| `jb16-jaggedness-5f9ee60589` | noul | yes 0.507 / no 0.470 | no 0.522 / yes 0.452 | 0.037 |
+| `jb16-calibration_gen-18680f3547` | noul | yes 0.548 / no 0.429 | no 0.500 / yes 0.473 | 0.027 |
+| `jb16-composite_gen-ecf4aba46e` | score | 2: 0.448 / 3: 0.332 | 3: 0.495 / 2: 0.361 | 0.116 |
+| `jb16-multilingual-0746bb0c27` | choice | chunked_pipeline_mid 0.518 / frontier_direct 0.383 | frontier_direct 0.569 / chunked_pipeline_mid 0.399 | 0.136 |
+
+(the noul's numbers are the model's own probability of yes, from the run log's open
+reading.)
+
+**The cost.**  The latency median was **3.77 s** a question and the p95 **5.82 s**,
+against the baseline arm's log's 3.12 s and 5.68 s.  The temperature cannot be the
+reason: it is four `pow` calls per question, measured at **1.2 us** on this machine,
+and it runs after the engine's turn.  The two runs also differ in their engine
+state, and both show the same growth over the run (the conversation cache's parked
+conversations): the first 40 items took 2.42 s a question (the baseline's first 40:
+2.06 s) and the last 40 took 5.60 s (the baseline's: 5.35 s).  A clean A/B on one
+engine was not run, so the 0.65 s of median difference is not attributed to anything
+in particular; it is not the temperature's arithmetic.
+
+**The VRAM**: the minimum free was **1064 MiB** (1206 at load) against the engine's
+1024 MiB warning threshold, no sample below it, the largest conversation snapshot
+488 MiB - the same shape as §10.8's 1082 MiB.
+
+The mean TVD to the known true probabilities, on the 13 calibration items: **0.250**
+(the baseline arm's 0.224, the temperature-undone run's 0.229).  The sharpening
+makes the distribution less smooth, and on 13 items that costs a little distance to
+the true probabilities - the price of a sharper answer, and the number to watch if
+the endpoint is used for uncertainty rather than for a pick.
+
+### 18.6 The limits
+
+- **The re-run is IN-SAMPLE.**  The constants were fitted on these same 235 items, so
+  its Capability is not an unbiased estimate of anything.  The honest number is the
+  out-of-fold one: **81.5** against the baseline's 79.8.
+- **The dataset says not to fit on it.**  Its README: "fit temperatures on your own
+  data, never on OpenDecisions".  The roadmap asks for this fit, so the numbers are
+  labelled as they are.  The independent check is the **jev-bench** run with the
+  human soft labels (roadmap item 1.2): there the question is not "is the model right"
+  but "is the confidence calibrated to the uncertainty a human would feel" (§14).
+- **The exit criterion is NOT met for all three types.**  The held-out ECE is lower
+  for the choice (0.1313 -> 0.1224) and the score (0.1082 -> 0.0649) questions, and
+  for the noul questions it is a wash: 0.0756 -> 0.0786 out-of-fold, inside the
+  noise.  The noul's ECE curve is jagged and shallow around T = 1 (0.0756 at T = 1,
+  0.0656 at its in-sample minimum) and its minimum does not survive the
+  cross-validation.
+- **The choice ECE is a thin slice**: 53 of the 107 choice items, and the five folds
+  hold 6 to 15 of them.  The fold table in the fit's report says how thin.
+- **One temperature per type is one number for a whole family of questions.**  A
+  temperature per question would fit better and would not be honest.
+- **The constants belong to this model.**  They were fitted on one model's readings
+  of one dataset; another model (or another quantization of it) needs its own fit.
+
