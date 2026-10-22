@@ -3414,3 +3414,151 @@ config is the orchestrator's and is not edited by this session.
   (the client's prompts are in the engine log). No latency figure is presented as
   an isolated measurement; the fast-path rate is 100% everywhere, and the client
   does not change the model's logits beyond the measured run-to-run wobble.
+---
+
+## 24. The affine calibration, and the rule it is judged by (2026-10-22)
+
+Roadmap item 1.4.  The per-type temperature is one scalar, and a scalar moves a
+distribution's **scale**.  On the noul questions the measured error is the **centre**:
+the model over-predicts "yes" on 95 of the 100 human-labelled items, the mean signed
+difference is **+0.357** on a mean absolute **0.384** (93% of the TVD), and its mean
+P(yes) is **0.446** against the humans' **0.089** (§19.6).  The soft refit of §20 moved the
+noul's TVD by **0.0025** while moving the choice's by 0.056 and the score's by 0.032
+(§20.8).  A temperature cannot move a distribution's centre.  This item fits **two
+parameters per type**.
+
+**This section is written BEFORE the fit is run.**  The rule below is the rule of §20.2,
+committed on 2026-10-21 and unchanged: it is not re-written here.  What is new is how it
+is read per question type, and that reading is fixed here, before the numbers.  The tool
+was smoke-tested on a **coarse grid** (steps of 0.5 and 2 folds) before this section was
+committed, so that a broken tool could not masquerade as a measurement; the rule and the
+expected outcome were not changed by it, and the numbers below are the full-grid fit
+(steps of 0.01 and 5 folds).  Said plainly rather than hidden.
+
+### 24.1 The map, and why the three types do not share one form
+
+One map on the **closed** distribution - the same object the temperature scales, the
+distribution over the item's own labels - with a scale `T` and a shift `b` along a
+per-label coordinate `s_l` in the type's natural unit:
+
+```
+p'_l = normalize( p_l ** (1/T) * exp(b * s_l) )
+```
+
+| type | parameters | the coordinate `s_l` | what `b` means |
+|---|---|---|---|
+| noul | T, b | 0 for no, 1 for yes | `logit(P'(yes)) = logit(P(yes))/T + b`: the shift, in log-odds - exactly "a scale and a shift" |
+| score | T, b | the level's index 0..K-1 | a tilt along the ordinal axis, in log-odds per level: a location parameter |
+| choice | T | none | **not identified**: a shift that is the same for every option is cancelled by the normalizer |
+
+**Why the score gets a tilt and not a shift.**  Its measured error is a **location**
+error: on the jev-bench direct arm the expected level sits **+0.1348** above the gold on
+the level scale (§22.5), and the humans' own expected level is higher still (the bias
+against the humans is +0.291 on the pool and +0.339 on the test - the fit below).  A
+location error needs a location parameter, and for an ordinal distribution the smooth,
+invertible one is a tilt along the level index.  A literal translation `p'_k = p_{k-d}`
+is not smooth and is undefined at the ends; a shift that is the same for every level is a
+no-op under the normalizer.
+
+**Why the choice gets no second parameter.**  The choice's measured error is a **shape**
+error, not a location one: the model's top-label mass is 0.7862 against the humans'
+0.6215 (§19.5), and a scale is what fixes a shape.  There is also no order among the
+options to attach a shift to, and a constant shift over the options is cancelled by the
+normalizer.  Two parameters per type **where two are meaningful**, not two everywhere, is
+the honest answer: a fitted "shift" for the choice would be a number with no referent.
+
+**The map is invertible**, `undo(q) = apply(q, 1/T, -b*T)`, so a stored run carries every
+arm inside it - which is what makes the offline paired comparison exact (the
+`retemperature.py` trick generalised).  The tool checks the round trip on every item of
+every population and records the worst difference.  With `b = 0` the map **is** the
+server's `apply_temperature`, called, not copied.  Unlike a temperature it can **move the
+pick**: the noul can cross 0.5 and the score's argmax can move.  That is the point - the
+noul's answer is what is wrong - and every population's accuracy is reported beside its
+TVD because of it.  The map is **not in the server**; this item measures it.
+
+### 24.2 The objective
+
+The **cross-entropy against the human distribution** (`target_probs`) is the primary: it
+is a strictly proper scoring rule (its minimum is the human distribution itself), it is
+what the jev-bench yardstick measures, and it is the **same `soft` objective** as item
+1.1b's primary arm, so the two fits are like for like.  The **mean TVD** to the human
+distribution is the **control**: TVD is the metric the rule reads, but it is a distance
+and not a proper scoring rule, so it is not the shipped objective - the fit below shows
+what it does to the noul (it drives it to a near-degenerate "no").
+
+### 24.3 The fit and the populations
+
+**The pool** is the licence-clean fitting set of item 1.1b:
+`tools/decision_policy/soft_label_pool.json`, 1,500 items, 500 a type, of which **250 a
+type carry a human distribution** (`go_emotions`, `civil_comments`,
+`measuring_hate_speech`).  The fit reads the stored T = 1 pool run
+(`...\decision_policy_training\run\p1b_pool_T1.jsonl` and its run log) and nothing else.
+**OpenDecisions is never fitted on.**
+
+**The validation** is the temperature fit's own: 5-fold cross-validation, stratified by
+type, seed **42** (`temperature.stratified_folds`), the map of a fold fitted on the other
+four folds' items of the type that carry a human distribution, and applied to the fold's
+own items.  The tool asserts that no item is in both the fold and its fit.  The grid is
+T in [0.5, 10] and b in [-8, 8], coarse then fine; the objective is convex in (1/T, b),
+so the grid's best point is the global minimum up to the grid.
+
+**The three populations, each out of one stored run**, so the arms are paired - the same
+engine, the same picks, the same logits, the same state, only the arithmetic differs:
+
+| population | items | the T = 1 arm | the affine arm |
+|---|---:|---|---|
+| the pool (the fit's own) | 1,500 (750 with humans) | the pool run, `p1b_pool_T1.jsonl` | **out of fold** |
+| OpenDecisions | 235 (13 with humans) | `p1b_235_T1_from_current.jsonl` | the full pool fit |
+| the jev-bench test sample | 683 (280 with humans) | `p1b_jevbench_test_soft_T1.jsonl` | the full pool fit |
+
+Reported per type and per population: the mean **TVD** to the human distribution, the
+**mean signed difference** in the type's own unit (the noul's P(yes) gap; the score's
+expected-level gap in levels; for the choice the **top-label mass gap**, because a
+per-label signed difference sums to zero by construction on a simplex), the **AUC**, and
+the official scorer's numbers (`...\opendecisions\score.py`, run on the re-scaled
+predictions), with the paired item bootstrap for the intervals.
+
+### 24.4 The rule, and how it is read per type
+
+The rule is §20.2's, **unchanged**: a constant ships only if **(a)** the pool's
+out-of-fold calibration improves against the pool's own T = 1 arm, **(b)** the jev-bench
+test TVD does not get worse than T = 1 by more than **0.005**, and **(c)** the
+OpenDecisions 235's Capability does not fall below its T = 1 arm - all paired.  The noul
+is judged separately and its failure does not block the other types.
+
+Two readings of that rule are fixed here:
+
+* **(a) and (b) are read per type** - a map is fitted per type, so the type is the unit.
+  **(c) is the population-level guard**: the Capability of the arm made of the types that
+  pass (a) and (b).  The scorer's Intelligence and Calibration are means over the three
+  types of each type's own component, and a type's map changes only that type's
+  component, so every subset's Capability is **exact** from the per-type arms - the tool
+  asserts the subset table reproduces the all-three arm to 1e-9.  If the candidate set
+  fails (c), the **noul is removed first** (it is judged separately) and (c) is re-checked
+  for the others; a set that still fails (c) ships nothing.
+* **The noul's separate judgement** is its own (a), its own (b), and its own 235 row (its
+  accuracy and competence on that population) - the table reports all three.
+
+### 24.5 The expected outcome, before the numbers
+
+**The noul's shift should help against the humans and should cost the 235.**  The fit
+sees 250 `civil_comments` items whose humans say yes **9.2%** of the time (§23), while the
+235's noul items are a majority-"yes" population (the model's accuracy there is 61 of 69
+in the stored run) and are **the best-calibrated of the three types on that sample**
+(noul 79.2 against the choice 78.9 and the score 87.4).  A shift fitted to a 9%-yes
+population should lower the 235's yes rate until its noul answers flip, and (c) should
+fail.  The choice's scale-only map is the temperature again, and the soft T on this pool
+was 3.65 with (a) and (b) passing and (c) failing by 19.3 (§20.7) - the same is likely.
+The score's tilt is the one with a chance to behave differently, because it targets the
+location error; but it is fitted against the **humans'** expected level, which is not the
+gold level, so it may over-correct the decision while fixing the distance to the people.
+
+**"No constant ships" is therefore a live and likely outcome, and a population-specific
+result is still a result.**  What the item can establish either way: whether a shift on
+the noul's logit closes the human gap out of sample, whether discrimination moves (a
+monotone map cannot move the noul's AUC - only its level and its picks), and whether the
+choice's and the score's maps are scale problems or something else.
+
+The fit's artifacts are `tools/decision_policy/affine_calibration.json` and
+`tools/decision_policy/affine_report.md`; the tool is `tools/decision_policy/affine.py`.
+The results follow in 24.6.
