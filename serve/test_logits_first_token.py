@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from serve import logits_first_token as lft      # noqa: E402
 from serve import systemone as sysone            # noqa: E402
+from serve import systemone_letters as sl        # noqa: E402
 from serve.frontend import ChatTemplate          # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, StrataEngine  # noqa: E402
 from serve.structured import StructuredOutputError  # noqa: E402
@@ -871,6 +872,118 @@ class ServiceTemperature(unittest.TestCase):
         svc.systemone_temperature = {"choice": 2.0}
         self.assertEqual(svc._decision_temperature("choice"), 2.0)
         self.assertEqual(svc._decision_temperature("noul"), 1.0)      # the rest is untouched
+
+
+class LetterTokens(unittest.TestCase):
+    """The letters at the answer position: one token each, and no two of them the
+    same token, so the options cannot collide.
+
+    That is the whole point of the letter readout, and it is a structural fact, not
+    a measurement: the trie walk exists for the case where two options share their
+    first token, and the letters never do.
+    """
+
+    def setUp(self):
+        self.tok = Tok()
+
+    def test_the_letters_are_distinct_tokens(self):
+        ids = sl.letter_token_ids(["A", "B", "C"], self.tok, PREFIX)
+        flat = [i for v in ids.values() for i in v]
+        self.assertTrue(all(ids.values()))              # every letter has a token
+        self.assertEqual(len(set(flat)), len(flat))     # and no two share one
+
+    def test_the_letters_need_no_walk(self):
+        # the trie plan of the letters: every letter is told apart at the answer
+        # position itself, so the walk is empty
+        plan = lft.trie_plan(["A", "B", "C"], self.tok, PREFIX)
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["walk"], [])
+        self.assertEqual(sorted(plan["resolution"].values()), [0, 0, 0])
+
+    def test_the_reading_is_the_shape_the_response_builder_expects(self):
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        ids = sl.letter_token_ids(["A", "B"], self.tok, PREFIX)
+        readings = sl.readings(qs, {ids["A"][0]: 3.0, ids["B"][0]: 1.0}, self.tok, PREFIX, 4.0)
+        r = readings["q"]
+        self.assertEqual(r["options"], ["a", "b"])       # the option names, not the letters
+        self.assertAlmostEqual(sum(r["closed"].values()), 1.0)
+        self.assertAlmostEqual(r["open"]["a"], math.exp(3.0 - 4.0))
+        self.assertTrue(r["model_picked"])
+        resp = lft.reading_response(r)
+        self.assertEqual(resp["choice"], "a")
+        self.assertEqual(set(resp["probabilities"]), {"a", "b"})
+
+    def test_the_two_readouts_answer_in_the_same_shape(self):
+        # the same question, the same distribution, read the two ways: the bodies
+        # have the same shape, the probabilities are keyed the same way (by the
+        # option's name), and the numbers are the same
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        tok = self.tok
+        options = lft.first_token_ids(["a", "b"], tok, PREFIX)
+        letters = sl.letter_token_ids(["A", "B"], tok, PREFIX)
+        direct = lft.first_token_probs(qs, {options["a"]: 3.0, options["b"]: 1.0}, tok, PREFIX, 4.0)
+        lettered = sl.readings(qs, {letters["A"][0]: 3.0, letters["B"][0]: 1.0}, tok, PREFIX, 4.0)
+        one, two = lft.reading_response(direct["q"]), lft.reading_response(lettered["q"])
+        self.assertEqual(sorted(one), sorted(two))
+        self.assertEqual(one["type"], two["type"])
+        self.assertEqual(one["choice"], two["choice"])
+        self.assertEqual(sorted(one["probabilities"]), sorted(two["probabilities"]))
+        for k in one["probabilities"]:
+            self.assertAlmostEqual(one["probabilities"][k], two["probabilities"][k])
+        self.assertAlmostEqual(one["confidence"], two["confidence"])
+
+    def test_a_letter_outside_the_window_is_scored_as_zero(self):
+        # the engine sends the top k logits, so a letter can be below the window:
+        # it is then below every letter inside it, so it cannot be the pick
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        ids = sl.letter_token_ids(["A", "B"], self.tok, PREFIX)
+        readings = sl.readings(qs, {ids["A"][0]: 2.0}, self.tok, PREFIX, 3.0)
+        r = readings["q"]
+        self.assertEqual(max(r["closed"], key=r["closed"].get), "a")
+        self.assertEqual(r["closed"]["b"], 0.0)
+        self.assertAlmostEqual(sum(r["closed"].values()), 1.0)
+
+    def test_every_letter_outside_the_window_falls_back(self):
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        self.assertIsNone(sl.readings(qs, {999: 2.0}, self.tok, PREFIX))
+
+    def test_the_model_wanting_something_else_is_a_flag_not_a_refusal(self):
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        ids = sl.letter_token_ids(["A", "B"], self.tok, PREFIX)
+        readings = sl.readings(qs, {ids["A"][0]: 2.0, ids["B"][0]: 1.0, 999: 9.0}, self.tok, PREFIX, 4.0)
+        self.assertIsNotNone(readings)
+        self.assertFalse(readings["q"]["model_picked"])
+
+    def test_the_fallback_reason_says_which_way_it_fell_back(self):
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        self.assertIn("outside the window", sl.fallback_reason(qs, {999: 2.0}, self.tok, PREFIX))
+        ids = sl.letter_token_ids(["A", "B"], self.tok, PREFIX)
+        self.assertIn("not a letter", sl.fallback_reason(
+            qs, {ids["A"][0]: 2.0, ids["B"][0]: 1.0, 999: 9.0}, self.tok, PREFIX))
+
+    def test_the_temperature_scales_the_letter_reading_too(self):
+        # the letter arm and the token arm have to report the same thing, or the
+        # comparison between them would be a comparison of the temperatures: the
+        # temperature scales the closed distribution on both, with the same identity
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}})
+        ids = sl.letter_token_ids(["A", "B"], self.tok, PREFIX)
+        logits = {ids["A"][0]: 3.0, ids["B"][0]: 0.0}
+        plain = sl.readings(qs, logits, self.tok, PREFIX, 4.0)["q"]
+        sharp = sl.readings(qs, logits, self.tok, PREFIX, 4.0, temperature=0.5)["q"]
+        weights = {k: v ** (1 / 0.5) for k, v in plain["closed"].items()}
+        total = sum(weights.values())
+        for k in plain["closed"]:
+            self.assertAlmostEqual(sharp["closed"][k], weights[k] / total, places=12)
+        # the pick cannot change: the map is monotone
+        self.assertEqual(max(plain["closed"], key=plain["closed"].get),
+                         max(sharp["closed"], key=sharp["closed"].get))
 
 
 class EngineWireFormat(unittest.TestCase):
