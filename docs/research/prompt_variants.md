@@ -1,10 +1,10 @@
 # Per-type prompt variants: a pre-registered ablation
 
-**Status:** the design is written and **the mechanism is built** (2026-10-21).
-Nothing has been **run**: no engine was started for this document, no request went
-to a live server, and no variant has been measured. Every number below is either
-**measured** (and says where) or **static analysis** (and says so). The
-implementation is in §4.4, and what it changed about the design is in §4.6.
+**Status:** the design is written, **the mechanism is built** (2026-10-21) and **the
+probe and the first arms have been run** (2026-10-22). The record of the runs is
+in the companion doc **§20**; this document holds the design, the variants and the
+pre-registered rule, and points at the results. Every number below is either
+**measured** (and says where) or **static analysis** (and says so).
 
 This is the plan for roadmap item 1.5
 ([decision_policy_roadmap.md](decision_policy_roadmap.md) §1.5). It is a plan, not
@@ -544,7 +544,7 @@ dataset's own criteria.
 | **N2** `answer-order` | the order the two sides are presented in, in the answer line | `answer yes or no` becomes `answer no or yes` | the same prior, in the one place the model reads when it decides | **BASE RATE**, and it is confounded with N1: the two move the same prior. Running both is what measures how big the prior is | 0 tokens (a reorder) |
 | **N3** `rule-form` | the criteria's connective | `yes means "{true}" ; no means "{false}"` becomes `answer yes if the state is "{true}"; answer no if the state is "{false}"` | the criteria read as a **definition** ("this is what yes means") invite a category judgement; read as a **rule** they invite a test ("does the state meet it?"). The noul's failure is a judgement that is too harsh, and a test reads more strictly than a category | it can also make the model *more* literal and therefore more likely to say yes. The direction is not predictable, which is the point | +~9 tokens (a 15-character edit) |
 | **N4** `criteria-first` | the instruction line's position relative to the criteria | the criteria line is emitted **before** the `[q | noul] ...` header line; everything else is unchanged | the model reads the question *through* the criteria instead of the criteria *through* the question. On `civil_comments` the question is "Is this comment toxic?" - a question whose affirmative is salient. Reading the criteria first removes that priming | it can go the other way: knowing what "rude" means before reading the comment may make the model find more rude comments. The two orders make **opposite** predictions, which is why this is the best single variant to run | 0 tokens (a reorder) |
-| **N5** `decision-rule` | whether the template states a decision rule | one line is added: `answer yes only when the state satisfies the "yes" criterion; otherwise answer no` | the template says nothing about what to **do** with the criteria, so the model falls back on its own prior. A rule that points at the criterion changes the weighing | **confounded.** A rule of this shape also pushes the base rate down, so a win here cannot be told apart from N1/N2. It is the most useful variant and the least clean | +~41 tokens (a 65-character line) |
+| **N5** `decision-rule` | whether the template states a decision rule | one line is added: `answer yes only when the state supports the yes answer; otherwise answer no` | the template says nothing about what to **do** with the criteria, so the model falls back on its own prior. A rule that points at the answer changes the weighing | **confounded.** A rule of this shape also pushes the base rate down, so a win here cannot be told apart from N1/N2. It is the most useful variant and the least clean | +~36 tokens (a 58-character line) |
 
 **Why these five and not more.** The roadmap names four axes (the order, the
 criteria wording, the "either side" statement, the instruction's position). The
@@ -647,7 +647,7 @@ dataset's instruction, and the answer-line instruction
 | N2 `answer-order` | `  yes means "{true}" ; no means "{false}"` <br> `  answer no or yes` |
 | N3 `rule-form` | `  answer yes if the state is "{true}"; answer no if the state is "{false}"` <br> `  answer yes or no` |
 | N4 `criteria-first` | the criteria line `  yes means "{true}" ; no means "{false}"` is emitted **before** the header line `[q | noul] {instructions}`; the rest is as in the base |
-| N5 `decision-rule` | `  yes means "{true}" ; no means "{false}"` <br> `  answer yes only when the state satisfies the "yes" criterion; otherwise answer no` <br> `  answer yes or no` |
+| N5 `decision-rule` | `  yes means "{true}" ; no means "{false}"` <br> `  answer yes only when the state supports the yes answer; otherwise answer no` <br> `  answer yes or no` |
 | P1 `swap` (the probe) | `  no means "{false}" ; yes means "{true}"` <br> `  answer no or yes` |
 
 **The choice:**
@@ -940,15 +940,24 @@ Three things, and one of them is a defect the implementation found.
    the noul's. The mechanism generalised cleanly, and §6's last paragraph says the
    choice's and the score's arms need their own pre-registration before they are
    run; that is still true, and nothing has been run.
-3. **N5's rule line is applied to a noul with no criteria too.** The design's
-   §3.6 says N5 is not inert on half B, and the implementation follows it. **The
-   wording is a defect the implementation found**: the line says "answer yes only
-   when the state satisfies the *\"yes\" criterion*", and a noul without criteria
-   has no such criterion - the words have no referent. The one-line fix, before a
-   run, is to make N5 inert without criteria (which would also mean half B cannot
-   catch N5's base-rate shift, so §6(c) would lean on the 235 for it) or to
-   reword the line. **The design's text is kept as written, so the pre-registration
-   is not silently changed; the decision is the operator's.**
+3. **N5's rule line was reworded, before any arm was scored.** The design's text
+   said *"answer yes only when the state satisfies the \"yes\" criterion"*, and a
+   noul without criteria has no such criterion - the words had no referent on half
+   of the design set. The two options were to make N5 inert without criteria (so
+   half B could not catch N5's base-rate shift and rule (c) would lean on the 235
+   for it) or to reword the line. **The line was reworded**, to *"answer yes only
+   when the state supports the yes answer; otherwise answer no"*: the rule now
+   names the ANSWER, not the criterion, so it is well formed on both halves, and
+   the axis is unchanged (the template states when to answer yes). N5 therefore
+   stays live on half B and rule (c) applies to it unchanged. The change was made
+   on 2026-10-22, **before any arm was scored**, which is what the design's §6
+   allows ("if it is changed, the change is written down with its date and the run
+   it invalidates"), and it invalidates no run.
+4. **The probe's arm was also run on half B** (2026-10-22). The design priced the
+   probe at one arm on half A; the measurement came back between the design's two
+   branches, and half B is where the design's own rule (c) lives, so the probe's
+   arm was run there as well. The arm list, and the rule that applies to it, are
+   in the companion doc §20.
 
 ---
 

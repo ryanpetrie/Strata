@@ -658,7 +658,7 @@ class PromptVariants(unittest.TestCase):
                            '  start your answer line with exactly "urgent:"'],
         "decision-rule": ['[urgent | noul] Urgency?',
                           '  yes means "outage" ; no means "chit-chat"',
-                          '  answer yes only when the state satisfies the "yes" criterion; '
+                          '  answer yes only when the state supports the yes answer; '
                           'otherwise answer no',
                           '  answer yes or no',
                           '  start your answer line with exactly "urgent:"'],
@@ -692,7 +692,7 @@ class PromptVariants(unittest.TestCase):
         self.assertEqual(
             self.lines_after(sysone.render_answer_prompt("STATE", name, q, "decision-rule")),
             ['[plain | noul] Is the answer yes?',
-             '  answer yes only when the state satisfies the "yes" criterion; otherwise answer no',
+             '  answer yes only when the state supports the yes answer; otherwise answer no',
              '  answer yes or no',
              '  start your answer line with exactly "plain:"'])
         self.assertEqual(

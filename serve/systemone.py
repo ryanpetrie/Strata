@@ -252,12 +252,14 @@ def _noul_lines(crit: dict, variant: str) -> tuple[list[str], list[str]]:
     answer = "  answer no or yes" if variant in ("answer-order", "swap") else "  answer yes or no"
     # The decision rule is added to EVERY noul, criteria or not: it is the rule, and
     # the design (prompt_variants.md §3.6) applies it to the whole design set, so the
-    # half of it without criteria is exercised too.  NOTE: the line names the "yes"
-    # criterion, which a noul without criteria does not have - the one wording to
-    # look at before a run.
+    # half of it without criteria is exercised too.  The wording names the ANSWER and
+    # not the criterion: the pre-registered text ("...satisfies the "yes" criterion")
+    # pointed at a quoted criterion that a noul without criteria does not have, so it
+    # was reworded before any arm was scored (the change is written down in the
+    # design's §4.6).  The axis is unchanged: the template states when to answer yes.
     rule = None
     if variant == "decision-rule":
-        rule = '  answer yes only when the state satisfies the "yes" criterion; otherwise answer no'
+        rule = "  answer yes only when the state supports the yes answer; otherwise answer no"
     if not crit:
         # no criteria: the criteria line does not exist, so the variants that rewrite
         # it (criteria-order, rule-form) and the one that moves it (criteria-first)

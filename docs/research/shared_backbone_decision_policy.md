@@ -2359,3 +2359,191 @@ should not be shipped.  The noul's constant in the config should go back to 1.0.
   best temperature for the human distribution would be - only that the fitted one
   is worse than none.  No second model, no engine change, no new dependency.
 
+
+## 20. The prompt probe and the noul's arms (2026-10-22)
+
+Roadmap item 1.5: the server's per-type template, varied one axis at a time, and
+measured against the licence-clean pool.  The design, the variant list, the
+measurement design and the pre-registered rule are in
+[prompt_variants.md](prompt_variants.md).  This section is the record: what was
+run, what came out, and what it means.
+
+**Every number here comes out of a run on this machine on 2026-10-22**, and the
+files it came from are named.  The base arm is item 1.1b's pool run: the pool at
+T = 1, the direct readout, today's template, 1,500 items, in
+`...\decision_policy_training\run\p1b_pool_T1.jsonl` (and its run log beside it).
+The design set is the pool's **500 noul items** in two halves: **half A**, the 250
+`civil_comments` items with a human distribution (the humans' mean P(yes) 0.1096,
+a 9.2% gold "yes" rate), and **half B**, the 250 `paws` and `strategyqa` items
+with a hard label at a 45.2% gold "yes" rate.  Half A is where the bias is
+measured; half B is where a base-rate shift shows up as a loss.
+
+### 20.1 The probe (P1): the noul's template, mirrored
+
+The design's §6 made the probe the first thing to run, because it can kill the
+order axis before three hours of arms are spent.  P1 is the noul's template with
+the two sides' order reversed in the criteria line **and** in the answer line;
+the answer tokens do not change, so the two arms are two presentations of the
+same question.
+
+The arm is a launch-config value, so it is a server start: a copy of the live
+config with `"systemone": {"prompt": {"noul": "swap"}}`, and the server started
+from the worktree with it.  The server printed
+`[strata] decisions: the questions are rendered in another prompt variant (noul swap)`
+and `/v1/status` carried `"prompt": {"noul": "swap", "choice": "base", "score": "base"}`.
+
+```
+python tools/decision_policy/prompt_probe.py \
+  --items ...\decision_policy_training\items\p1b_pool.jsonl \
+  --out ...\decision_policy_training\run\p1b_pool_swap.jsonl \
+  --base ...\decision_policy_training\run\p1b_pool_T1.jsonl \
+  --report ...\decision_policy_training\run\p1b_pool_swap_report.md \
+  --half A --config ...\strata-unsloth-ud-iq4_xs-swap.json
+```
+
+250 items, **250 answered, 0 failures**, 1,136 s; the fast path on **250 of 250**;
+the median latency 2,394 ms; the prompt tokens median 257 (the base arm's, on the
+same items: the median latency 3,248 ms, the prompt tokens median 257 - the swap
+costs no tokens).
+
+### 20.2 The probe's three readouts, and the base arm beside them
+
+| | the base arm | the probe (swap) |
+|---|---:|---:|
+| the mean P(yes) | 0.4142 | 0.3930 |
+| the bias (P(yes) - the humans') | +0.3047 | +0.2834 |
+| the mean TVD to the human distribution | 0.3313 | 0.3125 |
+| the AUC against the humans' hard label | 0.8435 | 0.8426 |
+| the picks that moved | - | **15 of 250 (6.0%)** |
+| the **swap gap** `mean(P_yes(base) - P_yes(swap))` | - | **+0.0212** |
+
+The base arm's numbers are the pool run's, on the same 250 items.
+
+**The flips, item by item.**  The 15 items whose pick moved were all items where
+the humans say "no"; on them the base arm's accuracy was 0.133 and the swap
+arm's 0.867 - **13 got better and 2 got worse**, and the accuracy against the
+humans' majority went from 0.620 to 0.664 (+11 items of 250).  The flipped items
+were not coin flips: their median distance from the 0.5 threshold was 0.100, and
+only 1 of the 250 items sat within 0.02 of the threshold.
+
+**The effect's size against the engine's own noise.**  The swap's per-item change
+in P(yes) is a mean |change| of 0.0433 (SD 0.0743); the engine's own run-to-run
+wobble, measured on the jev-bench noul slice, is a mean |change| of 0.0193 (SD
+0.0337).  So the order is **2.2 times the engine's own noise** - a real effect,
+not a re-run of the same template.
+
+**And it does not move the ranking at all.**  The AUC went 0.8435 -> 0.8426: a
+change of **-0.0010**, where the AUC's own noise on 250 items is about 0.047.  A
+lever that moves the level and not the ranking is, in the design's own words, a
+**base-rate** effect.
+
+### 20.3 The base rate's own check, and the reading
+
+The design's §6 priced the probe at one arm on half A.  The measurement came back
+between the design's two branches, and half B is where the design's own rule (c)
+lives, so **the probe's arm was run on half B as well** (250 items, 249 answered
+and 1 already done, 0 failures, 679 s).  The arm list changed; the rule did not.
+
+| half B (the 45.2% "yes" population) | the base arm | the probe (swap) |
+|---|---:|---:|
+| the mean P(yes) | 0.4872 | 0.4961 |
+| the accuracy against the hard label | 84.4% | **82.0%** |
+| the ECE of P(yes) | 0.0743 | **0.1045** |
+| the picks that moved | - | 10 of 250 |
+
+Of the 10 flips on half B, **2 got better and 8 got worse**.
+
+**The pre-registered rules, applied to the probe's arm:**
+
+| rule | the numbers | verdict |
+|---|---|---|
+| (a) calibration, on half A | the TVD 0.3313 -> 0.3125 (+0.0188), the bias toward zero +0.0212; the margin 0.007 | **PASS** |
+| (b) ranking, on half A | the AUC 0.8435 -> 0.8426 (-0.0010); the margin -0.05 | **PASS** |
+| (c) the base rate, on half B | the accuracy 84.4% -> 82.0% (**6 items** worse), the ECE 0.0743 -> 0.1045 (**+0.0301**); the margins 3 items and 0.02 | **FAIL** |
+
+**The reading: the order axis is DEAD.**  The probe is the order axis (N1 and N2
+together), and it does not pass the design set: it fails the base rate's own
+check.  It helps the population whose base rate it matches - the 9.2%-yes half,
+where the accuracy gained 11 items - and it hurts the other one, the 45.2%-yes
+half, where it lost 6 items and the ECE rose by 0.030.  Its effect on the level
+is 0.021 out of a bias of 0.305, and it does not move the ranking at all.  That
+is the design's own picture of a base-rate shift, caught by the design's own
+check.
+
+**One clause of the pre-registered trigger did not fire, and it is recorded
+here.**  The design's §6 said the order axis is dead "if the swap gap is below
+0.05 in absolute value **and** the flip rate is near the engine's own 1% wobble".
+The swap gap is 0.0212 (below 0.05) but the flip rate is 6.0%, not 1%, so the
+conjunction did not fire and the design's third branch ("something other than the
+order changed - look at the AUC") was not confirmed by the AUC either.  The
+measurement fell between the branches.  What resolved it is the extra
+measurement above: the design set's own rule (c), which the probe's arm **fails**,
+and the flat AUC.  The design's §6 allows exactly this: "the rule's numbers do
+not change; only the arms do, and the change is written down before the affected
+arms run."
+
+### 20.4 The arm list (written down before the arms ran)
+
+**Not run: N1 `criteria-order` and N2 `answer-order`.**  The probe *is* the order
+axis: P1 is N1 and N2 together, and it fails the design set's base-rate check.
+Running the two separately would only decompose a measured effect; the budget is
+better spent on the axes that have not been measured.
+
+**Run: N3 `rule-form`, N4 `criteria-first` and N5 `decision-rule`.**  These are
+the three axes the probe did not touch, and they are the ones the design called
+"weighing" levers: they change how the model weighs the evidence rather than
+what it defaults to.  Each is one axis, 500 noul items (half A and half B) on a
+freshly restarted engine.
+
+**The rule is unchanged.**  The pre-registered rules (a) to (f) of the design's
+§6 apply to each arm exactly as they were written:
+
+- (a) half A's mean TVD falls by more than **0.007** and its mean signed
+  difference moves toward zero by more than **0.007**;
+- (b) half A's AUC does not fall by more than **0.05** (a non-inferiority check:
+  the AUC's MDE at n = 250 is about 0.13, so an improvement is not measurable and
+  is not asked for);
+- (c) half B's accuracy does not fall by more than **3 items** of 250 and half
+  B's ECE does not rise by more than **0.02**;
+- (d) the 235's noul accuracy does not fall by more than **2 items** of 69 and
+  the 235's Capability does not fall by more than **0.6 points**;
+- (e) the jev-bench test sample's noul: the mean TVD to the human distribution
+  does not rise by more than **0.005** and the ECE of P(yes) does not rise by
+  more than **0.02**;
+- (f) the fast-path rate does not fall and the median latency does not rise by
+  more than **10%**.
+
+The base arm's numbers for the yardsticks are the stored ones: the 235's
+`p1b_235_T1_from_current.jsonl` (Capability **78.9**, Intelligence 75.9,
+Calibration 81.8, the noul's accuracy 61 of 69) and the jev-bench test sample's
+`p1b_jevbench_test_soft_T1.jsonl` (the noul's mean TVD **0.3836** on the 100
+`civil_comments` items, the ECE 0.3941, the AUC 0.6413).
+
+**One change to a variant's text, made before any arm was scored** (2026-10-22):
+N5's added rule line said *"answer yes only when the state satisfies the \"yes\"
+criterion"*, and a noul without criteria has no such criterion - the words had no
+referent on half of the design set.  The two options were to make N5 inert
+without criteria (so half B could not catch N5's base-rate shift and rule (c)
+would lean on the 235 for it) or to reword the line.  **The line was reworded**
+to *"answer yes only when the state supports the yes answer; otherwise answer no"*:
+the rule now names the ANSWER, not the criterion, so it is well formed on both
+halves, and the axis is unchanged.  N5 therefore stays live on half B and rule
+(c) applies to it unchanged.
+
+### 20.5 The arms
+
+(filled in as they are run)
+
+### 20.6 What was not run
+
+- The **choice's and the score's arms** (C1-C4, S1-S4) are implemented and
+  tested, but not run: the design's §6 says they need their own pre-registration,
+  and the noul's arms come first.
+- **The 235 and the jev-bench test sample were not re-run for the base arm.**
+  The stored runs of item 1.1b are the base arm, and a re-run would have cost an
+  engine slot for a number that is already measured.
+- **No second seed, no second engine state per arm.**  Each arm is one run on a
+  freshly restarted engine, and the engine's own run-to-run wobble is the
+  yardstick the margins are set against.
+- **No temperature.**  Every arm ran at T = 1, the direct readout, the same model
+  and the same quantization as the base arm.
