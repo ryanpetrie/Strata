@@ -2105,3 +2105,257 @@ the endpoint is used for uncertainty rather than for a pick.
 - **The constants belong to this model.**  They were fitted on one model's readings
   of one dataset; another model (or another quantization of it) needs its own fit.
 
+---
+
+## 19. The temperature, checked against the humans (2026-10-21)
+
+§18 fitted one temperature per question type on the 235-item OpenDecisions sample
+and shipped them in the launch config.  §18.5's re-run of those 235 items was
+**IN-SAMPLE** - the constants were fitted on exactly those items - so it could not
+answer the question the constants exist to answer: does the temperature still help
+when the answer is not the one it was fitted against?
+
+**This is the first out-of-sample evidence for the constants.**  The check is the
+jev-bench sample with the **human label distribution** (§14): there the endpoint's
+distribution is scored against how uncertain the *humans* were, not against one
+right answer.  The two are different targets, and this section is where they are
+compared.
+
+**The short answer: the temperature does not transfer.  It makes the distance to
+the human distribution WORSE, on all three types and on all four configs, and it
+costs 3.1 Capability points on the same run.  The exit criterion is not met.**
+
+### 19.1 The run
+
+**ENGINE FRESHLY RESTARTED** on 2026-10-21 (§12.5): the server tree was stopped
+(`taskkill /T /F` on the `strata.py serve` process, the engine `strata.exe` died with
+it), the card went back to **23,450 MiB free**, and the server was started again at
+19:24:33; the model was loaded from scratch and `/v1/status` answered at 19:26:46
+with the temperature block `{choice: 0.62, noul: 0.67, score: 0.77}`.  The run
+started at 19:27:21 and finished at 20:40:52 - **73.5 minutes** - and the engine was
+not shared with anything else.
+
+The same 683 items, the same harness, one question per request, one attempt each:
+
+```
+python tools/decision_policy/jevbench.py \
+  --items <jevbench_sample3_items.jsonl> --out <jevbench_sample3_temp_predictions.jsonl>
+```
+
+**683 of 683 answered, 0 failures, 0 502s, every item on the fast path** (683 of
+683).  The latency: median **4.30 s**, p95 **14.15 s**, mean 6.46 s; the first 40
+items took a median 3.18 s and the last 40 a median 4.33 s.  The p95 is the engine
+streaming experts off the file, not the endpoint: the server's own log reports
+618,844 expert blob reads from the GGUF and an expert cache hit rate of 80-88% on
+this machine, whose RAM was 58.1 of 63.7 GiB used (the server's own status, before
+the run) while 36 GiB of experts were resident.  The temperature is four `pow`
+calls a question, and it runs after the engine's turn.
+
+### 19.2 The paired comparison
+
+Comparing the new number against the stored 0.4432 would compare two different
+runs, so the comparison here is **paired**: the T = 1 arm and the tempered arm come
+out of the SAME run, on the SAME items, on the same engine, in the same session.
+
+The temperature's transform is invertible, so the T = 1 arm is inside the tempered
+run: the server scales the closed reading by `closed_T(i) = normalize(closed_1(i) **
+(1/T))`, and the inverse is `closed_1(i) = normalize(closed_T(i) ** T)`.
+`tools/decision_policy/jevbench_paired.py` does the inversion, per item, from the
+run log, and writes the recovered arm as a predictions file the official scorer
+takes.
+
+**The inversion is validated, not assumed** (three independent checks, all on the
+run's own data):
+
+| the check | the result |
+|---|---|
+| the tempered arm's TVD, recomputed, against the TVD the harness stored per item | **0 mismatches** over 280 items (the tolerance is 1e-6; the harness rounds to 6 decimals) |
+| the forward transform applied to the recovered arm, against the arm the run reported | max absolute difference **2.2e-16** |
+| the noul's recovered P(yes), against the run log's own open reading (`closed[yes] = open[yes] / mass`) | max absolute difference **1.1e-16** |
+
+**The recovered arm is a faithful stand-in for a T = 1 run.**  It scores mean TVD
+**0.443944** against the stored T = 1 run's **0.443164** - a difference of 0.0008 -
+and Capability 55.1 against 55.2.  The two runs differ by the engine's own
+run-to-run wobble (§10.8): the recovered arm's distribution differs from the stored
+run's by a mean 0.031 (choice), 0.019 (noul) and 0.027 (score) in the largest
+coordinate, and **11 of the 683 picks moved** (the temperature cannot move a pick -
+§18.2 - so those 11 are the engine's wobble, close to the 2.1% §18.5 saw on the
+OpenDecisions sample, 5 of 235).
+
+### 19.3 The distance to the human distribution
+
+Over the 280 records that carry the human distribution, the same items, both arms
+from the same run:
+
+| | mean TVD | |
+|---|---:|---|
+| **the T = 1 arm** (the temperature's arithmetic removed) | **0.4439** | the reference for this run |
+| **the fitted arm** (T = 0.62 / 0.67 / 0.77) | **0.4678** | **+0.0239, worse** |
+| the stored T = 1 run (§14.1), for reference | 0.4432 | the exit criterion's number |
+
+**The exit criterion is NOT met.**  The criterion is a TVD lower than 0.4432; the
+fitted arm is 0.4678, and it is worse than its own run's T = 1 arm by 0.0239.
+
+Per type, paired on the same items:
+
+| type | n | T = 1 | fitted | change | better | worse | same |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| choice | 130 | 0.4699 | 0.5124 | **+0.0425** | 13 | **117** | 0 |
+| noul | 100 | 0.3844 | 0.3897 | **+0.0053** | 51 | 49 | 0 |
+| score | 50 | 0.4955 | 0.5082 | **+0.0127** | 17 | 33 | 0 |
+
+Per config, the same way (each config here is one question type, so the two tables
+are the same data cut two ways):
+
+| config | type | n | T = 1 | fitted | change |
+|---|---|---:|---:|---:|---:|
+| chaosnli | choice | 80 | 0.3104 | 0.3654 | **+0.0550** |
+| civil_comments | noul | 100 | 0.3844 | 0.3897 | **+0.0053** |
+| go_emotions | choice | 50 | 0.7253 | 0.7477 | **+0.0224** |
+| measuring_hate_speech | score | 50 | 0.4955 | 0.5082 | **+0.0127** |
+
+**Every type and every config is worse.**  The three types do not differ in
+direction, only in size: the choice's temperature (0.62) does the most damage, the
+noul's (0.67) the least.
+
+### 19.4 The official scorer, paired
+
+The recovered T = 1 arm was written as a predictions file and scored by the
+**official** `score.py` in the same session, on the same items, against the
+tempered arm's own predictions file:
+
+| arm | Capability | Intelligence | Calibration | choice cal. | noul cal. | score cal. |
+|---|---:|---:|---:|---:|---:|---:|
+| **the T = 1 arm** (recovered, same run) | **55.1** | 46.6 | 63.6 | 69.3 | 57.8 | 63.6 |
+| **the fitted arm** (same run) | **52.0** | 46.6 | 57.5 | 58.7 | 54.9 | 58.8 |
+| the stored T = 1 run (§14.1), for reference | 55.2 | 46.7 | 63.7 | 68.3 | 60.4 | 62.3 |
+
+**The temperature's own effect on this run: Capability -3.1, Intelligence -0.05,
+Calibration -6.1.**  The Intelligence barely moves because the pick cannot move
+(§18.2) and the accuracy per type is identical in both arms (71.1% / 74.3% /
+48.5%); the score's competence dips a little (26.0 -> 25.8) because the scorer
+reads the expected level and the temperature moves that.  The Calibration is where
+the whole loss is, and it is lost on all three types.
+
+The scorer's own ECEs, on the scorer's own pairs (the top-label ECE on the hard
+tier for choice, the ECE of P(yes) for noul, the top-level ECE for score):
+
+| type | ECE at T = 1 | ECE, fitted | change |
+|---|---:|---:|---:|
+| choice | 0.1533 | 0.2067 | **+0.0534** |
+| noul | 0.2108 | 0.2253 | **+0.0145** |
+| score | 0.2700 | 0.3132 | **+0.0432** |
+
+So the temperature does not only fail against the humans' *distribution*: it also
+fails against the humans' *hard* answer, on this dataset.  The ECE of P(yes) on the
+jev-bench noul items is 0.2108 at T = 1 and 0.2253 at T = 0.67 - the noul's
+temperature makes the binary calibration worse too.
+
+### 19.5 Where the temperature hurts, and why
+
+The split that explains it is the humans' own uncertainty.  Each type's items are
+sorted by the entropy of the human distribution and cut in half:
+
+| type | half | n | T = 1 | fitted | change |
+|---|---|---:|---:|---:|---:|
+| choice | the humans least uncertain | 65 | 0.4447 | 0.4704 | +0.0257 |
+| choice | the humans most uncertain | 65 | 0.4952 | 0.5545 | **+0.0593** |
+| noul | the humans least uncertain | 50 | 0.3181 | 0.3168 | -0.0013 |
+| noul | the humans most uncertain | 50 | 0.4507 | 0.4626 | +0.0119 |
+| score | the humans least uncertain | 25 | 0.4319 | 0.4305 | -0.0013 |
+| score | the humans most uncertain | 25 | 0.5591 | 0.5859 | **+0.0268** |
+
+**Sharpening helps where the humans are certain and hurts where they are not**, and
+the effect is twice as large on the uncertain half.  Two different mechanisms, both
+measurable:
+
+* **The shape.**  The mean mass the model puts on its own top label, against the
+  humans': the choice **0.7862 at T = 1 (0.8613 fitted) against the humans' 0.6215**
+  - the model is already MORE peaked than the humans, so any sharpening moves the
+  distribution away from theirs.  The score is the other way round (the model
+  0.7977, the humans 0.8233), which is why the score's certain half is a wash.
+* **The bias.**  On the noul the model over-predicts "yes" on **95 of the 100**
+  items: the mean signed difference against the humans is **+0.357** on a mean
+  absolute difference of 0.384, so 93% of the noul's TVD is one-directional bias,
+  not uncertainty.  The model says P(yes) = 0.446 on average where the humans say
+  0.089.  A temperature cannot fix a bias: it makes the wrong side more extreme.
+  (The noul's shape is roughly right - the model 0.8840 at T = 1 against the humans'
+  0.9184 - so here the bias is the whole story.)
+
+§14.3 found the model over-confident relative to the humans (its mean confidence
+0.868 when it agrees with the humans' consensus, 0.776 when it does not).  On the
+noul the story is the other way round: the model is not over-confident, it is
+**over-optimistic about the wrong answer**, and a sharper distribution is a worse
+fit for that.
+
+### 19.6 The noul
+
+The noul was the open question, because 0.67 was fitted to sharpen P(yes) and the
+jev-bench noul items are the ones where the humans are least certain.
+
+**It does not pay.**  The noul's items are all `civil_comments`, and the humans
+there are mostly certain: **74 of the 100 have a 0/1 human label** and 26 are
+genuinely uncertain (0 < P(yes) < 1).  Split that way:
+
+| the noul's items | n | T = 1 | fitted | change |
+|---|---:|---:|---:|---:|
+| the humans are certain (P(yes) = 0) | 74 | 0.3478 | 0.3431 | **-0.0047** (better) |
+| the humans are uncertain (0 < P(yes) < 1) | 26 | 0.4885 | 0.5223 | **+0.0338** (worse) |
+| all of them | 100 | 0.3844 | 0.3897 | **+0.0053** (worse) |
+
+**The hypothesis is confirmed: the sharpening helps on the certain items and hurts
+on the uncertain ones, and the uncertain ones cost more.**  The noul's overall TVD
+change is a wash in size (51 items better, 49 worse) but it is the wrong way, and
+the noul's ECE gets worse (0.2108 -> 0.2253) and the noul's calibration component
+drops **57.8 -> 54.9**.
+
+**The recommendation: revert the noul to T = 1.**  Nothing supports 0.67 for the
+noul.  On OpenDecisions its held-out ECE was already a wash (§18.4: 0.0756 ->
+0.0786 out-of-fold) and its 70/30 slice was thin; on jev-bench it is worse on both
+the TVD and the ECE.  A temperature that cannot be shown to help on either dataset
+should not be shipped.  The noul's constant in the config should go back to 1.0.
+
+### 19.7 What this settles, and what it does not
+
+* **The exit criterion is NOT met.**  The fitted arm's TVD is 0.4678 against the
+  0.4432 the criterion names, and it is worse than its own run's T = 1 arm
+  (0.4439).  The temperature loses on the human gold standard, on the human hard
+  answer (the ECEs), and on the official scorer's Capability.
+* **The two targets disagree, and that is the finding, not a contradiction.**  The
+  constants were fitted against a HARD gold label (the Brier score of the
+  distribution against one right answer, §18.1) and they help there: the out-of-fold
+  Capability on the OpenDecisions sample is 81.5 against the baseline's 79.8
+  (§18.4).  jev-bench's soft labels ask a different question - is the model's
+  uncertainty as wide as the humans' - and against that question the same constants
+  lose.  A scalar temperature can trade one for the other; it cannot win both.
+* **The noul should go back to T = 1** (§19.6).  The choice and the score fail
+  their own independent check too (TVD +0.0425 and +0.0127, ECE +0.0534 and
+  +0.0432, Calibration -10.7 and -4.8 points), so the honest reading of this section
+  is wider than the noul: **on this evidence the fitted constants should not ship
+  as they are.**  That is the orchestrator's call to make, not this section's - but
+  it should be made with these numbers in front of it.
+* **The fit was per type and the three types' outcomes differ only in size.**  All
+  three are worse; the choice's 0.62 is the most damaging and the noul's 0.67 the
+  least.  The per-type design of §18 is not what failed here.
+* **The run was clean.**  683 of 683, 0 failures, 0 502s, every item on the fast
+  path, one attempt each and nothing retried, on a freshly restarted engine, with
+  the engine to itself.  The scorer's rule for a missing prediction was never
+  needed.
+* **The limits.**  The licence is per-source and mixed (several "research use
+  only") and the dataset says validation only.  jev-bench has no difficulty tier,
+  so every item is filed under "hard" and the scorer's tier weights collapse to one
+  - that is not a difficulty claim.  The 235-item OpenDecisions re-run (§18.5) and
+  the fit itself remain in-sample; this section is the independent check, and it
+  is the only one there is.  One temperature per type is one number for a whole
+  family of questions, and the constants belong to this model and this
+  quantization.  The run's p95 latency is the engine streaming experts off the file
+  on a machine whose RAM is nearly full, not the endpoint.
+* **What was not run.**  No T = 1 re-run of the 683 items was made on this engine
+  (the stored run is the reference, and it is a different run), so the paired
+  baseline is the **recovered** arm, not a second T = 1 run; the two agree to 0.0008
+  in mean TVD and 0.1 in Capability, which is the evidence that the recovery is
+  sound, but it is not the same thing as a second run.  No temperature other than
+  the fitted three was tried on this dataset, so this section does not say what the
+  best temperature for the human distribution would be - only that the fitted one
+  is worse than none.  No second model, no engine change, no new dependency.
+
