@@ -2384,3 +2384,85 @@ should not be shipped.  The noul's constant in the config should go back to 1.0.
   best temperature for the human distribution would be - only that the fitted one
   is worse than none.  No second model, no engine change, no new dependency.
 
+## 20. The refit, and the rule it is judged by (2026-10-21)
+
+**This section is written BEFORE the run.**  The rule below is committed before the
+first item is measured, so that the numbers in §20.2 cannot be read as a rule written
+after the fact.  The results go into §20.3 and after; if a constant ships, it ships
+because it cleared the rule, not because the rule was written to fit it.
+
+### 20.1 The question
+
+§19 measured the §18 constants against the human labels and they lost on every type
+and every config: the TVD to the human distribution went 0.4439 -> 0.4678, Capability
+55.1 -> 52.0, Calibration 63.6 -> 57.5.  The endpoint therefore ships at **T = 1**,
+and the constants stay in `tools/decision_policy/temperature_calibration.json` for the
+record.  The knob is not the problem; the constants were.
+
+So the question is no longer "does a temperature help?"  It is:
+
+> **Is there a per-type constant that helps on TWO populations at once - or is the
+> endpoint's calibration population-specific?**
+
+The second population is the jev-bench **validation** split, fitted on a pool that is
+licence-clean and out of sample with respect to OpenDecisions: 500 items of every
+question type, drawn per config from the configs whose licence the record clears
+(`docs/research/decision_policy_training_data.md`), with the counts and the seed
+(20261021) in `tools/decision_policy/soft_label_pool.json`.  750 of the 1,500 items
+carry a **human distribution** (250 of every type: `go_emotions`,
+`civil_comments`, `measuring_hate_speech`), which is what makes the pool able to
+answer the question: the 235 OpenDecisions items carry a human distribution on 13 of
+them, the jev-bench test sample on 280 of 683.
+
+### 20.2 The rule, written down before the run
+
+**A constant ships only if it clears ALL THREE of the following, each measured
+PAIRED - out of one run per population, so the two arms share the engine, the picks,
+the logits and the state, and only the arithmetic differs.**
+
+| | the test | the baseline it must beat |
+|---|---|---|
+| **(a)** | the out-of-fold calibration on the pool it was fitted on improves | the pool's own **T = 1** arm (the pool run at T = 1 IS that arm) |
+| **(b)** | the jev-bench **test** TVD to the human distribution does not get worse by more than **0.005** | the **T = 1** arm, paired |
+| **(c)** | the OpenDecisions 235's Capability does not fall below | the **T = 1** arm, paired |
+
+**0.005** is a fifth of what §18's constants cost on the human labels (0.0239), and it
+is a margin against a run-to-run spread of about 0.0008 in mean TVD (§19).  It is
+fixed now, before the numbers, so that "not worse" cannot become "better" later.
+
+**The arms.**
+
+* The **soft** objective - the cross-entropy against the **human distribution**, not
+  against a one-hot label - is the **primary** candidate.  It is the only objective
+  that fits the thing the jev-bench yardstick measures, and the §18 constants were
+  fitted against one-hot labels, which is exactly what §19 showed to be
+  population-specific.  The **Brier** arm (the §18 objective) is the **control**: if
+  the Brier arm wins on the 235 and loses on the human labels, that is the §19
+  result reproduced on a new population, and it is not a surprise.
+* The **single scalar** arm (one T over the pooled records, the same objective, the
+  same folds, the same no-leak rule) is the **tie-breaker**: if one number does as
+  well as three, the three are not worth their complexity.
+* The **noul is judged separately** and is **expected to fail**.  §19 measured its
+  error to be a **bias**: the model over-predicts "yes" on 95 of the 100 items, the
+  mean signed difference is +0.357 on a mean absolute 0.384, and 93% of its TVD is
+  that offset (mean P(yes) 0.446 against the humans' 0.089).  A temperature divides
+  the logits; it cannot move a distribution's centre.  A noul that does not clearly
+  improve is left at **T = 1** and handed to item 1.4's affine fit, and **its failure
+  does not block the choice and the score constants**.
+
+**"No constant ships" is an acceptable answer, and the likeliest one.**  It would
+mean the endpoint's calibration is **population-specific**, that the knob stays at
+1.0, and that the next step is an **affine** calibration (item 1.4) or a
+per-population calibration, not a single scalar.
+
+### 20.3 The plan, and the state it is run from
+
+| | |
+|---|---|
+| the pool | 1,500 items, 500 a type, seed 20261021, `tools/decision_policy/soft_label_pool.json` |
+| the fit | `tools/decision_policy/temperature.py` on the pool's run; the Brier, the soft and the single-scalar arms all come out of it |
+| the 235 | the 2026-10-21 run with the §18 constants, re-scaled **offline** to T = 1 and to each candidate (`tools/decision_policy/retemperature.py`, the inverse of "apply T" is "apply 1/T") |
+| the test sample | the 683-item jev-bench sample, re-run **live** with the candidate constants, and its T = 1 arm recovered from the same run (`tools/decision_policy/jevbench_paired.py`) |
+| the server | the main checkout `C:\tools\strata`, the live launch config, a **fresh engine before each measurement run** (§12.5) |
+| the tools | the worktree `C:\tools\strata-wt-p1b` |
+
