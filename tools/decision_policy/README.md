@@ -116,6 +116,19 @@ Two things to know about the math:
   on the options, measured at T = 1.  The model's own probability at temperature T would need the
   full-vocabulary normalizer at T, which the server does not have.
 
+**Re-scaling a run** (the paired comparison):
+
+```sh
+python tools/decision_policy/retemperature.py --items <items.jsonl> --predictions <run.jsonl> \
+  --served 0.62,0.67,0.77 --to 0.55,0.70,0.80 --out <new.jsonl> [--runlog <run.runlog.jsonl>]
+```
+
+The temperature is a server-side setting, so changing it means restarting the server - and a restarted engine
+is a different engine, and the 235-item sample's run-to-run spread is about 0.6 Capability points.  This
+script makes the comparison **paired**: it undoes the temperature the run was served with and applies
+another one, so both arms come out of ONE run and share the engine, the picks, the logits and the state.
+The transform is the server's own (`apply_temperature`); the inverse of "apply T" is "apply 1/T".
+
 ## The other datasets
 
 `jevbench.py` and `jevbench_rewrites.py` run the two JevBench sets through the endpoint. They need the
@@ -209,7 +222,8 @@ whose options share a first token.
 | `vram_headroom.py` | source | the free VRAM during a run. |
 | `temperature.py` | source | the per-type temperature: the fit, the cross-validation, and the official scorer's numbers. |
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
-| `temperature_report.md` | generated | the fit's report: the three objectives, the cross-validation, the limits. |
+| `temperature_report.md` | generated | the fit's report: the objectives, the cross-validation, the limits. |
+| `retemperature.py` | source | re-scales a run's distributions: the paired comparison of two temperature settings out of one run. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |
