@@ -1,8 +1,10 @@
 # The per-type temperature: the fit
 
 **Fitted 2026-10-21, model `qwen3.8-flash-next-unsloth-ud-iq4_xs`.**  The constants live in
-`temperature_calibration.json` next to this file; the server takes them from the
-launch config (`"systemone": {"temperature": {...}}`).
+`temperature_calibration.json` next to this file.  They are **not** in any launch
+config: item 1.2 measured them against the human labels and they were worse on every
+type, so the endpoint ships at T = 1.  The config accepts
+`"systemone": {"temperature": {...}}` if a future fit clears the rule.
 
 **The pool:** jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42) - the serial first-token path, every item on the fast path.
 
@@ -62,7 +64,8 @@ only defined on the items that carry one, and the report says how many that is:
 | noul | 69 | 6 |
 | score | 59 | 4 |
 
-**The shipped constants use the `brier` objective.**
+**The `brier` objective is the one this report's tables use; none of its constants is
+in any launch config.**
 
 ## The validation
 
