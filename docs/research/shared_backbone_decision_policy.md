@@ -3562,3 +3562,305 @@ choice's and the score's maps are scale problems or something else.
 The fit's artifacts are `tools/decision_policy/affine_calibration.json` and
 `tools/decision_policy/affine_report.md`; the tool is `tools/decision_policy/affine.py`.
 The results follow in 24.6.
+
+### 24.6 The fit
+
+The full-pool fit, on the 250 items a type that carry a human distribution
+(`tools/decision_policy/affine.py`; the command is at the end of this section):
+
+| objective | type | T | b | the objective at (T, b) | at T = 1, b = 0 |
+|---|---|---:|---:|---:|---:|
+| **soft** (primary) | choice | **3.65** | n/a | 7.7164 | 9.9116 |
+| **soft** | noul | **2.63** | **-2.29** | 0.2821 | 0.9068 |
+| **soft** | score | **3.73** | **-0.54** | 0.8502 | 1.3746 |
+| tvd (control) | choice | 1.90 | n/a | 0.6502 | 0.6776 |
+| tvd | noul | 0.82 | -5.50 | 0.0864 | 0.3313 |
+| tvd | score | 0.70 | -2.80 | 0.2930 | 0.4106 |
+
+**The noul's shift is the item, and it is large and stable.**  `b = -2.29` in
+log-odds, at `T = 2.63`.  In the population's own numbers: the pool's mean P(yes) was
+**0.4142** to the humans' **0.1096**; the out-of-fold mapped mean is **0.1080**.  Across
+the five folds `T` is 2.35 to 3.20 and `b` is **-2.22 to -2.41** - the sign and the size do
+not turn on the split.  The cross-entropy falls from 0.9068 to 0.2821 nats, which is what
+moving the centre to the people buys.
+
+**The choice's fit has no shift and finds the temperature again: 3.65.**  That is the
+soft temperature of §20.4 to two decimals, and it must be: with no coordinate to shift
+along, the affine map *is* the temperature.  The choice's row is therefore not a new
+measurement - it is item 1.1b's result reproduced by a different tool, and it behaves
+the same way (below).
+
+**The score's tilt is -0.54 in log-odds per level at `T = 3.73`**, and 24.10 shows why
+that parameter is the wrong shape for the type.
+
+**The TVD control drives the noul to a near-degenerate "no"** (`T = 0.82`, `b = -5.50`):
+TVD is not a proper scoring rule, and minimizing the distance rewards a distribution that
+says "no" to nearly everything on a 9%-yes population.  It wins its own metric on the test
+sample (0.1171 against the soft arm's 0.1234), and on the 235 it fails (c) too (42.82 all
+three, 24.11) - it is a control, not a candidate.  The cross-entropy is the right primary
+for a decision, and this is the measurement that says so.
+
+**The map is invertible to floating point.**  The worst `|p - undo(apply(p))|` over every
+item of every population is **5.6e-16** (the per-population maxima are in
+`affine_calibration.json`), so the offline paired arms are exact arithmetic on the stored
+logits.
+
+```
+python tools/decision_policy/affine.py \
+  --items ...\decision_policy_training\items\p1b_pool.jsonl \
+  --runlog ...\run\p1b_pool_T1.runlog.jsonl \
+  --predictions ...\run\p1b_pool_T1.jsonl
+```
+
+(1,500 items, 0 cross-check problems, 1.8 min; the arms are written to
+`...\run\p1a_pool_affine.jsonl`, `p1a_od235_affine.jsonl`, `p1a_jevtest_affine.jsonl`.)
+
+### 24.7 The pool, out of fold
+
+Each item is mapped by the map of the fold it was **not** in.  The baseline is the pool
+run's own T = 1 arm.
+
+| arm | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|
+| T = 1 | 49.72 | 41.98 | 57.47 |
+| the affine fit, out of fold | **55.05** | 40.47 | **69.63** |
+| paired bootstrap | **+5.35 [+0.39, +10.36]** | -1.56 [-6.14, +2.74] | **+12.26 [+5.38, +19.28]** |
+
+| type | TVD T = 1 | TVD affine | bias T = 1 | bias affine | AUC T = 1 | AUC affine | calibration T = 1 | calibration affine | competence T = 1 | competence affine |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| choice | 0.6776 | 0.7049 | +0.1780 | -0.2959 | 0.9195 | 0.9195 | 44.78 | 51.89 | 54.32 | 54.32 |
+| noul | 0.3313 | **0.1088** | +0.3047 | **-0.0015** | 0.8716 | 0.8684 | 61.99 | **73.72** | 46.40 | 52.40 |
+| score | 0.4106 | 0.3637 | +0.2907 | +0.0010 | 0.6895 | 0.6860 | 65.64 | **83.28** | 25.21 | 14.69 |
+
+The noul's mean P(yes) is **0.4142 at T = 1**, **0.1080** with the map, against the
+humans' 0.1096; its accuracy rises 73.2% to 76.2% (366 to 381 of 500).  The choice's TVD
+gets **worse** (0.6776 -> 0.7049) while its calibration component improves - the CE fit is
+not the TVD's fit, and the two measures disagree on a 28-option emotion question.  The
+score's competence falls (25.21 -> 14.69) while its calibration rises: 24.10 is why.
+
+The paired item bootstrap of the TVD difference (affine - T = 1): noul **-0.2225
+[-0.2588, -0.1863]**, score -0.0469 [-0.0741, -0.0178], choice **+0.0272 [+0.0031,
++0.0537]**, all -0.0807 [-0.1013, -0.0615].
+
+**(a) passes for every type** - the out-of-fold calibration improves for all three - and
+that is the first half of what the fit was asked to do.
+
+### 24.8 The OpenDecisions 235
+
+The full pool fit, applied to the 235's stored T = 1 arm.  The types' components are
+separately measurable, so the Capability of **any subset** of the three maps is exact
+(the tool asserts the table reproduces the all-three arm to 1e-9).
+
+| arm | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|
+| T = 1 | **78.87** | 75.90 | 81.84 |
+| the affine fit, all three | **41.53** | 35.34 | 47.73 |
+| paired bootstrap | **-35.80 [-43.26, -27.57]** | -39.67 [-47.71, -29.42] | -31.93 [-42.18, -20.77] |
+
+| types mapped | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|
+| none (T = 1) | 78.87 | 75.90 | 81.84 |
+| choice | 72.93 | 75.90 | 69.96 |
+| score | 68.50 | 58.44 | 78.56 |
+| noul | 57.84 | 52.80 | 62.88 |
+| choice + score | 62.56 | 58.44 | 66.68 |
+| choice + noul | 51.90 | 52.80 | 51.01 |
+| noul + score | 47.47 | 35.34 | 59.60 |
+| all three | 41.53 | 35.34 | 47.73 |
+
+**Every single type loses on the 235**, and the noul loses the most.  The per-type rows:
+
+| type | accuracy T = 1 | accuracy affine | TVD T = 1 | TVD affine | bias T = 1 | bias affine | calibration T = 1 | calibration affine |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| choice | 88.79% (95/107) | 88.79% | 0.2868 (3 items) | 0.0667 | +0.2868 | +0.0559 | 78.95 | 43.32 |
+| noul | **88.41% (61/69)** | **56.52% (39/69)** | 0.1589 (6 items) | 0.6486 | **-0.1114** | -0.6486 | 79.16 | 22.29 |
+| score | 77.97% (46/59) | 49.15% (29/59) | 0.2902 (4 items) | 0.3327 | +0.1486 | -0.3544 | 87.41 | 77.57 |
+
+**The noul's sign is the finding.**  On the 235's noul items the model's mean P(yes) is
+**0.6776** against the humans' **0.7890** - it is already **under**-eager there, the
+opposite of the jev-bench content judgments, and the sign of its bias is **-0.1114**.  The
+shift fitted on a 9.2%-yes population moves **26 of 69** answers and gets **22 fewer right
+(61 -> 39)**, so its bias goes to -0.6486 and its competence from 76.32 to 7.01.  A
+shift that is right for one population is wrong, in sign, for the other.
+
+The choice's accuracy **cannot** move (the map is monotone, so the pick is fixed), and yet
+its Capability falls: its calibration component goes 78.95 -> 43.32, because the flattening
+that helped its own pool's ECE reports a different confidence on this one.  That is
+§20.7's failure reproduced exactly.
+
+The score moves **28 of its 59** answers and gets **17 fewer right (46 -> 29)**, and its
+within-item AUC falls 0.8983 -> 0.7189: the tilt is not monotone inside the item, so it
+can cost the ordering of the levels, which no scale can.
+
+### 24.9 The jev-bench test sample
+
+| arm | Capability | Intelligence | Calibration | mean TVD |
+|---|---:|---:|---:|---:|
+| T = 1 | 55.08 | 47.18 | 62.98 | 0.4439 |
+| the affine fit, all three | 55.28 | 42.93 | 67.63 | **0.3074** |
+| paired bootstrap | +0.01 [-6.99, +6.78] | -4.48 [-10.94, +2.03] | +4.50 [-4.75, +13.37] | |
+
+| type | TVD T = 1 | TVD affine | bias T = 1 | bias affine | AUC T = 1 | AUC affine | accuracy T = 1 | accuracy affine |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| choice | 0.4702 | 0.4139 | +0.1691 | -0.1771 | 0.9123 | 0.9123 | 70.75% | 70.75% |
+| noul | 0.3836 | **0.1234** | +0.3560 | **+0.0330** | 0.8577 | **0.8577** | 75.23% (167/222) | 74.77% (166/222) |
+| score | 0.4963 | 0.3986 | +0.3394 | -0.0333 | 0.7446 | 0.7213 | 47.31% (79/167) | 49.10% (82/167) |
+
+**The noul's human gap closes out of sample, and the ranking does not move.**  The mean
+P(yes) goes **0.4451 -> 0.1222** against the humans' **0.0892**; the TVD falls **0.3836 ->
+0.1234** (the paired item bootstrap: **-0.2602 [-0.3214, -0.1993]**, 67% of items better),
+the bias **+0.3560 -> +0.0330**, and the AUC is **0.8577 either way** - a monotone map
+cannot move a binary ranking, and this one did not.  **91 of the 222 answers move and only
+one net answer is lost** (167 -> 166).  The gain is the **centre, not new information**:
+the AUC is unchanged and **33% of the items are further from the humans** - the shift
+moves the whole distribution, and the mean gap closes because the mean was where the error
+was.  This is the item's exit criterion's first half, met out of sample: the shift
+generalizes to a population it was not fitted on, and it costs no discrimination.
+
+The choice is the temperature again (3.65, the soft arm's), so its TVD falls
+0.4702 -> 0.4139 and its calibration falls 68.11 -> 51.25; the Capability of the
+choice-only arm is 52.27 against 55.08.  The score moves **79 of 167** answers and gains
+**3 net** (79 -> 82), and its expected level still gets worse (24.10).
+
+### 24.10 The score's location is per config, not per type
+
+The score type spans K = 3, 4, 5 and 6 levels on these populations, and the pool carries
+a human distribution for **one** score config only, `measuring_hate_speech` (K = 3).  The
+per-config measurements (the report's full table; `level - gold` is the mean signed
+distance of the expected level to the gold, §22.5's measure):
+
+| population | config | K | n | level - gold, T = 1 | level - gold, affine | accuracy T = 1 | accuracy affine |
+|---|---|---:|---:|---:|---:|---:|---:|
+| pool | helpsteer2_helpfulness | 5 | 125 | -0.3906 | -1.3214 | 0.34 | 0.19 |
+| pool | helpsteer2_verbosity | 5 | 125 | +0.5087 | -0.4587 | 0.47 | 0.48 |
+| pool | measuring_hate_speech | 3 | 250 | +0.3387 | +0.0490 | 0.54 | 0.71 |
+| test | helpsteer2_helpfulness | 5 | 24 | -0.1923 | -1.1032 | 0.38 | 0.25 |
+| test | helpsteer2_verbosity | 5 | 24 | +0.7106 | -0.2916 | 0.46 | 0.46 |
+| test | measuring_hate_speech | 3 | 50 | +0.4511 | +0.0784 | 0.40 | 0.74 |
+| test | sst5 | 5 | 23 | -0.1567 | -1.1365 | 0.57 | 0.39 |
+| test | stsb | 6 | 23 | -0.5602 | -1.3799 | 0.43 | 0.13 |
+| test | yelp5 | 5 | 23 | +0.2127 | -0.4099 | 0.70 | 0.70 |
+
+**Two things, and the second is the larger.**  (1) The raw level index is **not
+commensurable** across K: a tilt of 0.54 in log-odds per level moves the expected level by **0.29
+levels on the 3-level config** and **0.93 to 0.97 on the 5-level ones** (the deltas in the
+table above) - the fit was made on a K = 3 config and applied to K = 5 and 6, and the
+response scales with K.  The scorer's own nMAE normalizes by K - 1, so the natural unit is the
+**normalized position k/(K-1)**, not the index.  (2) **The configs disagree in sign at
+T = 1**: `helpsteer2_helpfulness` is 0.39 levels *below* the gold and
+`helpsteer2_verbosity` 0.51 *above* it on the pool; the same opposition is on the test
+(-0.19 and +0.71) and in the 235's larger cells.  So the aggregate **+0.14** (§22.5's
++0.1348 on its own run; +0.1401 on this one) is not one bias: it is opposite errors
+cancelling.  Even a correctly normalized tilt cannot serve two configs that want
+opposite directions.  **A per-type location is the wrong unit for the score**; a
+per-config location is the right one, and that is a different item.
+
+This is a correction to 24.1's choice of coordinate, recorded rather than quietly made:
+the pre-registered map used the level's index, the measurement shows the index is the
+wrong unit and the type is the wrong granularity, and the corrected map (a per-config
+location on the normalized position) is **not run here**.
+
+### 24.11 The rule, applied
+
+| type | (a) the pool's OOF calibration | (b) the jev test TVD | its own 235 row | verdict |
+|---|---|---|---|---|
+| choice | 44.78 -> 51.89: **PASS** | 0.4702 -> 0.4139 (-0.0563): **PASS** | competence 85.72 -> 85.72, calibration 78.95 -> 43.32 | does not ship |
+| noul | 61.99 -> 73.72: **PASS** | 0.3836 -> 0.1234 (-0.2602): **PASS** | competence 76.32 -> 7.01, 61 -> 39 of 69 | does not ship |
+| score | 65.64 -> 83.28: **PASS** | 0.4963 -> 0.3986 (-0.0976): **PASS** | competence 65.66 -> 13.28, 46 -> 29 of 59 | does not ship |
+
+**(c) fails for every candidate.**  The set that passes (a) and (b) is all three types;
+its 235 Capability is **41.53 against 78.87**.  With the noul removed (it is judged
+separately) the choice and the score are **62.56, still 16.3 below**; each type alone is
+72.93 (choice), 57.84 (noul) and 68.50 (score).  There is no subset of this map that keeps
+the 235 where it was.  The TVD control fails (c) as well and is nowhere near the bar:
+42.82 all three (its noul's own 235 competence is 13.55 against the soft arm's 7.01, both
+far below the 76.32 the type had).
+
+**NO CONSTANT SHIPS.**  The endpoint stays at T = 1, and the map stays out of the server.
+
+A correction to 24.5's parenthetical, before it is read as a contradiction: "best
+calibrated of the three types" is §1.1's **raw ECE** on the 235 (noul 0.0756 against the
+choice 0.1313 and the score 0.1082), not the stored arm's **calibration components**
+(79.2 / 78.9 / 87.4, where the score is highest - its component also carries
+(1 - nRPS), so it is not an ECE).  By the raw ECE the noul is the best; the stored T = 1
+arm's own ECEs are 0.1042 (noul) and 0.1053 (choice).  The argument does not change.
+
+### 24.12 What it means
+
+**The noul's bias is real, it is movable, and it is population-specific.**  A shift on
+the logit closes the human gap on the pool's out-of-fold arm (0.3313 -> 0.1088) and on a
+population it was not fitted on (the jev-bench test: 0.3836 -> 0.1234), leaves the AUC
+unchanged, and costs one net answer of 222.  **That is what a temperature could not do**, and
+it settles the mechanism question §19.6 left open: the noul's error is in the reported
+level, and a level is what a shift moves.
+
+**And the same shift is wrong on the 235, in sign.**  There the model is already
+*under*-eager (mean P(yes) 0.6776 against 0.7890, bias -0.1114); the shift drags it to
+0.1404, moves 26 of 69 answers and gets 22 fewer right.  The two populations want opposite
+shifts, so **no per-type constant can serve both** - the same verdict as §20.8's for the
+temperature, now with the right lever.  The product answer is unchanged and sharper: **a
+per-workload calibration**, not one constant, and the form of that calibration for the
+noul is a **shift**, not a scale.
+
+**The choice has no second parameter, and the measurement is the check.**  Its
+scale-only map is the temperature to two decimals, passes (a) and (b), and fails (c) by
+5.9 Capability points - the 1.1b result reproduced.  A "two-parameter" fit for the choice
+would be a fitted number with no referent; the honest report says so.
+
+**The score's failure is the item's most useful design finding.**  Its expected level is
+off, but the error is **per config and both signs** (+0.51 and -0.39 on the two 5-level
+configs of the pool) and the type's level count varies from 3 to 6, so a per-type
+location is the wrong granularity *and* the raw level is the wrong unit.  A per-config
+location on the normalized position k/(K-1) is the map the measurement points to; it is
+not run, and it is a new pre-registration.
+
+**Where this sits beside 1.5.**  The `criteria-first` prompt (item 1.5) cuts the noul's
+bias on the same pool half A from **0.3047 to 0.2268** - about a quarter - with no 235
+cost, and it passes its guards.  The affine shift cuts it to **~0.00** and costs the 235
+21 Capability points.  So the prompt is still **the cheaper and the shippable lever**; the
+affine fit is the proof that the level can be moved, and the evidence that a constant
+fitted on one population is not the way to move it.  A combination (the prompt's
+`criteria-first` plus a *small* shift, or a per-workload shift chosen from the workload's
+own data) is a **new experiment**, not a result of this one.
+
+**The exit criterion, read honestly.**  Its first half - the noul's TVD to the human
+distribution falls out of sample - is **met**: 0.3836 -> 0.1234 on the test sample, with
+no AUC loss.  Its second half - "nothing else regresses on either population" - is **not
+met**: the choice and the score regress on the 235, and the noul itself regresses there.
+The clause "if the shift does not generalize, the bias is in the prompt or in the task,
+not in the readout" resolves the other way: **the shift does generalize to the humans, and
+it is the population that changes the answer**, which is a stronger statement than either
+branch of the criterion.
+
+### 24.13 The limits, and what was not run
+
+* **No live run of the map.**  The 235's and the test sample's arms are offline
+  re-scalings of one stored run each.  The arithmetic is exact (the inversion is checked
+  to 5.6e-16) and the arms share the engine, the picks, the logits and the state; a live
+  run would add the engine's own wobble (about 0.0193 mean |change| in P(yes) on the jev
+  noul slice, and 1.8 Capability points on the 235, §23.5) and nothing else.  The picks a
+  live run would report are the argmax of the same logits, so only that wobble would
+  separate them from the arms here.
+* **The map is not in the server.**  Shipping one would need a change to
+  `serve/logits_first_token.py` and a new launch-config key with a byte-identity test;
+  nothing was changed there, and the rule says nothing ships.  (That is a static reading
+  of the server's module: `apply_temperature` is the scale only, and there is no affine
+  key.)
+* **The 235's per-type TVD rows are thin**: 3 choice, 6 noul and 4 score items carry a
+  human distribution there.  The accuracies (107 / 69 / 59 items) and the calibration
+  components are the numbers to read on that population, not the TVDs.
+* **The fit sees one noul population and one score config with humans.**  The noul's 250
+  human items are all `civil_comments` (9.2% yes); the 250 `paws`/`strategyqa` items have
+  no human distribution, so the fit cannot see the 45.2% base rate.  The score's 250
+  human items are all `measuring_hate_speech` (K = 3), which is 24.10's cause.
+* **No normalized or per-config score map was run**, no per-config noul map, no
+  combination with the 1.5 prompt, no second pool and no second seed.  Each is a new
+  pre-registration.
+* **The same caveats as §20:** the two populations are different kinds of question
+  (Jev-style typed decisions against content judgments), the constants belong to this
+  model and this quantization, and the pool is licence-clean but validation-only.
+* **No engine, no server, no GPU, no new dependency.**  Everything above comes from the
+  stored runs in
+  `...\decision_policy_training\run\` and `...\opendecisions\`; the fit and the report are
+  `tools/decision_policy/affine_calibration.json` and
+  `tools/decision_policy/affine_report.md`.

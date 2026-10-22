@@ -158,6 +158,64 @@ Every candidate arm is recovered out of one run: the T = 1 arm, the temperature 
 any candidate (the transform is invertible, so one run carries them all).  For each arm the script reports
 the mean total variation distance to the HUMAN distribution - overall, per type and per config - and the
 official scorer's Capability, Intelligence and Calibration.  The inversion is validated, not assumed.
+## The per-type affine calibration (roadmap item 1.4)
+
+The temperature is one scalar per type, and a scalar moves a distribution's **scale**.
+The noul's measured error is the **centre**: on the jev-bench human labels the model
+over-predicts "yes" on 95 of 100 items, with a mean signed difference of +0.357 against a
+mean absolute 0.384 (companion doc §19.6).  This tool fits **two parameters per type**,
+in the type's own units:
+
+```
+p'_l = normalize( p_l ** (1/T) * exp(b * s_l) )
+```
+
+| type | parameters | `s_l` | `b` |
+|---|---|---|---|
+| noul | T, b | 0 for no, 1 for yes | `logit(P'(yes)) = logit(P(yes))/T + b`, in log-odds |
+| score | T, b | the level's index 0..K-1 (the measurement corrects the unit: the normalized position k/(K-1), and the location is per config - companion doc 24.10) | a tilt along the ordinal axis: a location parameter |
+| choice | T | none | **not identified** - a shift that is the same for every option is cancelled by the normalizer, so the choice's map is the scale only |
+
+The map is **invertible** (`undo(q) = apply(q, 1/T, -b*T)`), so one stored run carries
+every arm and the comparison is paired; with `b = 0` it is the server's own
+`apply_temperature`.  Unlike a temperature it can **move the pick** (the noul can cross
+0.5), so every arm's accuracy is reported beside its TVD.  The affine part is **not in the
+server**.
+
+```sh
+python tools/decision_policy/affine.py \
+  --items <the pool's p1b_pool.jsonl> --runlog <p1b_pool_T1.runlog.jsonl> \
+  --predictions <p1b_pool_T1.jsonl> \
+  --out-json tools/decision_policy/affine_calibration.json \
+  --out-report tools/decision_policy/affine_report.md
+```
+
+The fit is against the **human distribution** (`target_probs`): the cross-entropy is the
+primary (a strictly proper scoring rule, and the same `soft` objective as item 1.1b), the
+mean TVD the control.  The validation is the temperature fit's own (`temperature.stratified_folds`,
+5 folds, stratified by type, seed 42, the fit never sees the item it is scored on), and the
+estimates come with `temperature.paired_bootstrap`.
+
+It evaluates three populations, each out of one stored run: the **pool** (out of fold),
+the **OpenDecisions 235** and the **jev-bench test sample**, and applies §20.2's rule:
+(a) the pool's out-of-fold calibration improves, (b) the test TVD does not get worse by
+more than 0.005, (c) the 235's Capability does not fall.  The noul is judged separately.
+
+**The result, in one line: the noul's shift works against the humans and the constant is
+population-specific.**
+Out of fold on the pool the noul's TVD falls 0.3313 -> 0.1088 and its bias +0.3047 ->
+-0.0015; on the jev-bench test 0.3836 -> 0.1234, bias +0.356 -> +0.033, **AUC unchanged**
+(0.8577) and one net answer of 222 changed.  On the 235 the same shift is wrong **in sign**
+(the model is already under-eager there, bias -0.1114), moves 26 of 69 answers and gets 22
+fewer right, so the 235's Capability falls 78.9 -> 41.5 - the 235's noul competence alone
+76.3 -> 7.0.  **(a) and (b) pass for every type, (c) fails for
+every type, and no constant ships.**  The choice's scale-only map is the temperature again
+(3.65) and fails (c) the same way.  The score's tilt exposed a design fault: its location
+error is **per config, not per type** (the two 5-level configs of the pool disagree in
+sign at T = 1) and the raw level index is not commensurable across K = 3..6; the corrected
+map - a per-config location on the normalized position k/(K-1) - is not run.  Recorded in
+the companion doc §24.
+
 ## The per-type prompt variant
 
 The endpoint can render a question's own lines in a few alternative ways, one per question type.  The
@@ -339,6 +397,10 @@ is in the companion doc's section 20.
 | `temperature_pool_report.md` | generated | the pool fit's report. |
 | `retemperature.py` | source | re-scales a run's distributions: the paired comparison of two temperature settings out of one run. |
 | `temperature_arms.py` | source | every candidate arm of one run, with the distance to the human distribution and the official scorer's numbers. |
+| `affine.py` | source | the per-type affine calibration (roadmap item 1.4): the scale-and-shift map, the fit against the human distribution, the same 5-fold CV, and the three populations' paired evaluation against §20.2's rule. |
+| `affine_calibration.json` | generated | the affine fit's constants (per type and per fold), the map, the population arms, the per-config score table and the rule's verdict. |
+| `affine_report.md` | generated | the affine fit's report: the map, the fit, the three populations, the score's per-config finding, the rule and the limits. |
+| `test_affine.py` | source | unit tests for the map: the noul's logit identity, the exact inverse on every type, the server transform at b = 0, the fit recovering synthetic parameters, and the subset decomposition the rule's (c) rests on. |
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `letter_costs.py` | source | the letter readout's engine-request cost over a set. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
