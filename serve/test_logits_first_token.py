@@ -770,6 +770,17 @@ class Temperature(unittest.TestCase):
             last = resp["confidence"]
 
     # (e) the noul's value is the scaled one
+    def test_a_degenerate_temperature_is_a_silent_no_op(self):
+        # a temperature of about 1e-5 or below underflows every weight to zero, and
+        # the reading comes back unchanged: a no-op, not an error.  The config
+        # refuses T <= 0 but not a temperature that small.
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        plain = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)["q"]
+        tiny = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0,
+                                     temperature=1e-6)["q"]
+        self.assertEqual(tiny["closed"], plain["closed"])
+        self.assertEqual(tiny["open"], plain["open"])
+
     def test_the_noul_value_is_the_scaled_one(self):
         _, qs = sysone.validate_request({"state": "x", "questions": {
             "q": {"type": "noul", "instructions": "Is it?"}}})
