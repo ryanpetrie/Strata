@@ -23,7 +23,10 @@ THE TEMPERATURE.  A temperature divides the logits before the softmax, so the re
 distribution over the options is flattened (T > 1) or sharpened (T < 1).  It is
 opt-in: the config's "systemone": {"temperature": {...}}, and 1.0 - the default -
 leaves every number byte-identical to the path before it.  The PICK cannot change: the
-map is monotone, so the answer is the same under every temperature.
+map is monotone, so the argmax is the same under every temperature, and a yes/no never
+crosses the 0.5 threshold.  The score type's EXPECTED LEVEL does move - the
+probability-weighted mean, which the scorer reads for its Intelligence - and that is
+where the gain is, not only in the calibration.
 
 Pure Python: no Service, no engine, no I/O. server.py's Service.systemone wires it to
 the model; serve/test_logits_first_token.py covers it without a GPU.
@@ -359,8 +362,16 @@ def apply_temperature(reading: dict, temperature: float = 1.0) -> dict:
     temperature reshapes the distribution OVER the options, and the model's mass
     elsewhere is not rescaled.
 
-    The PICK cannot change: the map is monotone, so the answer is the same under
-    every temperature.
+    The PICK cannot change: the map is monotone, so the argmax is the same under
+    every temperature, and a yes/no never crosses the 0.5 threshold (the sign of
+    closed_T(yes) - 0.5 is the sign of closed_1(yes) - 0.5).  The score type's
+    EXPECTED LEVEL does move: it is the probability-weighted mean, and the scorer's
+    Intelligence for that type reads it.
+
+    A temperature of about 1e-5 or below underflows every weight to zero, and the
+    reading is then returned UNCHANGED (the `total <= 0` guard): a silent no-op, not
+    an error.  The config refuses T <= 0 but not a temperature that small, and the
+    fitted constants are far from it.
     """
     if temperature == 1.0:
         return reading
@@ -456,7 +467,10 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
     full-vocabulary log-sum-exp the engine reports (the normalizer that turns a logit
     into the model's own probability).  None when the engine did not report one.
 
-    `temperature` scales the closed distribution (see `apply_temperature`).
+    `temperature` scales the closed distribution (see `apply_temperature`).  It is ONE
+    number for EVERY question in the list: a batch holding questions of different
+    types would give them all the same temperature, so a mixed-type batch has to be
+    run one type at a time (the server does that: one question per call).
 
     Each reading holds:
       closed  - the distribution over the options alone: the FORCED-CHOICE reading.  The

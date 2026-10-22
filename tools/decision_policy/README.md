@@ -88,6 +88,16 @@ against the one-hot gold label: it is the objective that lines the probability u
 people were.  It is only defined on the items that carry a distribution, and the report says how many that
 is per type.
 
+It also says how sure the result is, in two ways, and neither of them is a point estimate on its own:
+
+- an **out-of-bag** bootstrap per type: the items are resampled twice, the temperature is fitted on one
+  sample and the ECE measured on the other, and the report says how often the temperature wins.  A share
+  is not an effect size;
+- a **paired item bootstrap** over the 235 items: both arms are scored on the same resample, so the
+  difference is paired and the interval on it is honest.  Pass `--temp-runlog <the run that used the
+  temperature>` to add the paired control - the same run with the temperature undone, which is the same
+  engine and the same picks with the temperature's arithmetic removed.
+
 **The application** - the launch config, per machine:
 
 ```json

@@ -1876,10 +1876,13 @@ diagnostics and the response report.  The mass outside the options (`stop`,
 `outside`) is left at its T = 1 value: the temperature reshapes the distribution OVER
 the options.
 
-**The PICK cannot change**: the map is monotone, so the answer is the same under
-every temperature.  One thing it does move is the scorer's **Intelligence for a
-`score` question**, because the scorer reads the EXPECTED level, and the expected
-level moves with the temperature.  Measured below, not assumed.
+**The PICK cannot change**: the map is monotone, so the argmax is the same under every
+temperature, and a yes/no never crosses the 0.5 threshold (the sign of
+`closed_T(yes) - 0.5` is the sign of `closed_1(yes) - 0.5`).  One thing does move: the
+**expected level** of a `score` question - the probability-weighted mean the scorer
+reads for its Intelligence - and it moved on **all 59** score items of the sample, by
+up to **0.18 levels**.  That is where the Intelligence gain comes from, not only the
+calibration.  Measured, not assumed.
 
 The **decode path** (the fallback, when the model wrote something that is not an
 option) reports the degenerate 1.0/0.0 distribution, and a temperature is a
@@ -1945,11 +1948,22 @@ the baseline's 79.8) and its ECE is worse for the choice and the noul.  A reader
 fits a temperature on this sample with the textbook objective and ships it will lose
 0.7 Capability points.
 
-How sure is the fit?  The items of the type resampled with replacement, the
-temperature fitted again on each resample, the ECE measured on it at T = 1 and at the
-fitted temperature: the temperature lowers the ECE in **72%** (choice), **75%** (noul)
-and **78%** (score) of 1,000 resamples.  The direction is right; the size is inside
-the sample's noise.
+How sure is the fit?  The items of the type are resampled with replacement, TWICE per
+resample: the temperature is fitted on one sample and the ECE is measured on the
+other, so the ECE that is compared is not the one the fit produced.  (Measuring both
+on the same resample is in-sample and optimistic; the numbers below are the honest
+out-of-bag ones.)  The share is the resamples where the temperature lowers the ECE.
+
+| type | resamples | the temperature lowers the ECE | the ECE difference (5%, 95%) |
+|---|---:|---:|---|
+| choice | 1,000 | 64% | -0.0327, +0.0625 |
+| noul | 1,000 | 67% | -0.0180, +0.0320 |
+| score | 1,000 | 68% | -0.0447, +0.0769 |
+
+**A share is not an effect size.**  It says how often the temperature wins on a
+resample of 235 items; it does not say by how much, and it carries no interval for the
+size.  For that, the paired item bootstrap in the next section - and the intervals
+there are wide.
 
 ### 18.5 The re-run of the 235-item sample (IN-SAMPLE)
 
@@ -1985,15 +1999,37 @@ and the bottom row is the temperature and nothing else:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | the temperature's own effect on this run | **+1.2** | **+1.1** | **+1.3** | +1.9 | +2.6 | -0.7 | +3.2 |
 
+**And how big is that?**  A **paired item bootstrap**: the 235 items are resampled with
+replacement and BOTH arms are scored on the same resample, so the difference is
+paired - an item's own run-to-run wobble cancels and what is left is the
+temperature's effect.  The interval is the 2.5% and 97.5% percentiles of the
+differences (1,000 resamples, seed 42, `tools/decision_policy/temperature.py`):
+
+| | Capability | Intelligence | Calibration |
+|---|---|---|---|
+| the temperature's own effect on this run | +1.2 | +1.1 | +1.3 |
+| **the paired bootstrap's 95% interval** | +1.36 [-1.10, +3.79] | +1.07 [+0.44, +1.72] | +1.64 [-3.16, +6.46] |
+| the resamples where it is better | 87% | 99.8% | 75% |
+| the out-of-fold fit against the baseline arm | +1.66 [-1.01, +4.41] | +1.46 [+0.72, +2.46] | +1.87 [-3.25, +7.06] |
+| ... the resamples where it is better | 89% | 100% | 77% |
+
+**The direction is right; the size is not established on 235 items.**  The
+**Intelligence** gain is the part that holds up - its interval excludes zero - and
+the **Calibration** gain is the least certain of the three.  A reader who wants a
+number they can rely on should quote the interval, not the point estimate.
+
 The re-run against the baseline arm is **+0.3** Capability, which is inside the
 run-to-run spread of this sample (§10.8: about 0.6 points, and the arms measured on
 this sample read 78.9, 79.1, 79.2, 79.5, 79.6, 79.8, 80.4).
 
 **The picks: 5 of 235 moved against the baseline arm** (230 the same, none lost).
-The temperature cannot move a pick - the map is monotone - so those 5 are the
-engine's own run-to-run wobble (§10.8: the KV cache's layout changes the logits a
-little and a near-tie flips).  All five are near-ties, and in every one of them the
-new run's top two options are the same pair as the baseline's, in the other order:
+The temperature cannot move a pick - the map is monotone, so the argmax is the same,
+and a yes/no never crosses the 0.5 threshold - so those 5 are the engine's own
+run-to-run wobble (§10.8: the KV cache's layout changes the logits a little).  In
+every one of them the **same pair** of options is on top in both runs, in the other
+order, which is the shape of a small change in the logits rather than of a
+re-ranking.  The margin column is the **smaller of the two runs'** gaps between their
+top two options:
 
 | item | type | the baseline's top two | the new run's top two | margin |
 |---|---|---|---|---:|
@@ -2011,14 +2047,20 @@ against the baseline arm's log's 3.12 s and 5.68 s.  The temperature cannot be t
 reason: it is four `pow` calls per question, measured at **1.2 us** on this machine,
 and it runs after the engine's turn.  The two runs also differ in their engine
 state, and both show the same growth over the run (the conversation cache's parked
-conversations): the first 40 items took 2.42 s a question (the baseline's first 40:
-2.06 s) and the last 40 took 5.60 s (the baseline's: 5.35 s).  A clean A/B on one
-engine was not run, so the 0.65 s of median difference is not attributed to anything
-in particular; it is not the temperature's arithmetic.
+conversations): **in run order**, the first 40 items took 3.23 s a question and the
+last 40 took 3.90 s (the baseline arm: 2.68 s and 3.21 s).  The 40 fastest and the
+40 slowest items are a different pair of figures - 2.42 s and 5.60 s, the baseline
+arm's 2.06 s and 5.35 s - and they say the same thing.  A clean A/B on one engine
+was not run, so the 0.65 s of median difference is not attributed to anything in
+particular; it is not the temperature's arithmetic.
 
 **The VRAM**: the minimum free was **1064 MiB** (1206 at load) against the engine's
 1024 MiB warning threshold, no sample below it, the largest conversation snapshot
-488 MiB - the same shape as §10.8's 1082 MiB.
+488 MiB - the same shape as §10.8's 1082 MiB.  These are the engine log's own
+readings, and the run's window of that log (lines 113900-116522 of
+`strata-unsloth-ud-iq4_xs.log`) is kept beside the run's predictions as
+`fix_serial_temp.vram.log`; `python tools/decision_policy/vram_headroom.py --log
+fix_serial_temp.vram.log --since-line 1` reads them back.
 
 The mean TVD to the known true probabilities, on the 13 calibration items: **0.250**
 (the baseline arm's 0.224, the temperature-undone run's 0.229).  The sharpening
@@ -2036,12 +2078,26 @@ the endpoint is used for uncertainty rather than for a pick.
   labelled as they are.  The independent check is the **jev-bench** run with the
   human soft labels (roadmap item 1.2): there the question is not "is the model right"
   but "is the confidence calibrated to the uncertainty a human would feel" (§14).
-- **The exit criterion is NOT met for all three types.**  The held-out ECE is lower
-  for the choice (0.1313 -> 0.1224) and the score (0.1082 -> 0.0649) questions, and
-  for the noul questions it is a wash: 0.0756 -> 0.0786 out-of-fold, inside the
-  noise.  The noul's ECE curve is jagged and shallow around T = 1 (0.0756 at T = 1,
-  0.0656 at its in-sample minimum) and its minimum does not survive the
-  cross-validation.
+- **The open reading's meaning changed.**  The reported confidence is no longer the
+  model's own probability: it is the closed reading at T scaled by the mass the model
+  put on the options, measured at T = 1.  A consumer that read the confidence as "the
+  model's own probability of this answer" must read it as "the forced-choice
+  probability, scaled".  §18.2 has the arithmetic.
+- **The exit criterion is NOT met for all three types, on the 5-fold out-of-fold
+  measure.**  The held-out ECE is lower for the choice (0.1313 -> 0.1224) and the
+  score (0.1082 -> 0.0649) questions, and for the noul questions it is a wash:
+  0.0756 -> 0.0786 out-of-fold, inside the noise.  The noul's ECE curve is jagged
+  and shallow around T = 1 (0.0756 at T = 1, 0.0656 at its in-sample minimum) and its
+  minimum does not survive the cross-validation.  **The other held-out measure does
+  show the noul improving** - the 70/30 split gives 0.1791 -> 0.1721 - so the
+  criterion's outcome depends on which held-out measure is meant; the 5-fold
+  out-of-fold is the one quoted here, and the 70/30 slice is thin (21 noul items).
+  The other half of the criterion, "no regression in Intelligence", **is** met:
+  78.0 -> 79.4 out-of-fold.
+- **The size of the effect is not established.**  The paired item bootstrap puts an
+  interval on it and the interval is wide (the Capability's [-1.10, +3.79] on the
+  paired control, [-1.01, +4.41] out-of-fold).  The direction is right; the
+  magnitude is not known, and the Intelligence gain is the part that holds up.
 - **The choice ECE is a thin slice**: 53 of the 107 choice items, and the five folds
   hold 6 to 15 of them.  The fold table in the fit's report says how thin.
 - **One temperature per type is one number for a whole family of questions.**  A
