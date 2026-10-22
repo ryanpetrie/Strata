@@ -48,36 +48,49 @@ the 235-item sample**, 235/235 predicted, 235 on the fast path.
 
 ### 1.1 Fit per-type temperature scaling (literature doc §3.A)
 
-**Status: PARTIAL (2026-10-21).** The temperature is fitted per type,
-cross-validated and served; the constants (choice 0.62, noul 0.67, score 0.77)
-are in `tools/decision_policy/temperature_calibration.json` and go into the launch
-config's `"systemone": {"temperature": {...}}`. The held-out ECE is lower for the
-choice (0.1313 -> 0.1224) and the score (0.1082 -> 0.0649) questions on the 5-fold
-out-of-fold split, and lower for the noul on the 70/30 split (0.1791 -> 0.1721) but
-not on the 5-fold out-of-fold (0.0756 -> 0.0786, a wash) — so the exit criterion is
-met for two of the three types, on the out-of-fold measure. Its other half, "no
-regression in Intelligence", is met: 78.0 -> 79.4 out-of-fold. Out-of-fold
-Capability 81.5 against the baseline's 79.8, with a paired item bootstrap of +1.66
-[-1.01, +4.41]: the direction is right, the size is not established on 235 items.
-The constants were fitted on these same 235 items, so the re-run is IN-SAMPLE, and
-the dataset's README says "Fit temperatures on your own data, never on
-OpenDecisions" — the independent check is the jev-bench run with the human soft
-labels (item 1.2). The temperatures are BELOW 1, not above: on this sample the model
-is under-confident, and the textbook objective (the NLL) would cost 0.7 points. The
-open reading's meaning changed: the reported confidence is no longer the model's own
-probability. Recorded in the companion doc §18.
+**Status: PARTIAL (2026-10-21), and the constants are NOT shipped.** The
+temperature is fitted per type, cross-validated, and the mechanism is in the code
+(opt-in: `"systemone": {"temperature": {...}}`, absent = 1.0 = the old numbers
+exactly). The fitted constants (choice 0.62, noul 0.67, score 0.77) are in
+`tools/decision_policy/temperature_calibration.json` and are **not** put in any
+launch config: item 1.2 measured them against the human labels and they were
+worse on every type and every config. The held-out ECE is lower for the choice
+(0.1313 -> 0.1224) and the score (0.1082 -> 0.0649) questions on the 5-fold
+out-of-fold split, and lower for the noul on the 70/30 split (0.1791 -> 0.1721)
+but not on the 5-fold out-of-fold (0.0756 -> 0.0786, a wash) — so the exit
+criterion is met for two of the three types, on the out-of-fold measure, on the
+one dataset. Its other half, "no regression in Intelligence", is met: 78.0 ->
+79.4 out-of-fold. Out-of-fold Capability 81.5 against the baseline's 79.8, with
+a paired item bootstrap of +1.66 [-1.01, +4.41]: the direction is right, the size
+is not established on 235 items. The constants were fitted on these same 235
+items, so that re-run is IN-SAMPLE, and the dataset's README says "Fit
+temperatures on your own data, never on OpenDecisions". The temperatures are
+BELOW 1, not above: on this sample the model is under-confident, and the textbook
+objective (the NLL) would cost 0.7 points. **If** a temperature is configured, the
+open reading's meaning changes — the reported confidence is then the closed reading
+scaled by the option mass, not the model's own probability — which is one more
+reason the constants are not shipped. Recorded in the companion doc §§18 and 19.
+
+**What the failure means.** The endpoint's calibration is **population-specific**:
+sharpening helps on OpenDecisions-style questions and hurts on jev-bench's
+content judgments, where the model is already more peaked than the humans are.
+The knob stays (it is the mechanism, and it is opt-in); the constants do not
+ship. Item 1.1b asks whether a constant fitted on a third population helps on
+both, and item 1.4 asks for the tool that fits a **bias** rather than a scale.
 
 - **Effort:** 2–4 days.
-- **Gain:** expected +1 to +2 Capability points (recovers part of the 2.8 lost to
-  over-confidence). Improves Calibration component directly.
+- **Gain:** expected +1 to +2 Capability points, on the premise that the model was
+  over-confident. **The premise was wrong on this sample** (it is under-confident
+  there) and the gain did not transfer; see the status above.
 - **Depends on:** the 235-item sample + scorer (already in hand); a train/held-out
   split of it; the softmax site to apply `logits / T` — which is
   `serve/logits_first_token.py` (`first_token_probs`, `trie_readings`), not a
   `serve/logits_prob.py` (that file does not exist; the probability helpers are
   `tools/decision_policy/logits_prob.py`).
 - **Work:** split sample; grid-search or optimize one scalar per type on train;
-  validate on held-out; store constants in the launch config (per-model, like the
-  `llm-logits` family's `calibration.json`); apply in the probability module.
+  validate on held-out; store the constants beside the fit (per-model), and put
+  them in a launch config **only** once a rule like 1.1b's says they transfer;
+  apply in the probability module.
   scipy is not installed here: stdlib + numpy. The objective that worked was the
   **Brier score**, not the NLL (the NLL's out-of-fold Capability was 79.1 against
   the Brier's 81.5).
@@ -90,35 +103,145 @@ probability. Recorded in the companion doc §18.
 
 ### 1.1b Refit the temperatures on the jev-bench validation split (added 2026-10-21)
 
-- **Effort:** 1–2 days (mostly compute: one ~1,500-item run, ~90 min).
+**Status: DONE (2026-10-22). No constant ships, and that is the finding.** The
+rule was written into the companion doc **before** the numbers were read (§20.2).
+The pool run answered 1,500 of 1,500 with 0 failures, every item on the fast path,
+on a fresh engine. The fitted constants are all **above** 1 — the pool's
+population wants a **flatter** distribution, the opposite of the OpenDecisions
+sample:
+
+| arm | choice | noul | score |
+|---|---:|---:|---:|
+| soft (cross-entropy against the human distribution) | 3.65 | 3.75 | 3.73 |
+| brier | 2.27 | 2.93 | 3.29 |
+| single scalar | 2.47 | 2.47 | 2.47 |
+
+On the pool's **own** population the fit works, and large: out-of-fold Capability
+49.72 -> **58.99** (brier), Calibration 57.47 -> **78.50**, paired bootstrap
+**+8.84 [+7.14, +10.56]** and **+20.20 [+17.08, +23.31]** (Intelligence -2.51
+[-3.46, -1.52], because the flattening moves the score type's expected level).
+On the **jev-bench test** sample every candidate passes: the TVD falls
+0.4439 -> 0.4034-0.4111 and Capability **rises** 55.1 -> 62.5-63.1.
+
+On the **OpenDecisions 235** the same constants **fail hard**: 78.9 -> 59.6 (soft),
+66.1 (brier), 69.0 (single). So the rule's (a) and (b) pass for every candidate and
+**(c) fails by 9.9 to 19.3 Capability points**. **No constant ships; the endpoint
+stays at T = 1.**
+
+**The mechanism is the result:** the two populations want **opposite scalings** —
+OpenDecisions wants sharpening (T below 1; the model is under-confident there),
+the jev-bench content judgments want flattening (T above 1; the model is more
+peaked than the people are). One scalar cannot serve both, and a constant that
+helps one population and hurts the other is not one we ship. **A temperature is a
+real tool on the population it is fitted on; it is the transfer that fails.** The
+product answer is not a better constant but a **per-workload** calibration and an
+endpoint that says so.
+
+**The noul is a bias, confirmed on a second population.** The soft arm — the only
+objective fitted against the human distribution — moves the noul's TVD by
+**0.0025** while moving the choice's by 0.056 and the score's by 0.032. A
+temperature cannot move a distribution's centre, and the noul's centre is wrong.
+It goes to item 1.4.
+
+- **Effort:** 1–2 days, mostly compute — but it is **four** runs, not one: the
+  1,500-item pool (~87 min), the 235 with the current constants (~14 min), the
+  235 live with the new ones (~14 min), the 683-item test sample (~40 min),
+  plus the fit (5–25 min) and four restarts. About **2 h 50 min**.
 - **Gain:** makes the shipped constants out-of-sample. The 1.1 constants were
   fitted on the 235 items they were then measured on, and the dataset says never to
-  fit on OpenDecisions.
-- **Depends on:** the jev-bench **validation** splits (on the Hub; the local copy
-  is test-only) and `tools/decision_policy/soft_labels.py` (the converter). Pool
-  and seed are fixed in the repo; only licence-verified, training-permitted
-  configs are used (see `docs/research/decision_policy_training_data.md`).
-- **Work:** fit on the validation pool (Brier objective; also try the soft-label
-  objective, the cross-entropy against the human distribution); compare against the
-  1.1 constants on **both** the OpenDecisions 235 and the jev-bench test sample,
-  paired (same session, same engine state) because the run-to-run spread is ~0.6-0.9
-  Capability points.
+  fit on OpenDecisions. After 1.2 showed the constants do not transfer to another
+  population, this item's question is sharper: **is there a constant that helps on
+  two populations at once, or is the endpoint's calibration population-specific?**
+- **Depends on:** the jev-bench **validation** splits — **already on this
+  machine**, fetched by the data branch's `download_soft_labels.py` into the shared
+  data root (the copy under `…\opendecisions\jevbench_data` is still test-only) —
+  and `tools/decision_policy/soft_labels.py` (the converter).
+- **The pool is fixed in the repo:** `tools/decision_policy/soft_label_pool.json`,
+  seed **20261021**, 1,500 items, 500 a type: choice go_emotions 250 /
+  banking77 80 / ledgar 80 / massive 50 / clinc150 40; noul civil_comments 250 /
+  paws 170 / strategyqa_closed 50 / strategyqa_grounded 30; score
+  measuring_hate_speech 250 / helpsteer2_helpfulness 125 /
+  helpsteer2_verbosity 125. 750 of them carry a human distribution. The pool keeps
+  **only licences that oblige nothing beyond attribution** — boolq (CC BY-SA 3.0)
+  was swapped out for 80 more paws items **before any compute**, so the pool holds
+  no share-alike source at all.
+- **Work:** fit on the validation pool. The **soft-label objective is the primary
+  candidate** — the cross-entropy against the human distribution — because the
+  Brier objective fits against a one-hot gold label, and 1.2 measured exactly
+  those constants losing against the humans; the Brier arm is the control. The
+  pool run at T = 1 **is** the pool's own T = 1 arm, so no extra run is needed.
+  Compare against **T = 1** (what ships now), not against the in-sample
+  constants: they are already measured to lose on the human labels. The arms are
+  **paired without a second engine**: `tools/decision_policy/retemperature.py`
+  re-scales one run, so the arms share the engine, the picks, the logits and the
+  state exactly. Fit the **single scalar** arm too (one T over the pooled
+  records, same objective, same folds, same no-leak rule): on the 235 it ties
+  the per-type arm on Capability (81.5 against 81.5).
+- **The decision rule, pre-registered before the run.** A constant ships only if
+  it clears all three: **(a)** the out-of-fold calibration on the pool it was
+  fitted on improves against that pool's own T = 1 arm; **(b)** the jev-bench
+  test TVD does not get worse than the T = 1 arm by more than **0.005** (a fifth
+  of what 1.1's constants cost there); **(c)** the OpenDecisions 235's out-of-fold
+  Capability does not fall below its T = 1 arm. All three measured paired.
+- **The noul is expected to fail this test and its failure does not block the
+  choice and score constants.** 1.2 measured the noul's error to be a **bias** —
+  93% of its TVD is a signed offset, the mean P(yes) is 0.446 against the
+  humans' 0.089 — and no scalar can move a distribution's centre. A noul that
+  does not clearly improve stays at T = 1 and goes to item 1.4.
 - **Exit criterion:** the out-of-sample constants are measured on the 235-item
-  sample, and the shipped constants are the ones that win there **and** do not
-  worsen the jev-bench TVD. If per-type does not beat a single scalar, ship a
-  single scalar and say so.
+  sample **and** on the jev-bench test sample, and the shipped constants are the
+  ones that clear the three tests above. A constant that helps one population and
+  hurts the other is not a constant we ship. If per-type does not beat a single
+  scalar, ship a single scalar and say so. **"No constant ships" is an acceptable
+  and likely answer**: it would mean the endpoint's calibration is
+  population-specific, and the next step is 1.4's affine fit and a
+  per-population calibration, not one number.
 
 ### 1.2 Re-run the temperature-fitted numbers on jev-bench (soft labels)
+
+**Status: DONE (2026-10-21). The exit criterion is NOT met.** The 683-item
+sample, one question per request, a freshly restarted engine, 683/683 predicted,
+0 failures, 683/683 on the fast path. The paired comparison (the same run, the
+temperature undone offline, so the arms share the engine, the picks and the
+logits) over the 280 items that carry the human distribution:
+
+| | T = 1 | the fitted constants | change |
+|---|---:|---:|---:|
+| TVD to the human distribution | **0.4439** | 0.4678 | **+0.0239 (worse)** |
+| Capability | **55.1** | 52.0 | **-3.1** |
+| Intelligence | 46.6 | 46.6 | -0.05 |
+| Calibration | **63.6** | 57.5 | **-6.1** |
+
+**Every type and every config got worse** (choice +0.0425, noul +0.0053, score
++0.0127; chaosnli +0.0550, civil_comments +0.0053, go_emotions +0.0224,
+measuring_hate_speech +0.0127). Recorded in the companion doc §19.
+
+**The mechanism, measured rather than guessed.** The choice's model is already
+**more peaked than the humans** (top-label mass 0.7862 against 0.6215), so
+sharpening moves away from them. The noul's error is a **bias**: the model
+over-predicts "yes" on 95 of the 100 items, the mean signed difference is +0.357
+on a mean absolute 0.384 — 93% of the TVD — and its mean P(yes) is 0.446 against
+the humans' 0.089. **A temperature cannot fix a bias**, and that is what the
+noul's failure is. The noul's constants were already the weakest (a wash on
+OpenDecisions) and are now clearly negative here: revert them to 1.0.
+
+Two facts worth keeping, and the first one corrects an earlier draft of this file.
+**A constant guess is worse than the model, not better.** On the 280 jev-bench
+items that carry a human distribution, a uniform guess sits at mean TVD **0.4943**
+against the model's **0.4432** (companion doc §14.2), and on the 100 noul items a
+constant P(yes) = 0.5 sits at **0.4184** against the model's **0.3844**. So the
+distribution carries real information; it is badly **biased**, not useless. (The
+0.4220 quoted in an earlier draft was the upstream `civil_comments` 50,000-row
+sample, a different population — not this one.) The second fact: a
+temperature-fitted constant is **population-specific** — the same three numbers
+help on OpenDecisions-style questions and hurt here.
 
 - **Effort:** 1–2 days (mostly compute).
 - **Gain:** confirms calibration improvement against a human gold standard
   (companion doc §14), not just OpenDecisions.
 - **Depends on:** 1.1.
 - **Exit criterion:** jev-bench TVD to human distribution lower than the current
-  0.4432; reported in companion doc §14 style.
-- **Note:** the noul's constant is the one the evidence contradicts (its 5-fold
-  out-of-fold ECE got worse). This run decides whether the noul keeps T = 0.67 or
-  goes back to T = 1.0.
+  0.4432; reported in companion doc §14 style. **NOT met** — see above.
 
 ### 1.3 Letter-readout benchmark (literature doc §3.F) — optional, low priority
 
@@ -131,6 +254,264 @@ probability. Recorded in the companion doc §18.
 - **Exit criterion:** a written comparison in the companion doc. Ship only if it
   wins on at least two of {Capability, latency, simplicity} without losing the
   other.
+
+**Status: DONE (2026-10-21/22). The criterion was met on OpenDecisions and the
+change still does not ship.** The A/B on the 235, both arms in one session on a
+fresh engine each, no temperature: the direct readout **79.3 (77.4, 81.1)**, the
+letter readout **82.7 (82.4, 83.0)**, and **0 extra engine requests against the
+direct path's 113** (72 of the 235 items collide on their first token, and the
+trie walk pays for them). That is Capability and simplicity won, latency not lost
+(median 3.61 s against 3.95 s in-session). The per-type breakdown already warned
+that it was not uniform: the letter readout is better on choice (90.7% against
+89.7%) and noul (92.8% against 91.3%), and **worse on score** (72.9% against
+79.7% accuracy) while its score *competence* rises, because the scorer reads the
+expected level's distance.
+
+**Then the human labels killed it.** On the jev-bench test sample (683 items, the
+direct arm already measured there): the letter arm is **48.3 (44.4, 52.2)**
+against the direct arm's **55.1 (46.6, 63.6)**, and its TVD to the humans is
+**0.4688 against 0.4439**. The mechanism is measured and it is not hedging: the
+letter readout is **sharper** — choice entropy 0.188 bits against the direct
+readout's 0.531, the mass on the top option 0.950 against 0.866, while the
+**humans carry 1.144 bits**. On the 130 choice items with a human distribution the
+letter readout is twice as certain as the direct one and far more certain than the
+people, which is exactly what its calibration component measures (44.9 against
+68.3). The OpenDecisions win and the jev-bench loss are the same effect as the
+temperature's: **decisiveness raises the OpenDecisions metric and loses against
+human uncertainty.**
+
+So the letter readout stays an **opt-in flag** (`"systemone": {"readout":
+"letters"}`), the default stays the direct readout, and the item is recorded in the
+companion doc as a **population-specific** result. What would change the verdict:
+letters for a question with more than 26 options currently falls back to the
+decode path (144 of the 683 items, reporting a degenerate 1.0/0.0) — reading those
+the direct way, then one paired run of both arms on both populations, is the
+measurement that would settle it.
+
+### 1.4 Fit an AFFINE calibration per type, not a temperature (added 2026-10-21)
+
+- **Effort:** 2–4 days (mostly compute; the mechanism is a small change to the
+  probability module).
+- **Gain:** targets the failure the temperature could not fix. The noul's error on
+  the human labels is a **bias** — the model over-predicts "yes" on 95 of the 100
+  items, mean signed difference +0.357 on a mean absolute 0.384 — and 93% of that
+  TVD is the bias, not the scale. A temperature divides the logits; it cannot move
+  a distribution's centre. **An affine calibration can**: `p ∝ softmax(z/T + b)`,
+  a scale and a shift per question type.
+- **Depends on:** 1.1 (the knob and the fit tooling exist), and a fitting set with
+  human distributions — the jev-bench validation pool from 1.1b.
+- **Work:** extend the fit to two parameters per type; fit on the pool; evaluate on
+  **both** the OpenDecisions 235 and the jev-bench test sample, paired (the
+  `retemperature.py` trick generalizes to an affine map). Report the shift `b`
+  per type and say what it means: a large positive shift on the noul says the
+  model is systematically too eager to say "yes", which is a **prompt** problem
+  as much as a calibration one, and the prompt is the cheaper fix.
+- **Exit criterion:** the noul's TVD to the human distribution falls out-of-sample,
+  and nothing else regresses on either population. If the shift does not
+  generalize, the bias is in the prompt or in the task, not in the readout — say
+  so and stop there.
+
+### 1.5 Per-type instructions — a pre-registered ablation, not a hill-climb (added 2026-10-21)
+
+- **Effort:** 3–5 days, mostly compute. The design is small (the server's per-type
+  template is 4–5 lines); the *discipline* around it is the work.
+- **Gain:** unknown, and possibly the cheapest fix we have. The noul's measured
+  failure is a **bias** (1.2: it over-predicts "yes" on 95 of 100 items, 93% of
+  its TVD), and a bias in a template is a prompt problem before it is a
+  calibration problem. If a prompt change removes the bias, it beats 1.4's affine
+  shift, which beats nothing.
+- **Depends on:** nothing new. The template lives in `serve/systemone.py`
+  (`_question_lines`, `render_answer_prompt`) and the item's own instructions come
+  from the dataset, so the variant space is the **fixed lines and the order** the
+  server wraps around them — a small space, per type.
+- **The method, because "hill-climbing" is the trap.** Ten variants tried on the
+  235-item sample and the best one picked is **noise-chasing**: the sample's
+  run-to-run spread was **1.8 Capability points** — measured, not assumed: two
+  identical base runs of the 235 scored 78.9 and 80.7 and differed in **6 answers
+  of 235** — so the best of ten wins by selection alone unless the effect is
+  measured paired. So: a **pre-registered, paired ablation** with a design set and
+  yardsticks, the same discipline as 1.1b:
+  1. **Design set:** the licence-clean pool (item 1.1b's 500 a type, 250 of them
+     with a human distribution). Variants are chosen there.
+  2. **Yardsticks:** the OpenDecisions 235 and the jev-bench test sample. A
+     variant is only *measured* there after it has been chosen, and the margin is
+     pre-declared.
+  3. **One axis per variant.** Each variant changes exactly one thing (the option
+     order, the criteria wording, the instruction line, the preamble), so an
+     effect is attributable.
+  4. **Paired runs.** Same items, same session, same engine state; the official
+     scorer for the numbers.
+  5. **Discrimination and calibration are separate metrics.** A prompt that shifts
+     the base rate moves the TVD without making the model any better at ranking
+     the answers; a prompt that improves the AUC is a genuine improvement. Report
+     both, and do not let a base-rate shift masquerade as calibration.
+- **First target: the noul**, because it is where the bias was measured. Later
+  targets: the choice and score templates (the score template says "answer with
+  exactly one of these level names, lowest first" — a plausible lever).
+- **Note:** item 1.3 is already a prompt experiment in flight — the lettered
+  readout changes the prompt *and* the readout together. Its result tells us
+  something about the prompt's shape; it is not a clean prompt ablation.
+- **Exit criterion:** a written comparison (per type, per variant, per population)
+  in the companion doc; a variant ships only if it wins on the design set **and**
+  clears the pre-declared margin on both yardsticks, and only if it improves
+  discrimination or calibration **without** hurting the other.
+
+**Status: designed and implemented (2026-10-21/22); the probe has run, the arms
+are running.** The design and the pre-registered rule are in
+`docs/research/prompt_variants.md`: the rendered prompts (byte-verified against
+the renderer), the variant table (**N1** criteria order, **N2** answer order,
+**N3** rule form, **N4** criteria first, **N5** an explicit decision rule, plus
+the probe **P1** `swap`), and the mechanism (`"systemone": {"prompt": {type:
+name}}`, absent = byte-identical, 14 variants implemented with a byte-identity
+test and one test per variant).
+
+**What the design measured, and it changes the item's shape.** The per-item SD of
+the change in P(answer) between two runs of the same code is **0.0337** on the
+noul, so at 250 items the **minimum detectable effect on the mean TVD is 0.006**
+(0.007 Bonferroni-corrected for the best of five). The **AUC's** MDE at 250 items
+is **0.165** — so on the noul, **discrimination can only be a non-inferiority
+guard, never an improvement criterion**. And the obvious metric is gameable: a
+**constant** P(yes) = 0 scores a mean TVD of **0.0892** against the model's
+0.3842 on the jev-bench noul slice and is worthless. The TVD cannot be the
+criterion alone.
+
+**The design set is two populations, and that is what makes the base-rate check
+free.** The pool's 500 noul items are 250 `civil_comments` (**9.2%** gold "yes",
+with the human distribution) and 250 `paws`/`strategyqa` (**45.2%** gold "yes").
+One run, one engine: a variant that merely shifts the prior gains on one half and
+loses on the other.
+
+**The probe (2026-10-22): the order axis is real, and small.** Swapping the two
+sides of the noul template and the answer line (`no means … ; yes means …`,
+`answer no or yes`) moves P(yes) by **+0.0212** (SE 0.0047) on the 250
+`civil_comments` items, flips **15 of 250** picks (**6.0%**, against the engine's
+~1% wobble), and leaves the **AUC unchanged (−0.0010)**. Half B is 6 items worse
+with the ECE 0.0301 higher. So the template's order matters — the template names
+"yes" first in three places — but it is a prior shift, not a discrimination
+change, and it fails the pre-registered guards. All five arms ran; N1, N3 and N5
+failed a guard, N2 was cut off after 16 of 500 items and is **not** in the
+comparison, and **one variant cleared every test**:
+
+**N4 `criteria-first` — the criteria line before the instruction header — is the one
+shipping candidate.** Per the pre-registered rule: (a) the design set's TVD to the
+human distribution falls **0.0687** (bias +0.0779 toward zero), ~10× the MDE; (b) the
+AUC is **−0.0013**, inside the non-inferiority margin; (c) half B loses 2 items of 250
+with the ECE +0.0057 (4 worse, 2 better — not significant); (d) the 235 is **80.7**
+against a base re-run's 80.7, with the noul 63 of 69; (e) the jev-bench noul slice's
+TVD falls **0.0623**; (f) no fast-path or latency cost, and the same tokens
+reordered. Three further checks, all offline from the stored runs:
+
+| the check | base | N4 |
+|---|---|---|
+| pooled over every human-labelled noul item (350, two populations): ECE | 0.3349 | **0.2726** (`−0.0677 [−0.0875, −0.0464]`) |
+| the same, AUC (ranking) | 0.7921 | 0.7928 (`+0.0016 [−0.0337, +0.0364]`) |
+| the 235's own noul items (69, decision-style): ECE | 0.0878-0.1042 | **0.0737**; bias −0.064 → **−0.036** |
+| broad or outliers? (250 items) | — | **178 improved, 72 worsened** |
+
+**And it does not change the answers**: 227 of the 235 are identical (2 noul, 0
+choice, 2 score move; the noul's net is zero). That is what a calibration fix should
+look like — the picks stay, the confidence gets honest. The one gap left is
+reproducibility: one run per arm, and the pre-registered rule's guards are single
+runs. **Not applied**: the branch's default is `base`, and enabling N4 is one config
+key (`"systemone": {"prompt": {"noul": "criteria-first"}}`) the operator adds.
+
+---
+
+## The conversation cache — a one-shot decision must not evict a chat (added 2026-10-22)
+
+**Priority: next after the Phase 1 handover.** This is the first item in this
+roadmap that **touches the engine**, and it is not about the decision API's
+quality: it is a product bug the user is hitting while using Strata for chat and
+coding.
+
+**The bug.** A decision request is a short prompt (under ~500 tokens) and is
+**one-shot**, but it parks a conversation-cache snapshot like any other request.
+With two cache slots (`--conversation-cache-slots 2`) and a parked snapshot around
+240 MiB, a burst of decisions evicts the user's **chat** conversations, so the
+next chat turn re-reads its whole prompt. The chat path is where the cache earns
+its keep; the decision path is where it churns.
+
+**The user's proposed mitigation:** never park a conversation under 2k tokens.
+Whether that is the right lever is the plan's first question, because it would also
+stop a *short chat* from reusing its first turn, and because the decision path's
+**trie walk** depends on the request's own checkpoint (`ckpt=0` would make each
+walk step re-read the whole prompt — the cost is `trie_costs.py`'s step count
+times the prefill rate). The alternatives are a one-shot marker on the request, a
+separate budget or priority for one-shot entries, or a smaller slot policy. The
+letter readout (1.3) is relevant here: it needs **no** trie walk, so if it ever
+became the default the cache dependency would shrink on its own.
+
+**Plan:** `docs/research/conversation_cache_oneshot.md` (committed `3f8154e9`). **The
+plan's verdict changes the item**, and one number decides it: **the parked state is
+parked and thrown away.** Over the engine log's 64 lifetimes, 26,179 parks, **649
+restores (2.5%)**, and **97.5% of the parks carry `reused_kv_bytes=0`** — that is,
+the conversation had read from scratch when it parked. The log has the bug in a
+row: nine decisions, each `0 reused`, `evictions` 5 -> 13, one per request. And the
+cost is a chat turn that re-reads 4,847 tokens in **7,601 ms** instead of
+`3390 reused + 125 read` in **1,534 ms**.
+
+**Why a decision parks at all:** parking is a switch-time decision taken by the
+*arriving* request (`generate.cpp:12441`, `park_current`): the previous session is
+copied to host RAM as one entry, costing **one slot and ~237 MiB whatever its
+length** (the smallest snapshot seen is 226.1 MiB, for a 22-token park), and
+`make_room` evicts the oldest when the slots are full. A decision request parks
+because the server sends `LOGITS k max_new ids` with no keys (`server.py:2168`),
+`ckpt` defaults to 1, and `live_ok = prompt_cache > 0 && req_ckpt`
+(`:14934`) — **the engine has no signal that the decision endpoint will never
+extend that conversation.**
+
+**The user's 2k threshold: right as a stopgap, wrong as the rule.** 98.3% of the
+parks are under 2,000 tokens (median 819), so a minimum length removes nearly all
+the traffic that hurts — and the flag **already exists**
+(`--conversation-cache-min-tokens`), so it is a config-only change with no code and
+no risk, revertable by deleting the flag. But length stands in for "will this be
+continued" and the two differ: a 1,500-token **chat** will be continued and would
+re-read it every turn, while a 5,000-token **decision** would still park and still
+evict.
+
+**The fix: a `park=0` request key (option b2).** The server tells the engine not
+to park a one-shot conversation; the engine honours it for a conversation read
+from scratch, so the **trie walk keeps its checkpoint and session reuse** (96% of
+walk steps reuse the session; only 3.7% follow a restore, so `ckpt=0` — option b1 —
+is rejected: it would make every walk step re-read the full prompt, tens of seconds
+for the colliding items). It costs 0 latency, 0 memory, and leaves the chat's hit
+rate intact at every length. The engine change is five small edits (the flag, the
+parse, the guard, the `live_ok` set, and the restore path forcing a restorable
+entry back to parkable) plus one argument on the server.
+
+**A correction to this file's own VRAM claim:** the conversation cache is **host
+RAM, not VRAM** (`generate.cpp:9128`, "ordinary host vectors"; the admission line
+reads `/proc/meminfo`). Two slots are ~474 MiB of an **8,192 MiB** budget, so the
+slot count — not VRAM — is the binding constraint, and the "4 slots ≈ 484 MiB below
+the 1,024 MiB threshold" note under "Maybe / someday" should be re-checked for that
+framing.
+
+**The measurement** (fresh engine each arm, three runs per arm, alternating): four
+chat turns to over 2k tokens, then 20 short decisions with fresh state text, then
+chat turn five. **Before:** the fifth turn's reuse `M5 = 0`, `evictions ≥ 18`.
+**After:** `M5 ≥ 0.9 × N5`, `evictions = 0`, turn five from 5-30 s to ~0.2 s. Plus:
+the decision median within +0.2 s and p95 within +0.4 s; the 235-item sample at
+235/235 with identical answers and Capability inside the **1.8**-point spread, three
+passes per arm (~80 min for both arms). **Not worth it if** the before run's `M5`
+is already 0 for another reason, or `M5` does not rise, or the decision latency
+exceeds the margin.
+
+**Order of work:** (1) the plan (done); (2) the config stopgap, which needs one
+restart to take effect and is the user's call; (3) the `park=0` key (a **CUDA and
+HIP** build — the same sources); (4) the server sends it, behind
+`STRATA_DECISION_PARK`; (5) the measurement; (6) make it the default and set the
+minimum-length threshold back to 0.
+
+**Exit criterion:** with the fix, a chat conversation survives a burst of decision
+requests — the engine's own `prompt N tokens = M reused + K read` line shows the
+chat's next turn reusing its prefix (M is most of N) where it now re-reads it
+(M = 0) — and the decision path's latency does not regress by more than the margin
+the plan states, with the fast-path rate still 235/235 on the sample.
+
+**Risks:** an engine change means a build (CUDA; HIP/SYCL if the file is shared)
+and a GPU measurement slot, and the user must free the engine for it. The cache's
+`reused_kv_bytes=0` in the log is unexplained and the plan must say what it means
+before anything is changed.
 
 ---
 
@@ -165,6 +546,37 @@ option** — which is why 2.4 is an escalation and not a default. Step 0 of the 
 is a ~2-minute spike: if the engine's own output is not byte-reproducible
 request-to-request, this item's exit criterion has to be restated before any code
 is written.
+
+**Step 0 is DONE (2026-10-22) and it produced a split verdict** (report:
+`docs/research/phase2_lora_spike.md`, script `tools/decision_policy/lora_spike.py`):
+
+- **The chat output IS byte-identical across repeats.** The `T` lines (the
+  generated ids) matched byte for byte in every comparison — 24 requests over
+  three separate engine instances, with unrelated requests and a chat-shaped
+  conversation in between. Order does not matter; a conversation in between does
+  not matter. **The exit criterion's A1/A2 survive as written** — "chat output is
+  byte-identical with and without the adapter loaded" is testable.
+- **The LOGITS rows are never byte-identical** — 0 of 7 in each probe. The top-1
+  id is the same, its probability moves 2.4e-4 to 2.8e-4, the max |Δlogit| is
+  0.89-2.9, 71 of the top-1024 ids change, and the total variation is at most
+  2.5e-4. The cause is measured, not guessed: **the expert cache warms while the
+  requests run** (hit rate 76.6% -> 96.2%), so the same request is not computed
+  from the same experts in the same grouping. It is not the CPU share.
+- **So the plan's proposed restatement ("the answer position's logits row is
+  byte-identical") must be struck** — no implementation can have that property.
+  A4 (the adapter's effect on the logits) becomes a **tolerance** against the
+  measured noise floor: the top-1 probability moves ~2.8e-4 here, and the
+  companion doc records 0.004 median / 0.11 max on the 235-item set.
+- **A deterministic mode exists in practice**: once the cache stopped moving, two
+  consecutive requests gave byte-identical rows. If A4 needs exactness, that is
+  the route (pin the expert placement, then measure).
+- **The adapter format has two orientation bugs that would have produced silently
+  wrong adapters**: both A and B need their bytes transposed from PEFT's storage
+  (the plan flags only B; getting A wrong gives a max diff of 1339 and a cosine of
+  -0.10 — plausible-looking and wrong), and the plan mixes two storage conventions
+  for `lora_b`. Fix the format document before step 1.
+
+Renegotiate **only the logits-row framing** with the maintainer, not the item.
 
 - **Effort:** 2–4 weeks (the biggest single engineering item in this roadmap).
 - **Depends on:** 2.1; familiarity with Strata's serve loop and the LOGITS/GEN
@@ -205,14 +617,15 @@ is written.
 - **Data:** the jev-bench **train** splits of the three soft-label configs —
   `civil_comments` (CC0-1.0), `measuring_hate_speech` (CC-BY-4.0), `go_emotions`
   (Apache-2.0) — about 24,000 rows carrying human distributions, plus the upstream
-  `google/civil_comments` (CC0-1.0, `toxicity` = the annotator share) and
-  `ZefanCai/Open-Jev-v1.1` where its `target_basis` is a human annotation. The
-  licences and the exclusions are in
-  `docs/research/decision_policy_training_data.md`; the converter is
-  `tools/decision_policy/soft_labels.py`. **Excluded:** chaosnli (non-commercial),
-  mnli and yelp5 (research use), sst5 (unspecified), fever_evidence (GPL present).
-  OpenDecisions stays validation-only — its card says "Please do not use for
-  training".
+  `google/civil_comments` (CC0-1.0, `toxicity` = the annotator share, measured: every
+  value is exactly k/n) and `ZefanCai/Open-Jev-v1.1`, whose human-annotated rows
+  (82,045, WANLI, CC BY 4.0) are **one-hot** — shapes and hard labels, not
+  uncertainty, so they do not serve this item's purpose. The licences and the
+  exclusions are in `docs/research/decision_policy_training_data.md`; the
+  converter is `tools/decision_policy/soft_labels.py`. **Excluded:** chaosnli
+  (non-commercial), mnli and yelp5 (research use), sst5 (unspecified),
+  fever_evidence (GPL present). OpenDecisions stays validation-only — its card
+  says "Please do not use for training".
 - **Work:** train a second adapter against the human distribution (cross-entropy on
   the soft label, not on a one-hot label), then compare it with the 2.3 adapter on
   the 235-item sample **and** on held-out jev-bench test rows.
@@ -317,9 +730,12 @@ have unclear ROI. Revisit when Phases 1–3 are measured.
   Strata's vision modes (off/on/gpu/cpu) already exist; wiring them into
   `/v1/systemone` is mostly plumbing. Value depends on whether agent states
   contain images.
-- **Conversation-cache slot increase (2 → 4).** Blocked today by VRAM (companion
-  doc §10.8: 4 slots ≈ 484 MiB below the 1024 MiB threshold). Re-measure after
-  the adapter is added; the adapter's VRAM cost may change the math.
+- **Conversation-cache slot increase (2 → 4).** **Not the fix** (2026-10-22): the
+  cache is **host RAM, not VRAM** — two slots are ~474 MiB of an 8,192 MiB budget,
+  so the slot count is the binding constraint and the old "4 slots ≈ 484 MiB below
+  the 1,024 MiB threshold" framing was wrong. And four slots would still be flushed
+  by twenty decisions (the cache item's plan, option d1), because a decision parks
+  a slot it never reuses. Fix the parking, not the count.
 - **Real-trajectory collection as a product feature.** Logging + opt-in telemetry
   so users can build their own labels. Only if there is demand.
 - **Coherence as a published benchmark contribution.** If Strata's readout scores
@@ -368,12 +784,23 @@ Measured on the 235-item OpenDecisions sample (same ids, same scorer), unless
 noted. Baseline: Capability 79.8, Intelligence 78.0, Calibration 81.7,
 235/235 predicted, 235 on the fast path.
 
+**The noise floor, measured (2026-10-22):** two identical base runs of the 235
+scored **78.9 and 80.7** and differed in **6 answers of 235**. So the sample's
+run-to-run spread is **1.8 Capability points**, not the 0.6-0.9 an earlier draft
+assumed, and a single-run difference below that is not a result. The paired
+comparisons — one run, re-scaled offline to another setting — are the only
+decisive ones, which is why 1.1b and 1.5 are built that way.
+
 | Phase | Metric | Target | Result so far |
 |---|---|---|---|
-| 1.1 | Calibration (ECE) on held-out | Lower than current for all three types | **2 of 3** (choice and score, out-of-fold); the noul is a wash |
+| 1.1 | Calibration (ECE) on held-out | Lower than current for all three types | **2 of 3** (choice and score, out-of-fold); the noul is a wash — but see 1.2 |
 | 1.1 | Capability | +1 to +2 over baseline | Out-of-fold 81.5 vs 79.8 (+1.66, CI [-1.01, +4.41]); the size is not established |
-| 1.1b | Capability on the 235 (out-of-sample constants) | Beat the in-sample constants | not run |
-| 1.2 | jev-bench TVD to the human distribution | Lower than 0.4432 | running |
+| 1.1 | The constants ship | — | **No.** They lose on the human labels (1.2). The knob ships; the constants do not |
+| 1.1b | Capability on the 235 (out-of-sample constants) | Beat the **T = 1** arm on both populations, per the three pre-registered tests | **No constant ships.** (a) and (b) pass for every candidate; (c) fails by 9.9 to 19.3 Capability points on the 235 |
+| 1.2 | jev-bench TVD to the human distribution | Lower than 0.4432 | **NOT met**: 0.4439 -> 0.4678; Capability 55.1 -> 52.0 |
+| 1.3 | The letter readout ships | Wins on two of three without losing the other | **Does not ship.** Met on OpenDecisions (82.7 vs 79.3, 0 extra requests); loses on jev-bench (48.3 vs 55.1). Opt-in flag stays |
+| 1.4 | The noul's TVD to the human distribution | Lower than **0.3844** (the shipping T = 1 arm; not 0.3897, which was the failed T = 0.67 arm) | not run |
+| 1.5 | A prompt variant ships | The pre-registered rule's (a)-(f) | **N4 `criteria-first` clears all six** (TVD −0.0687, AUC −0.0013, 2 items on half B, 235 = a base re-run, jev noul −0.0623). Not applied; one config key away |
 | 2.3 | Capability | Beat 79.8; stretch toward 84 | not run |
 | 2.3b | Capability | Beat the self-distilled adapter (2.3) | not run |
 | 2.3 | Fast-path rate | Stay at 99%+ (no regression) | 235/235 today |
@@ -384,3 +811,71 @@ noted. Baseline: Capability 79.8, Intelligence 78.0, Calibration 81.7,
 **Rule:** no item is "done" until its numbers are recorded in the companion doc in
 the §10/§11 table style, with the run date and engine state noted. Numbers taken
 on a long-running engine are invalid (companion doc §12.5).
+
+---
+
+## What Phase 1 established (2026-10-22)
+
+Four interventions were measured against two populations — the OpenDecisions
+235-item sample, and the jev-bench test sample, which carries **human**
+distributions. They agree on one thing, and it is the result:
+
+| the intervention | OpenDecisions 235 | jev-bench (human labels) |
+|---|---|---|
+| a per-type temperature fitted on OpenDecisions (1.1) | **+1.7** Capability out-of-fold | **-3.1** Capability, TVD 0.4439 -> 0.4678 (1.2) |
+| a per-type temperature fitted on the jev-bench validation pool (1.1b) | **-9.9 to -19.3** | +7.4 to +8.0, TVD 0.4439 -> 0.4034 |
+| the letter readout (1.3) | **+3.4** Capability | **-6.9**, TVD 0.4439 -> 0.4688 |
+| the prompt's option order (1.5 probe) | not measured | a prior shift of +0.0212 P(yes), AUC unchanged |
+| **the prompt's criteria-first (1.5, N4)** | **80.7, identical to a base re-run; no answer moves** | **the pooled noul ECE falls 0.3349 -> 0.2726 [−0.0875, −0.0464], AUC unchanged** |
+
+**For the interventions that change how decisively the endpoint answers, the
+OpenDecisions number moved opposite to the human-label agreement.** The sharpening
+temperature and the letter readout raised OpenDecisions and moved the distribution
+further from the people; the pool's flattening constants did the reverse. Three of
+those three rows, two populations, two mechanisms — not a law, but enough to say the
+two numbers measure different things and must be reported together.
+
+**N4 breaks the pattern, and that is the point of it.** It changes no answers and
+still moves the distribution toward the people: it is the first intervention here
+that improves the human-label agreement with **no OpenDecisions cost at all**. A
+template that makes the model read the definition before the question fixes a
+calibration error without touching the decision — which is exactly what the
+temperature was asked to do and could not.
+
+The letter readout is the clearest case of the *other* effect, with a correction the
+review caught: over **all 294** jev-bench choice items the direct readout answers
+with 0.531 bits against the letter's 0.188, but 144 of those are items the letter
+path cannot serve and answers degenerately — over the **150 it served** it is
+0.401 -> 0.368 bits, and over the **80 served items that carry a human
+distribution**, 0.541 -> 0.504. So the letter readout is only marginally sharper
+where it works, and the large drop is the fallback. The verdict does not change (it
+loses on the humans), but the mechanism is milder than the first draft said.
+
+So three things are true and they are all unwelcome:
+
+1. **The endpoint is miscalibrated, and the direction of the error depends on the
+   population.** OpenDecisions wants a sharper distribution than the model
+   produces; the content judgments want a flatter one. **No single constant can
+   serve both**, which is why 1.1b's pre-registered rule returns "no constant
+   ships" and why that is a finding rather than a failure.
+2. **The noul's error is a bias, not a scale.** It over-predicts "yes" on 95 of
+   100 items, and the soft objective moves its TVD by 0.0025 while moving the
+   choice's by 0.056. A temperature cannot move a distribution's centre; that is
+   item 1.4's job (an affine scale and shift). The prompt experiment (1.5) found
+   that the **order** levers (N1, N2) only shift the prior and fail the base-rate
+   guard, while **N4 `criteria-first`** — recasting the definition as the thing the
+   model reads first — improves the calibration on three populations without moving
+   an answer.
+3. **The OpenDecisions Capability is a weak proxy for honest probabilities.** It
+   rewards decisiveness, and every decisive change measured here cost the
+   human-label agreement. **Report both, always** — the capability number alone
+   would have shipped two changes that make the probabilities worse, and would have
+   missed the one prompt change that makes them better.
+
+**What ships from Phase 1, then, is not a number but the machinery and the
+honesty:** the per-type temperature knob (opt-in, default off) with a fit harness
+that takes any pool, any objective, a leak-free cross-validation and paired
+bootstrap intervals; the letter readout as an opt-in flag; the prompt-variant
+mechanism; the offline re-scaling tool that makes paired comparisons possible
+without a second engine; and this record, which says what was measured, on what,
+and which of it failed.
