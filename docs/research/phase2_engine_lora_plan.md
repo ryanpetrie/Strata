@@ -479,6 +479,12 @@ Each step is separately reviewable and separately testable. The exit criterion i
 
 ### Step 0 - The feasibility spike (do this first; it is cheap and it can kill the item)
 
+**Measured 2026-10-21: [phase2_lora_spike.md](phase2_lora_spike.md)** (the script is
+`tools/decision_policy/lora_spike.py`). The outcome: the generated token ids **are** byte-identical
+across repeats and across engine instances; the answer position's `L`/`Z` rows are **not** - so
+the third row of the table below is the one that applies to the row, and this plan's §5.1 A4 has
+to become a tolerance. What the plan should change before step 1 is listed in the report's §5.4.
+
 **What it measures.** Two things, both of which the rest of the plan depends on and neither of
 which is known. (Two more measurements belong to the spike and are written up in §6.1: the adapter's
 real VRAM cost, and the number of projection call sites the delta has to cover.)

@@ -298,6 +298,7 @@ is in the companion doc's section 20.
 | `test_temperature.py` | source | unit tests for the fit: the server's transform, the soft objective, the no-leak property and the regression on the 235-item fit. |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |
 | `first_token_report.md`, `first_token_analysis.json` | generated | the first-token study's results. |
+| `lora_spike.py` | source | roadmap item 2.2, step 0: the feasibility spike. The engine's run-to-run determinism (the engine started standalone, the `T`/`L`/`Z` lines compared byte for byte) and the adapter's arithmetic against a numpy reference. |
 
 ## Labels are synthetic
 
