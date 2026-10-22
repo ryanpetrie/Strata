@@ -2359,3 +2359,105 @@ should not be shipped.  The noul's constant in the config should go back to 1.0.
   best temperature for the human distribution would be - only that the fitted one
   is worse than none.  No second model, no engine change, no new dependency.
 
+## 24. The conversation cache: a one-shot decision no longer takes a slot (2026-10-22)
+
+The decision endpoint sends short prompts, one per question, and each one used to leave a
+parked conversation behind: 25,738 parks against 649 restores in the user's 2-slot log, 98.3%
+of them under 2,000 tokens, one eviction for every two parks. A parked conversation costs a
+whole slot whatever its length, so two decisions filled the cache and the third evicted the
+chat they were interleaved with - whose next turn then re-read its whole history (the log's
+4,847 tokens in 7.6 s). The diagnosis and the options are in
+[conversation_cache_oneshot.md](conversation_cache_oneshot.md); this section is the
+measurement of the option that was built.
+
+**Sections 20-23 are on `feat/phase1-integration`; this branch's copy of this document ends
+at 19. The number is the roadmap's, so the merge is an append.**
+
+### 24.1 The key, and the rule that makes it safe
+
+The engine now takes `park=0` on a `GEN` or `LOGITS` line: the conversation that request
+read is not parked by the request that replaces it, while its session stays continuable
+(`ckpt` stays 1), so a trie walk's next step still reuses it. `ckpt=0` would also stop the
+continuation, which is why it was rejected: 96% of the log's 14,393 walk steps reuse the
+session. The server sends the key on the decision path only, behind `STRATA_DECISION_PARK=1`,
+so the default path is byte for byte what it was. The as-built line map is in the plan's
+§10; the rule that a conversation **taken** from the cache is always parked again (it must
+be put back) is `conversation_park_allowed()` and is tested without a GPU.
+
+### 24.2 The measurement
+
+The cache-built engine (`build-cache-cuda\strata.exe`), a copy of the live config whose
+`exe` is that binary, arm A with the switch unset and arm B with it set, three runs each
+alternating A B A B A B, a fresh server and engine per run. Each run: four chat turns that
+reach **7,258 tokens**, **20 decisions** with fresh state text, then chat turn 5. Three
+departures from the plan's recipe, each forced and each recorded:
+
+* **`--resident-budget-gib 20`** instead of the live 36. With 36 GiB and another session
+  holding 9.6 GB, the host had 261 MiB available and the engine's own admission refused every
+  park (`need 671 MiB plus 2560 MiB floor`). Arm A could not park, which is not today's
+  behaviour. The 20 GiB copy leaves about 7 GB and the floor is met: the chat's snapshot is
+  704 MiB at 7,258 tokens, a decision's 263 MiB at 1,822. All other arguments are the live
+  ones.
+* **The decisions are 1,815-1,881 tokens**, not under 500. The shipping config keeps
+  `--conversation-cache-min-tokens 1024`, and a 300-token decision is already skipped by it.
+  Over the minimum, the shipping config parks them, which is the state under test.
+* **Latency is not reported.** The card was shared with about 10 GB of other work. The
+  readouts are the cache's own and do not depend on the clock.
+
+| run | arm | chat 5: prompt = reused + read | reuse | evictions | parked | `skip parking (park=0)` |
+|---|---|---|---:|---:|---:|---:|
+| A1 | before | 7,467 = **0** + 7,467 | 0.0% | **19** | 2 | 0 |
+| A2 | before | 7,477 = **0** + 7,477 | 0.0% | **19** | 2 | 0 |
+| A3 | before | 7,458 = **0** + 7,458 | 0.0% | **19** | 2 | 0 |
+| B1 | after | 7,453 = **7,423** + 30 | **99.6%** | **0** | 1 | 25 |
+| B2 | after | 7,459 = **7,429** + 30 | **99.6%** | **0** | 1 | 25 |
+| B3 | after | 7,461 = **7,430** + 31 | **99.6%** | **0** | 1 | 25 |
+
+Every run answered all 25 requests. In the before arm the 20 decisions read their whole
+prompt (`0 reused`) and park; the third pushes the chat out and **19 evictions** follow; the
+fifth chat turn reads all 7,467 tokens. In the after arm the decisions read the same prompt
+and pay the same read, but take no slot: **zero evictions**, the chat stays the only entry,
+and its fifth turn resumes 99.6% of itself. The remaining parks in B (1, 2 and 3 across the
+runs) are the chat path parking and restoring its own conversation between turns, which is
+today's behaviour.
+
+The walk is untouched in both arms: its steps read `1,877 = 1,867 reused + 10 read` and
+`1,879 = 1,878 reused + 1 read` (99.5% / 99.9%) in every run. The 25 skips in B are the 20
+decision switches plus 5 walk steps that try to park their base request's conversation and
+are suppressed too - the key working on the walk, not a fault.
+
+### 24.3 The 235, and the answers
+
+| run | items | fast path | Capability | Intelligence | Calibration | answers moved vs `fix_serial.jsonl` |
+|---|---:|---|---:|---:|---:|---:|
+| stored `fix_serial.jsonl` | 235 | 235/235 | 79.8 | 78.0 | 81.7 | - |
+| before (A) | 235 | 235/235 | **79.8** | 78.1 | 81.4 | 2 |
+| after (B) | 235 | 235/235 | **78.3** | 76.4 | 80.3 | 6 |
+
+Both arms answered every item on the fast path and both are inside the sample's 1.8-point
+run-to-run spread. The moves are the engine's own wobble (the two stored base runs differ in
+2 noul items); the key changes no arithmetic.
+
+### 24.4 The verdict
+
+The pre-registered rule passes on every run: after, `M5 >= 0.9 x N5` (99.6%) and
+`evictions = 0`; before, `M5 = 0` and `evictions >= 18` (19). The walk's reuse is intact in
+both. It is not the "not worth it" case either: the chat's entry is the one the decisions
+evicted, and it is the one the after arm keeps.
+
+### 24.5 The limits, and what was not run
+
+* One model, one card, one engine build, 3 runs per arm, 2 cache slots and the shipping
+  1,024-token minimum. Another slot count or no minimum changes which requests park, not
+  what `park=0` does.
+* The 300-token decisions of the plan's §6.1 cannot show a difference under the shipping
+  minimum; they were not run, and the minimum's own effect (the plan's stopgap) is not
+  re-measured here.
+* The 20 GiB resident copy is the one departure from the live config; it changes what the
+  engine keeps in RAM, not the cache's rules.
+* **Not run:** the latency comparison (the card is shared); three runs per arm on the 235
+  (one each); a default-on arm (the plan's step 6); the walk's answer identity on a stored
+  run; any AMD or Mac engine. The 235's run-to-run spread is quoted from §23, not
+  re-measured.
+
+
