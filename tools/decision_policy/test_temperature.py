@@ -31,7 +31,7 @@ from serve.logits_first_token import apply_temperature as server_apply_temperatu
 
 SCORER = tp.DEFAULT_SCORER
 DATA_DIR = Path(os.environ.get("STRATA_OPENDECISIONS_DIR",
-                               r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions"))
+                               str(Path(tempfile.gettempdir()) / "opencode" / "opendecisions")))
 ITEMS = DATA_DIR / "sample10_items.jsonl"
 RUNLOG = DATA_DIR / "fix_serial.runlog.jsonl"
 PREDICTIONS = DATA_DIR / "fix_serial.jsonl"

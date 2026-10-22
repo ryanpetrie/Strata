@@ -78,7 +78,7 @@ SPLITS = ("train", "validation", "test")
 # The official scorer, if it is not given with --scorer.
 SCORER_CANDIDATES = (
     os.environ.get("OPENDECISIONS_SCORER", ""),
-    r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py",
+    str(Path(tempfile.gettempdir()) / "opencode" / "opendecisions" / "score.py"),
     str(Path(__file__).resolve().parent / "score.py"),
 )
 

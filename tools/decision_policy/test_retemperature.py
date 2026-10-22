@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.decision_policy import retemperature as rt  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("STRATA_OPENDECISIONS_DIR",
-                               r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions"))
+                               str(Path(tempfile.gettempdir()) / "opencode" / "opendecisions")))
 ITEMS = DATA_DIR / "sample10_items.jsonl"
 WITH_TEMPERATURE = DATA_DIR / "fix_serial_temp.jsonl"
 TEMPERATURE_UNDONE = DATA_DIR / "fix_serial_temp_t1.jsonl"
