@@ -33,6 +33,15 @@ adds the checks, the stratified sample and the scorer proof.
     python tools/decision_policy/soft_labels.py --data-dir <D> --out items.jsonl
     python tools/decision_policy/soft_labels.py --data-dir <D> --sample --out sample.jsonl
     python tools/decision_policy/soft_labels.py --data-dir <D> --validate --out items.jsonl
+    python tools/decision_policy/soft_labels.py --data-dir <D> \
+        --plan tools/decision_policy/soft_label_pool.json --out pool.jsonl
+
+THE POOL PLAN.  A plan file (soft_label_pool.json, tracked in the repository) names
+the per-config counts and the seed, so the fitting pool is reproducible: the same
+plan, the same data and the same converter always give the same items file.  The
+plan also carries the licence verdict of every config, taken from the licence
+record (docs/research/decision_policy_training_data.md).  The data itself stays
+outside the repository.
 
 Pure standard library. Nothing is written inside the repository.
 """
@@ -231,6 +240,72 @@ def stratified_sample(items: list[dict], per_type: int, seed: int) -> list[dict]
     return picked
 
 
+# ------------------------------------------------------------------ the pool plan
+
+DEFAULT_PLAN = Path(__file__).resolve().parent / "soft_label_pool.json"
+
+
+def load_plan(path: Path) -> dict:
+    """The pool plan: the per-config counts, the seed and the licence verdicts."""
+    try:
+        plan = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit("cannot read the pool plan %s: %s" % (path, exc))
+    for key in ("pool", "seed"):
+        if key not in plan:
+            raise SystemExit("the pool plan %s has no %r" % (path, key))
+    return plan
+
+
+def plan_sample(items: list[dict], plan: dict) -> list[dict]:
+    """The pool the plan names: per question type, per config, the plan's count.
+
+    THE RULE. The types are taken in the fixed order choice, noul, score; inside a
+    type the configs are taken in sorted order, so the plan's own key order does
+    not change the draw. One seeded generator (random.Random(plan["seed"])) draws
+    every config's share, in that order, from the config's items sorted by id.
+    The same plan, the same data and the same seed always give the same pool.
+
+    A config the plan names but the data does not have, or a count the config's
+    split cannot fill, is an error: the pool would silently be smaller than the
+    plan says, and a temperature fitted on it would be fitted on the wrong data.
+    """
+    rng = random.Random(int(plan["seed"]))
+    pool = plan.get("pool") or {}
+    unknown = set(pool) - set(TYPES)
+    if unknown:
+        raise SystemExit("the plan names the question types %s, which do not exist"
+                         % ", ".join(sorted(unknown)))
+    picked: list[dict] = []
+    for qtype in TYPES:
+        counts = pool.get(qtype) or {}
+        for config in sorted(counts):
+            want = int(counts[config])
+            group = sorted((it for it in items
+                            if it["question"]["type"] == qtype and it.get("config") == config),
+                           key=lambda it: str(it["id"]))
+            if not group:
+                raise SystemExit("the plan wants %d %s items of %s, but the data has none"
+                                 % (want, qtype, config))
+            if want > len(group):
+                raise SystemExit("the plan wants %d %s items of %s, but the split has %d"
+                                 % (want, qtype, config, len(group)))
+            chosen = rng.sample(group, want)
+            picked.extend(sorted(chosen, key=lambda it: str(it["id"])))
+    return picked
+
+
+def plan_counts(items: list[dict]) -> dict[str, dict[str, int]]:
+    """-> {type: {config: how many items}}, for the report."""
+    out: dict[str, dict[str, int]] = {}
+    for item in items:
+        qtype = item["question"]["type"]
+        config = item.get("config") or "unknown"
+        out.setdefault(qtype, {}).setdefault(config, 0)
+        out[qtype][config] += 1
+    return {t: dict(sorted(v.items())) for t, v in sorted(out.items())}
+
+
 # ------------------------------------------------------------------ the scorer
 
 def find_scorer(given: str | None) -> Path | None:
@@ -270,14 +345,19 @@ def main() -> int:
                     help="a config to read; repeatable or comma-separated. Default: every config "
                          "found under the data dir")
     ap.add_argument("--split", action="append", default=None,
-                    help="a split to read: train | validation | test. Repeatable. Default: validation")
+                    help="a split to read: train | validation | test. Repeatable. Default: the plan's "
+                         "split, or validation")
     ap.add_argument("--type", action="append", default=None,
                     help="keep only this question type: choice | noul | score. Repeatable")
     ap.add_argument("--limit", type=int, default=0,
                     help="cap the number of items emitted (0 = no cap)")
     ap.add_argument("--per-type", type=int, default=200,
                     help="the stratified sample quota per question type (--sample)")
-    ap.add_argument("--seed", type=int, default=20261020, help="the sampling seed")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="the sampling seed. Default: the plan's seed, or 20261020")
+    ap.add_argument("--plan", type=Path, default=None,
+                    help="the pool plan: the per-config counts, the seed and the licence verdicts. "
+                         "With it, the pool is the plan's, per config (it implies --sample)")
     ap.add_argument("--tier", default=DEFAULT_TIER, choices=TIERS,
                     help="the tier every item is filed under (jev-bench has no difficulty label; "
                          "the default puts every item in the tier the scorer measures choice "
@@ -291,10 +371,12 @@ def main() -> int:
     ap.add_argument("--scorer", default=None, help="the official score.py to use in --validate")
     args = ap.parse_args()
 
+    plan = load_plan(args.plan) if args.plan else None
+    seed = args.seed if args.seed is not None else (int(plan["seed"]) if plan else 20261020)
     data_dir: Path = args.data_dir
     if not data_dir.is_dir():
         raise SystemExit("no such data dir: %s" % data_dir)
-    splits = split_list(args.split) or ["validation"]
+    splits = split_list(args.split) or ([plan["split"]] if plan and plan.get("split") else ["validation"])
     for split in splits:
         if split not in SPLITS:
             raise SystemExit("split %r is not one of %s" % (split, ", ".join(SPLITS)))
@@ -337,11 +419,16 @@ def main() -> int:
     # a stable order, so the sample does not depend on the read order
     pool.sort(key=lambda it: str(it["id"]))
 
-    if args.sample:
+    if plan:
+        # the plan's pool: per type, per config, the plan's counts
+        items = plan_sample(pool, plan)
+        if args.limit:
+            items = items[:args.limit]
+    elif args.sample:
         per_type_quota = args.per_type
         if args.limit:
             per_type_quota = min(per_type_quota, max(1, args.limit // len(TYPES)))
-        items = stratified_sample(pool, per_type_quota, args.seed)
+        items = stratified_sample(pool, per_type_quota, seed)
     else:
         items = pool
         if args.limit:
@@ -372,6 +459,10 @@ def main() -> int:
                                 for it in items])
     print("per type: %s" % mix)
     print("items with a human distribution: %d" % with_soft)
+    counts = plan_counts(items)
+    for qtype in TYPES:
+        if qtype in counts:
+            print("  %-6s %s" % (qtype, ", ".join("%s %d" % (c, n) for c, n in counts[qtype].items())))
 
     # ---- the scorer proof
     if args.validate:
@@ -400,10 +491,13 @@ def main() -> int:
             if code != 0:
                 return 1
         meta = {"data_dir": str(data_dir), "configs": [c for c, _, _ in found],
-                "splits": splits, "types": types or list(TYPES), "seed": args.seed,
+                "splits": splits, "types": types or list(TYPES), "seed": seed,
                 "sample": bool(args.sample), "per_type_quota": args.per_type if args.sample else None,
                 "limit": args.limit, "tier": args.tier, "items": len(items),
-                "type_mix": mix, "with_soft_label": with_soft, "files": per_file}
+                "type_mix": mix, "with_soft_label": with_soft, "per_config": counts,
+                "plan": {"path": str(args.plan), "seed": plan.get("seed"), "pool": plan.get("pool"),
+                         "licence": plan.get("licence")} if plan else None,
+                "files": per_file}
         if args.out:
             args.out.with_suffix(args.out.suffix + ".meta.json").write_text(
                 json.dumps(meta, indent=1, ensure_ascii=False), encoding="utf-8")
