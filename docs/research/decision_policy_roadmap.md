@@ -270,13 +270,17 @@ expected level's distance.
 **Then the human labels killed it.** On the jev-bench test sample (683 items, the
 direct arm already measured there): the letter arm is **48.3 (44.4, 52.2)**
 against the direct arm's **55.1 (46.6, 63.6)**, and its TVD to the humans is
-**0.4688 against 0.4439**. The mechanism is measured and it is not hedging: the
-letter readout is **sharper** — choice entropy 0.188 bits against the direct
-readout's 0.531, the mass on the top option 0.950 against 0.866, while the
-**humans carry 1.144 bits**. On the 130 choice items with a human distribution the
-letter readout is twice as certain as the direct one and far more certain than the
-people, which is exactly what its calibration component measures (44.9 against
-68.3). The OpenDecisions win and the jev-bench loss are the same effect as the
+**0.4688 against 0.4439**. The mechanism, stated carefully because the first draft
+of this file overstated it: over **all 294** choice items the letter readout looks
+far sharper (entropy 0.188 bits against the direct readout's 0.531, top-option mass
+0.950 against 0.866), but **144 of those 294 are items the letter path cannot serve**
+(more than 26 options) and answers degenerately. Over the **150 it served**, the
+entropy is **0.401 → 0.368 bits**, and over the **80 served items that carry a human
+distribution, 0.541 → 0.504**. So the large drop is the fallback, not the readout:
+where it works, the letter path is only marginally sharper (calibration 70.7 against
+78.1 on the served items, 44.9 against 68.3 over all of them), and it still loses to
+the people. The verdict is unchanged; the mechanism is milder than the first draft
+said. The OpenDecisions win and the jev-bench loss are the same effect as the
 temperature's: **decisiveness raises the OpenDecisions metric and loses against
 human uncertainty.**
 
@@ -401,8 +405,7 @@ exactly, as it must be).
   clears the pre-declared margin on both yardsticks, and only if it improves
   discrimination or calibration **without** hurting the other.
 
-**Status: designed and implemented (2026-10-21/22); the probe has run, the arms
-are running.** The design and the pre-registered rule are in
+**Status: designed and implemented (2026-10-21/22); the probe and the arms have run.** The design and the pre-registered rule are in
 `docs/research/prompt_variants.md`: the rendered prompts (byte-verified against
 the renderer), the variant table (**N1** criteria order, **N2** answer order,
 **N3** rule form, **N4** criteria first, **N5** an explicit decision rule, plus
@@ -433,29 +436,31 @@ sides of the noul template and the answer line (`no means … ; yes means …`,
 ~1% wobble), and leaves the **AUC unchanged (−0.0010)**. Half B is 6 items worse
 with the ECE 0.0301 higher. So the template's order matters — the template names
 "yes" first in three places — but it is a prior shift, not a discrimination
-change, and it fails the pre-registered guards. All five arms ran; N1, N3 and N5
-failed a guard, N2 was cut off after 16 of 500 items and is **not** in the
-comparison, and **one variant cleared every test**:
+change, and it fails the pre-registered guards. **All five arms were attempted; N1,
+N3 and N5 failed a guard, N2 stopped after 13 distinct items of 500 and is not in the
+comparison, and one variant cleared every test:**
 
 **N4 `criteria-first` — the criteria line before the instruction header — is the one
 shipping candidate.** Per the pre-registered rule: (a) the design set's TVD to the
 human distribution falls **0.0687** (bias +0.0779 toward zero), ~10× the MDE; (b) the
 AUC is **−0.0013**, inside the non-inferiority margin; (c) half B loses 2 items of 250
-with the ECE +0.0057 (4 worse, 2 better — not significant); (d) the 235 is **80.7**
+with the ECE **+0.0104** (4 worse, 2 better - not significant); (d) the 235 is **80.7**
 against a base re-run's 80.7, with the noul 63 of 69; (e) the jev-bench noul slice's
-TVD falls **0.0623**; (f) no fast-path or latency cost, and the same tokens
-reordered. Three further checks, all offline from the stored runs:
+TVD falls **0.0623**; (f) the fast-path rate and the token count are unchanged (the
+latency was **not isolated** - the arms shared an engine - so it is not claimed).
+Three further checks, all offline from the stored runs:
 
 | the check | base | N4 |
 |---|---|---|
-| pooled over every human-labelled noul item (350, two populations): ECE | 0.3349 | **0.2726** (`−0.0677 [−0.0875, −0.0464]`) |
+| pooled over every human-labelled noul item (350, two populations): ECE | **0.3362** on the soft T = 1 arm (0.3349 on the stored direct run) | **0.2726** (`-0.0677 [-0.0875, -0.0464]`) |
 | the same, AUC (ranking) | 0.7921 | 0.7928 (`+0.0016 [−0.0337, +0.0364]`) |
 | the 235's own noul items (69, decision-style): ECE | 0.0878-0.1042 | **0.0737**; bias −0.064 → **−0.036** |
 | broad or outliers? (250 items) | — | **178 improved, 72 worsened** |
 
-**And it does not change the answers**: 227 of the 235 are identical (2 noul, 0
-choice, 2 score move; the noul's net is zero). That is what a calibration fix should
-look like — the picks stay, the confidence gets honest. The one gap left is
+**And it costs nothing on OpenDecisions**: the Capability is **80.7**, the same as a
+base re-run's, and **4 of the 235 picks move** (2 noul, 2 score), net zero on the
+noul. That is what a calibration fix should look like - the answers stay, the
+confidence gets honest. The one gap left is
 reproducibility: one run per arm, and the pre-registered rule's guards are single
 runs. **Not applied**: the branch's default is `base`, and enabling N4 is one config
 key (`"systemone": {"prompt": {"noul": "criteria-first"}}`) the operator adds.
@@ -829,10 +834,13 @@ Measured on the 235-item OpenDecisions sample (same ids, same scorer), unless
 noted. Baseline: Capability 79.8, Intelligence 78.0, Calibration 81.7,
 235/235 predicted, 235 on the fast path.
 
-**The noise floor, measured (2026-10-22):** two identical base runs of the 235
-scored **78.9 and 80.7** and differed in **6 answers of 235**. So the sample's
-run-to-run spread is **1.8 Capability points**, not the 0.6-0.9 an earlier draft
-assumed, and a single-run difference below that is not a result. The paired
+**The noise floor, measured (2026-10-22):** two base runs of the 235
+scored **78.9 and 80.7** and differed in **6 answers of 235**. (One of the two is
+the T = 1 inverse of a run that had been served with §18's temperatures, not a fresh
+run; the inversion is exact and checked, but it is derived, so read the 1.8 as an
+upper bound on the wobble.) So the sample's
+run-to-run spread is **around 1.8 Capability points**, not the 0.6-0.9 an earlier
+draft assumed, and a single-run difference below that is not a result. The paired
 comparisons — one run, re-scaled offline to another setting — are the only
 decisive ones, which is why 1.1b and 1.5 are built that way.
 
@@ -862,17 +870,17 @@ on a long-running engine are invalid (companion doc §12.5).
 
 ## What Phase 1 established (2026-10-22)
 
-Four interventions were measured against two populations — the OpenDecisions
+Five interventions were measured against two populations - the OpenDecisions
 235-item sample, and the jev-bench test sample, which carries **human**
 distributions. They agree on one thing, and it is the result:
 
 | the intervention | OpenDecisions 235 | jev-bench (human labels) |
 |---|---|---|
 | a per-type temperature fitted on OpenDecisions (1.1) | **+1.7** Capability out-of-fold | **-3.1** Capability, TVD 0.4439 -> 0.4678 (1.2) |
-| a per-type temperature fitted on the jev-bench validation pool (1.1b) | **-9.9 to -19.3** | +7.4 to +8.0, TVD 0.4439 -> 0.4034 |
+| a per-type temperature fitted on the jev-bench validation pool (1.1b) | **-9.9 to -19.3** | the Brier/single arms +7.4 to +8.0 and the soft (primary) arm +1.0, TVD 0.4439 -> 0.4034 |
 | the letter readout (1.3) | **+3.4** Capability | **-6.9**, TVD 0.4439 -> 0.4688 |
 | the prompt's option order (1.5 probe) | not measured | a prior shift of +0.0212 P(yes), AUC unchanged |
-| **the prompt's criteria-first (1.5, N4)** | **80.7, identical to a base re-run; no answer moves** | **the pooled noul ECE falls 0.3349 -> 0.2726 [−0.0875, −0.0464], AUC unchanged** |
+| **the prompt's criteria-first (1.5, N4)** | **80.7, the same as a base re-run; 4 picks of 235 move, net zero on the noul** | **the pooled noul ECE falls 0.3362 -> 0.2726 [-0.0875, -0.0464], AUC unchanged** |
 
 **For the interventions that change how decisively the endpoint answers, the
 OpenDecisions number moved opposite to the human-label agreement.** The sharpening
@@ -881,7 +889,8 @@ further from the people; the pool's flattening constants did the reverse. Three 
 those three rows, two populations, two mechanisms — not a law, but enough to say the
 two numbers measure different things and must be reported together.
 
-**N4 breaks the pattern, and that is the point of it.** It changes no answers and
+**N4 breaks the pattern, and that is the point of it.** It barely changes an answer
+(4 of 235) and
 still moves the distribution toward the people: it is the first intervention here
 that improves the human-label agreement with **no OpenDecisions cost at all**. A
 template that makes the model read the definition before the question fixes a
