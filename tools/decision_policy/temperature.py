@@ -836,8 +836,10 @@ def main() -> int:
         "objective_text": {
             "nll": "the mean negative log-likelihood of the gold label under normalize(closed ** (1/T))",
             "brier": "the mean multiclass Brier score of the distribution against the gold label",
-            "ece": "the scorer's own expected calibration error for the type (the top-label ECE on the "
-                   "hard tier for choice, the ECE of P(yes) for noul, the top-level ECE for score)",
+            "ece": "the RAW TOP-LEVEL expected calibration error for the type (the top-label ECE on "
+                   "the hard tier for choice, the ECE of P(yes) for noul, the top-level ECE for "
+                   "score). For the score type this is the ECE half of the scorer's calibration "
+                   "component, which also has (1 - nRPS)",
             "soft": "the mean cross-entropy of the distribution against the item's HUMAN distribution "
                     "(its target_probs), over the items that carry one",
         }[args.objective],
@@ -928,7 +930,7 @@ def main() -> int:
       f"{fits['nll']['choice']} | {fits['nll']['noul']} | {fits['nll']['score']} |")
     A("| brier | the multiclass Brier score | "
       f"{fits['brier']['choice']} | {fits['brier']['noul']} | {fits['brier']['score']} |")
-    A("| ece | the scorer's own ECE for the type | "
+    A("| ece | the raw top-level ECE for the type | "
       f"{fits['ece']['choice']} | {fits['ece']['noul']} | {fits['ece']['score']} |")
     A("| soft | the cross-entropy against the HUMAN distribution | "
       f"{fits['soft']['choice']} | {fits['soft']['noul']} | {fits['soft']['score']} |")
@@ -958,24 +960,30 @@ def main() -> int:
     A("")
     A(f"The split rule: {out['split_rule']}  The seed is **{args.seed}**.")
     A("")
-    A("The fit never sees the item it is scored on.  The ECEs are the scorer's own (its")
-    A("`ece` function, on the same pairs it uses: the top-label ECE on the hard tier for")
-    A("choice, the ECE of P(yes) for noul, the top-level ECE for score).")
+    A("The fit never sees the item it is scored on.")
     A("")
-    A("| objective | type | ECE before | ECE after (out-of-fold) |")
+    A("**The raw top-level ECE** - the first table below, and 1.1's table, reproduced bit")
+    A("for bit: the scorer's own `ece` function on the same pairs it uses - the top-label")
+    A("ECE on the hard tier for choice, the ECE of P(yes) for noul, the top-level ECE for")
+    A("score.  For the SCORE type this is the ECE half of the scorer's calibration")
+    A("component, not the component itself: the component is the mean of the top-level")
+    A("ECE and (1 - nRPS) (score.py).  The second table is that component.")
+    A("")
+    A("| objective | type | the raw top-level ECE before | the raw top-level ECE after (out-of-fold) |")
     A("|---|---|---:|---:|")
     for objective in OBJECTIVES:
         for qtype in TYPES:
             A(f"| {objective} | {qtype} | {fmt(cv[objective]['ece_before'].get(qtype))} | "
               f"{fmt(cv[objective]['ece_after'].get(qtype))} |")
     A("")
-    A("The **scorer's own** per-type calibration (0-100) on the same out-of-fold")
-    A("predictions, from the scorer's `calibration` function: the top-label ECE on the")
-    A("hard tier for choice, the ECE of P(yes) for noul, and for score the mean of the")
-    A("top-level ECE and (1 - nRPS).  The ECE table above is the raw ECE, in ECE units;")
-    A("this table is what the scorer turns into its Calibration number.")
+    A("**The scorer's own per-type calibration, 0-100** - the second table - on the same")
+    A("out-of-fold predictions, from the scorer's `calibration` function: the top-label ECE")
+    A("on the hard tier for choice, the ECE of P(yes) for noul, and for score the mean of")
+    A("the top-level ECE and (1 - nRPS).  **This is the number the exit criterion is")
+    A("read from** (the held-out calibration, lower is better), and it is the one the")
+    A("official scorer's Calibration number is made of.")
     A("")
-    A("| objective | type | calibration before | calibration after (out-of-fold) |")
+    A("| objective | type | the scorer's calibration before | the scorer's calibration after (out-of-fold) |")
     A("|---|---|---:|---:|")
     for objective in OBJECTIVES:
         for qtype in TYPES:
@@ -984,7 +992,7 @@ def main() -> int:
     A("")
     A("The 70/30 split (the same seed), fitted on its own train part:")
     A("")
-    A("| type | train items | held-out items | T (train) | ECE before | ECE after |")
+    A("| type | train items | held-out items | T (train) | the raw top-level ECE before | the raw top-level ECE after |")
     A("|---|---:|---:|---:|---:|---:|")
     for qtype in TYPES:
         A(f"| {qtype} | {sum(1 for r in train30 if r['type'] == qtype)} | "
@@ -1113,9 +1121,12 @@ def main() -> int:
         A("  data, never on OpenDecisions\").  The roadmap asks for this fit, so the numbers")
         A("  are labelled as they are, and the independent check is the jev-bench run with")
         A("  human soft labels (roadmap item 1.2).")
-    A(f"- **The ECE of the choice questions is measured on the hard tier only** "
-      f"({hard_choice} of the {len(by_type.get('choice', []))} choice items), so it is a "
-      f"thin slice: the fold table above says how thin.")
+    A(f"- **The raw top-level ECE of the choice questions is measured on the hard tier "
+      f"only** ({hard_choice} of the {len(by_type.get('choice', []))} choice items), so it "
+      f"is a thin slice: the fold table above says how thin.  (For the choice and the noul "
+      f"types the scorer's calibration component is that ECE, scaled; for the score type it "
+      f"is the mean of the top-level ECE and (1 - nRPS), so the ECE half is only part of "
+      f"the component.)")
     A("- **The noul's ECE is a wash.**  Its curve is jagged and shallow around T = 1 and")
     A("  its minimum does not survive the cross-validation; see the table above.")
     A("- **One temperature per type is one number for a whole family of questions.**  A")

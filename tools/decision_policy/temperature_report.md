@@ -39,7 +39,7 @@ They disagree on this data, so all four are fitted and cross-validated:
 |---|---|---:|---:|---:|
 | nll | the negative log-likelihood of the gold label | 1.16 | 1.57 | 0.94 |
 | brier | the multiclass Brier score | 0.62 | 0.67 | 0.77 |
-| ece | the scorer's own ECE for the type | 0.58 | 0.67 | 0.75 |
+| ece | the raw top-level ECE for the type | 0.58 | 0.67 | 0.75 |
 | soft | the cross-entropy against the HUMAN distribution | 4.36 | 1.2 | 2.22 |
 
 The NLL is the textbook objective, and it wants a FLATTER distribution than the
@@ -68,11 +68,16 @@ only defined on the items that carry one, and the report says how many that is:
 
 The split rule: 5-fold cross-validation, stratified by type: every type's items are sorted by id, shuffled with random.Random(seed) and dealt round-robin into the five folds; the temperature of a fold is fitted on the other four folds and applied to the fold's own items. A 70/30 split (the same seed, stratified by type the same way) is the second check.  The seed is **42**.
 
-The fit never sees the item it is scored on.  The ECEs are the scorer's own (its
-`ece` function, on the same pairs it uses: the top-label ECE on the hard tier for
-choice, the ECE of P(yes) for noul, the top-level ECE for score).
+The fit never sees the item it is scored on.
 
-| objective | type | ECE before | ECE after (out-of-fold) |
+**The raw top-level ECE** - the first table below, and 1.1's table, reproduced bit
+for bit: the scorer's own `ece` function on the same pairs it uses - the top-label
+ECE on the hard tier for choice, the ECE of P(yes) for noul, the top-level ECE for
+score.  For the SCORE type this is the ECE half of the scorer's calibration
+component, not the component itself: the component is the mean of the top-level
+ECE and (1 - nRPS) (score.py).  The second table is that component.
+
+| objective | type | the raw top-level ECE before | the raw top-level ECE after (out-of-fold) |
 |---|---|---:|---:|
 | nll | choice | 0.1313 | 0.1452 |
 | nll | noul | 0.0756 | 0.1128 |
@@ -87,13 +92,14 @@ choice, the ECE of P(yes) for noul, the top-level ECE for score).
 | soft | noul | 0.0756 | 0.1002 |
 | soft | score | 0.1082 | 0.1912 |
 
-The **scorer's own** per-type calibration (0-100) on the same out-of-fold
-predictions, from the scorer's `calibration` function: the top-label ECE on the
-hard tier for choice, the ECE of P(yes) for noul, and for score the mean of the
-top-level ECE and (1 - nRPS).  The ECE table above is the raw ECE, in ECE units;
-this table is what the scorer turns into its Calibration number.
+**The scorer's own per-type calibration, 0-100** - the second table - on the same
+out-of-fold predictions, from the scorer's `calibration` function: the top-label ECE
+on the hard tier for choice, the ECE of P(yes) for noul, and for score the mean of
+the top-level ECE and (1 - nRPS).  **This is the number the exit criterion is
+read from** (the held-out calibration, lower is better), and it is the one the
+official scorer's Calibration number is made of.
 
-| objective | type | calibration before | calibration after (out-of-fold) |
+| objective | type | the scorer's calibration before | the scorer's calibration after (out-of-fold) |
 |---|---|---:|---:|
 | nll | choice | 73.7 | 71.0 |
 | nll | noul | 84.9 | 77.4 |
@@ -110,7 +116,7 @@ this table is what the scorer turns into its Calibration number.
 
 The 70/30 split (the same seed), fitted on its own train part:
 
-| type | train items | held-out items | T (train) | ECE before | ECE after |
+| type | train items | held-out items | T (train) | the raw top-level ECE before | the raw top-level ECE after |
 |---|---:|---:|---:|---:|---:|
 | choice | 75 | 32 | 0.5 | 0.1696 | 0.0374 |
 | noul | 48 | 21 | 0.6 | 0.1791 | 0.1721 |
@@ -216,7 +222,7 @@ so its Intelligence is not fixed):
   data, never on OpenDecisions").  The roadmap asks for this fit, so the numbers
   are labelled as they are, and the independent check is the jev-bench run with
   human soft labels (roadmap item 1.2).
-- **The ECE of the choice questions is measured on the hard tier only** (53 of the 107 choice items), so it is a thin slice: the fold table above says how thin.
+- **The raw top-level ECE of the choice questions is measured on the hard tier only** (53 of the 107 choice items), so it is a thin slice: the fold table above says how thin.  (For the choice and the noul types the scorer's calibration component is that ECE, scaled; for the score type it is the mean of the top-level ECE and (1 - nRPS), so the ECE half is only part of the component.)
 - **The noul's ECE is a wash.**  Its curve is jagged and shallow around T = 1 and
   its minimum does not survive the cross-validation; see the table above.
 - **One temperature per type is one number for a whole family of questions.**  A

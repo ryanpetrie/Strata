@@ -88,6 +88,13 @@ against the one-hot gold label: it is the objective that lines the probability u
 people were.  It is only defined on the items that carry a distribution, and the report says how many that
 is per type.
 
+**Two calibration tables, and they are not the same number.**  The report gives the **raw top-level ECE**
+(the scorer's own `ece` function on the pairs it uses: the top-label ECE on the hard tier for choice, the
+ECE of P(yes) for noul, the top-level ECE for score) and, beside it, the **scorer's own per-type
+calibration** (0-100, from the scorer's `calibration` function).  For the **score** type the scorer's
+component is the mean of the top-level ECE and (1 - nRPS), so the raw ECE is only its ECE half - and the
+exit criterion is read from the calibration table, not from the raw ECE.
+
 It also says how sure the result is, in two ways, and neither of them is a point estimate on its own:
 
 - an **out-of-bag** bootstrap per type: the items are resampled twice, the temperature is fitted on one
