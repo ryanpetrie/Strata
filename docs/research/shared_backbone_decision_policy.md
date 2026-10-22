@@ -2461,39 +2461,46 @@ Of the 10 flips on half B, **2 got better and 8 got worse**.
 | (b) ranking, on half A | the AUC 0.8435 -> 0.8426 (-0.0010); the margin -0.05 | **PASS** |
 | (c) the base rate, on half B | the accuracy 84.4% -> 82.0% (**6 items** worse), the ECE 0.0743 -> 0.1045 (**+0.0301**); the margins 3 items and 0.02 | **FAIL** |
 
-**The reading: the order axis is DEAD.**  The probe is the order axis (N1 and N2
-together), and it does not pass the design set: it fails the base rate's own
-check.  It helps the population whose base rate it matches - the 9.2%-yes half,
-where the accuracy gained 11 items - and it hurts the other one, the 45.2%-yes
-half, where it lost 6 items and the ECE rose by 0.030.  Its effect on the level
-is 0.021 out of a bias of 0.305, and it does not move the ranking at all.  That
-is the design's own picture of a base-rate shift, caught by the design's own
-check.
+**The reading: the position is a real component, and the order arms stay.**  The
+design's §6 set one conjunction for killing the order axis: the swap gap "below
+**0.05** in absolute value **and** the flip rate is near the engine's own 1%
+wobble".  The gap is 0.0212, below 0.05, but the flip rate is **6.0%**, six times
+the floor, so **the conjunction did not fire**.  The design's §3.4 names the
+branch the measurement is in:
 
-**One clause of the pre-registered trigger did not fire, and it is recorded
-here.**  The design's §6 said the order axis is dead "if the swap gap is below
-0.05 in absolute value **and** the flip rate is near the engine's own 1% wobble".
-The swap gap is 0.0212 (below 0.05) but the flip rate is 6.0%, not 1%, so the
-conjunction did not fire and the design's third branch ("something other than the
-order changed - look at the AUC") was not confirmed by the AUC either.  The
-measurement fell between the branches.  What resolved it is the extra
-measurement above: the design set's own rule (c), which the probe's arm **fails**,
-and the flat AUC.  The design's §6 allows exactly this: "the rule's numbers do
-not change; only the arms do, and the change is written down before the affected
-arms run."
+> the flip rate is well above 1% and `mean(d)` is clearly positive -> the
+> **position** of the two sides is a real, measurable component of the bias.  N1
+> and N2 are worth their runs, and `mean(d)` prices them.
+
+The gap is +0.0212 with a per-item SD of 0.0743, so its SE on 250 items is
+0.0047: the gap is **4.5 SE from zero**.  The level moved, the ranking did not
+(the AUC -0.0010, against an AUC noise of about 0.047 at this n), and the effect
+is 2.2 times the engine's own per-item noise.  That is a real order effect.  The
+probe's half B **fails rule (c)**, and that is recorded; but (c) is a **shipping**
+guard, the design says in words that the probe "is **not** a shipping candidate",
+and the probe is N1 and N2 **together**.  Its half-B failure therefore cannot be
+charged to either arm: N1 rewrites the criteria line, half B has no criteria line,
+and N1 is inert there by construction.  The probe's half-B loss belongs to N2 and
+to the mirror as a whole.  Killing N1 and N2 on the combined arm's (c) would be a
+rule tightened after the numbers were seen, which §6 forbids.  **N1 and N2 are
+run.**
+
+**A correction, made before N1 and N2 were run.**  An earlier version of this
+section, committed as `909d77d4`, read the same numbers as "the order axis is
+DEAD", because the probe's arm fails (c) on half B.  That reading applied a
+shipping guard to a diagnostic arm, and it treated N1 + N2 together as if it were
+each of them.  The pre-registered trigger did not fire, §3.4's second branch
+applies, and this section is corrected on 2026-10-22 **before the two arms were
+run**.  The probe's own numbers in 20.1-20.3 stand; only their reading changes.
 
 ### 20.4 The arm list (written down before the arms ran)
 
-**Not run: N1 `criteria-order` and N2 `answer-order`.**  The probe *is* the order
-axis: P1 is N1 and N2 together, and it fails the design set's base-rate check.
-Running the two separately would only decompose a measured effect; the budget is
-better spent on the axes that have not been measured.
-
-**Run: N3 `rule-form`, N4 `criteria-first` and N5 `decision-rule`.**  These are
-the three axes the probe did not touch, and they are the ones the design called
-"weighing" levers: they change how the model weighs the evidence rather than
-what it defaults to.  Each is one axis, 500 noul items (half A and half B) on a
-freshly restarted engine.
+**Run: all five.**  N1 `criteria-order`, N2 `answer-order`, N3 `rule-form`, N4
+`criteria-first` and N5 `decision-rule`.  The probe kept the order axis (20.3),
+so N1 and N2 are run; N3, N4 and N5 were always in the list.  Each is one axis,
+500 noul items (half A and half B) on a freshly restarted engine.  The probe
+changed **no rule**; it changed the reading of the arm list, and that reading is
+written above before any of the five was scored.
 
 **The rule is unchanged.**  The pre-registered rules (a) to (f) of the design's
 §6 apply to each arm exactly as they were written:
