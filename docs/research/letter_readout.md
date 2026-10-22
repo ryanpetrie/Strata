@@ -152,8 +152,9 @@ measured in the same session, and it is faster and simpler.  **But it does not p
 more items right**: 204 of the 235 against the direct readout's 206.  The win is in
 the shape of the distribution - the score questions' expected level sits closer to
 the gold level (the mean normalized distance 0.0908 against 0.1013) - and in the
-calibration.  The companion doc §20 has the whole comparison, the two numbers that
-go the other way (the distance to the true probabilities on the 13 calibration items,
+calibration.  The companion doc §21 has the whole OpenDecisions comparison, and §22
+the jev-bench check: the two numbers that go the other way (the distance to the true
+probabilities on the 13 calibration items,
 0.256 against 0.216, and the score questions' raw accuracy, 72.9% against 79.7%),
 and the limits.
 
