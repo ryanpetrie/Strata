@@ -26,7 +26,7 @@ distribution), not to the per-trie-row logits.  For a single-row question the tw
 forms are identical; for the trie path the option-level form is the coherent one and
 the only one that can be reproduced offline from a stored run log.
 
-THE OBJECTIVES.  Three are fitted, because they disagree on this data and the
+THE OBJECTIVES.  Four are fitted, because they disagree on this data and the
 reader should see why (the report has the table):
 
   nll    the mean negative log-likelihood of the gold label.  The textbook objective
@@ -41,28 +41,49 @@ reader should see why (the report has the table):
          on the hard tier for choice, the ECE of P(yes) for noul, the top-level ECE
          for score).  The metric the exit criterion names - and a step function of T,
          so its minimum is a plateau and its folds are unstable.
+  soft   the cross-entropy against the HUMAN DISTRIBUTION (the item's
+         target_probs), not against the one-hot gold label.  This is the objective
+         that lines the probability up with how uncertain the people were, and it
+         is only defined on the items that carry a distribution.  The report says
+         how many items that is per type.
 
 The constants that ship are the ones of the objective named by --objective (the
 default: brier).  Which objective is used is a choice, so every arm's cross-validated
 numbers are in the report and in the JSON.
+
+THE SERVER'S EXPRESSION IS IMPORTED, NOT COPIED.  The temperature is applied with
+serve/logits_first_token.py::apply_temperature - the function the server itself
+calls - so the fit cannot drift from the served one.  (The module lives under
+serve/; the import needs the repository root on sys.path, which is what the
+sys.path line below does.  It is pure Python: no Service, no engine, no I/O.)
 
 THE VALIDATION.  The fit must never see the item it is scored on, so:
 
   - 5-fold cross-validation, stratified by type: every type's items are sorted by id,
     shuffled with a fixed seed and dealt round-robin into the five folds.  The
     temperature of a fold is fitted on the other four folds and applied to the fold's
-    own items.  The out-of-fold predictions cover all 235 items, and they are scored
+    own items.  The out-of-fold predictions cover all the items, and they are scored
     with the OFFICIAL scorer (the script calls it, it does not re-implement it).
   - a single 70/30 split (the same seed), as a second check.
+  - cross_validate() asserts that no item is in both the fold and the fit, and the
+    test file checks the property from the outside as well.
 
 THE SPLIT RULE AND THE SEED ARE IN THE OUTPUT (the JSON and the report), because a
 calibration constant without its split rule is not a measurement.
 
+ANY POOL.  The fit reads an items file, a run log and a predictions file, so it
+fits on whatever pool it is pointed at: the 235-item OpenDecisions sample (the
+numbers of 2026-10-21) or the jev-bench validation pool (the licence-clean
+fitting set of roadmap item 1.1b).  The source block of the JSON is written from
+the command line, not hard-coded, so the constants always say where they came
+from.
+
 HONESTY.  The OpenDecisions set says "fit temperatures on your own data, never on
-OpenDecisions" (its README).  This script fits on OpenDecisions because the roadmap
-asks for it, so the 235-item re-run is IN-SAMPLE and the honest headline is the
-out-of-fold (cross-validated) calibration improvement.  The independent check is the
-jev-bench run with human soft labels (roadmap item 1.2).
+OpenDecisions" (its README).  The constants that shipped on 2026-10-21 were
+fitted on it anyway, so the 235-item re-run was IN-SAMPLE.  The licence-clean
+refit (roadmap item 1.1b) is fitted on the jev-bench VALIDATION split, which
+makes the OpenDecisions measurement out-of-sample and the jev-bench TEST sample
+out-of-sample too.
 
     python tools/decision_policy/temperature.py \
         --items <items.jsonl> --runlog <runlog.jsonl> --predictions <predictions.jsonl> \
@@ -72,6 +93,7 @@ jev-bench run with human soft labels (roadmap item 1.2).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -79,6 +101,10 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+# the repository root, so `serve.logits_first_token` can be imported
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from serve.logits_first_token import apply_temperature as _server_apply_temperature  # noqa: E402
 
 TYPES = ("choice", "noul", "score")
 SEED = 42                     # the seed of both splits (the 5-fold CV and the 70/30)
@@ -90,7 +116,12 @@ T_MIN, T_MAX = 0.5, 10.0
 COARSE_STEP = 0.01            # the grid step
 DEFAULT_SCORER = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
 DEFAULT_CONFIG = Path(r"C:\tools\strata\strata-unsloth-ud-iq4_xs.json")
-OBJECTIVES = ("nll", "brier", "ece")
+OBJECTIVES = ("nll", "brier", "ece", "soft")
+# the default source block, for the fit of 2026-10-21
+DEFAULT_SOURCE_DATASET = "jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42)"
+DEFAULT_SOURCE_ARM = "the serial first-token path, every item on the fast path"
+DEFAULT_SOURCE_NOTE = ("the constants are fitted on these same items, so a re-run of the sample "
+                       "is IN-SAMPLE; the honest number is the out-of-fold one below")
 
 
 def read_jsonl(path) -> list[dict]:
@@ -118,7 +149,8 @@ def build_records(items: list[dict], runlog: list[dict], predictions: list[dict]
     """-> ({id: record}, the cross-check messages).
 
     A record holds the item's CLOSED distribution - the scorer's own input - over the
-    item's labels, and the gold label.  The closed distribution is reconstructed from
+    item's labels, the gold label, and the item's HUMAN DISTRIBUTION (its
+    target_probs) when it has one.  The closed distribution is reconstructed from
     the predictions file (the scorer's input) and cross-checked against the run log's
     own readings, so a silent mismatch between the two cannot pass unnoticed.
     """
@@ -158,28 +190,76 @@ def build_records(items: list[dict], runlog: list[dict], predictions: list[dict]
                                     f"({logged[lab]}) disagree")
         if abs(sum(closed.values()) - 1.0) > 1e-6:
             problems.append(f"{iid}: the closed distribution sums to {sum(closed.values())}, not 1")
+        for lab, value in closed.items():
+            if not math.isfinite(value) or value < 0.0:
+                problems.append(f"{iid}: the probability of {lab} is {value}, not a probability")
+        target, target_problem = human_target(task)
+        if target_problem:
+            problems.append(f"{iid}: {target_problem}")
         records[iid] = {"id": iid, "type": qtype, "tier": task.get("tier"),
                         "labels": list(task["labels"]), "closed": closed, "gold": gold,
-                        "fast_path": bool(rec.get("fast_path")), "task": task}
+                        "target": target, "fast_path": bool(rec.get("fast_path")), "task": task}
     return records, problems
+
+
+def human_target(task: dict) -> tuple[dict[str, float] | None, str | None]:
+    """-> (the human distribution over the item's labels, the problem).
+
+    The item's target_probs is the distribution the PEOPLE gave: for a choice the
+    share of the annotators per option, for a score the share per level, for a
+    yes/no the share that said yes.  It is read in the scorer's label space (the
+    keys are the item's labels), and a yes/no item that gives only the "yes" share
+    gets the "no" share filled in - the same thing the scorer does with a
+    prediction.
+
+    The distribution may cover only SOME of the item's labels: a level the people
+    never chose has a target mass of 0 and is simply left out of the keys.  The
+    keys that are not labels of the item are an error.
+
+    None means the item carries no human distribution: the soft-label objective is
+    not defined on it.
+    """
+    raw = task.get("target_probs")
+    if not raw:
+        return None, None
+    labels = list(task["labels"])
+    try:
+        target = {str(k): float(v) for k, v in raw.items()}
+    except (TypeError, ValueError):
+        return None, "the human distribution is not a set of numbers"
+    if task["question"]["type"] == "noul" and "no" not in target and "yes" in target:
+        target["no"] = 1.0 - target["yes"]
+    extra = [k for k in target if k not in labels]
+    if extra:
+        return None, ("the human distribution has %s, which are not labels of the item"
+                      % ", ".join(sorted(extra)))
+    total = sum(target.values())
+    if total <= 0.0:
+        return None, "the human distribution sums to 0"
+    if abs(total - 1.0) > 0.01:
+        # the scorer allows 0.01 of slack; the objective needs a distribution
+        target = {k: v / total for k, v in target.items()}
+    return target, None
 
 
 # ------------------------------------------------------------------ the temperature
 
 def scale(closed: dict[str, float], temperature: float) -> dict[str, float]:
-    """-> the closed distribution at temperature T: normalize(closed ** (1/T)).
+    """-> the closed distribution at temperature T.
 
-    The exact identity the server applies, in the same order of operations, so the
-    offline fit predicts the served distribution.
+    THE SERVER'S OWN EXPRESSION, CALLED, NOT COPIED.  apply_temperature
+    (serve/logits_first_token.py) is the function the server calls on every
+    answer, so the fit and the served numbers cannot drift apart: a second
+    implementation of normalize(closed ** (1/T)) could differ in the order of the
+    operations, in the handling of a zero, or in the T = 1 case.
+
+    The reading handed to it carries the closed distribution as both the closed and
+    the open reading, so the mass on the options is 1 and only the closed reading
+    (the part the fit uses) is affected.  Nothing else the function reads is needed,
+    so nothing else is built.
     """
-    if temperature == 1.0:
-        return dict(closed)
-    inv = 1.0 / temperature
-    weights = {k: (v ** inv if v > 0.0 else 0.0) for k, v in closed.items()}
-    total = sum(weights.values())
-    if total <= 0.0:
-        return dict(closed)
-    return {k: v / total for k, v in weights.items()}
+    reading = {"closed": closed, "open": closed}
+    return _server_apply_temperature(reading, temperature)["closed"]
 
 
 def nll(closed: dict[str, float], gold: str, temperature: float) -> float:
@@ -194,6 +274,24 @@ def brier(closed: dict[str, float], gold: str, labels: list[str], temperature: f
     return sum((dist.get(lab, 0.0) - (1.0 if lab == gold else 0.0)) ** 2 for lab in labels)
 
 
+def soft_ce(closed: dict[str, float], target: dict[str, float], temperature: float) -> float:
+    """The cross-entropy of the scaled distribution against the HUMAN distribution.
+
+    -sum_q q log p, over the labels the human distribution covers.  This is the
+    objective that lines the probability up with how uncertain the people were
+    rather than with a one-hot label: a distribution that says "the people were
+    split 60/40" is not punished for being 60/40.
+    """
+    dist = scale(closed, temperature)
+    total = 0.0
+    for key, q in target.items():
+        if q <= 0.0:
+            continue
+        p = dist.get(key, 0.0)
+        total -= q * math.log(p if p > 1e-300 else 1e-300)
+    return total
+
+
 def mean_nll(records: list[dict], temperature: float) -> float:
     if not records:
         return float("inf")
@@ -206,6 +304,17 @@ def mean_brier(records: list[dict], temperature: float) -> float:
     return sum(brier(r["closed"], r["gold"], r["labels"], temperature) for r in records) / len(records)
 
 
+def mean_soft_ce(records: list[dict], temperature: float) -> float:
+    """The mean cross-entropy against the human distribution, over the items that
+    have one.  The items without one do not count: the objective is not defined on
+    them, and averaging them in as a zero would make the fit prefer a temperature
+    that says "no" about everything."""
+    with_target = [r for r in records if r.get("target")]
+    if not with_target:
+        return float("inf")
+    return sum(soft_ce(r["closed"], r["target"], temperature) for r in with_target) / len(with_target)
+
+
 # ------------------------------------------------------------------ the scorer's own metrics
 
 def outcomes(scorer, records: list[dict], temperature: float = 1.0,
@@ -215,12 +324,19 @@ def outcomes(scorer, records: list[dict], temperature: float = 1.0,
     `per_item` gives the temperature of every item (the out-of-fold case: an item's
     temperature is the one fitted without it); `temperature` is the single one used
     when there is no per-item map.
+
+    The scorer's own `item_outcome` is called, and the scorer's own `ece` reads
+    what it returns.  The scorer's `normalized` is not called: the scaled
+    distribution is already the normalized one (the same keys as the item's
+    labels, the same sum of 1), and build_records() has checked the distribution
+    it was built from.  The numbers are the scorer's either way; the check is
+    where the data enters, not once per temperature.
     """
     out = []
     for rec in records:
         t = per_item[rec["id"]] if per_item is not None else temperature
         probs = scale(rec["closed"], t)
-        out.append(scorer.item_outcome(rec["task"], scorer.normalized(rec["task"], probs)))
+        out.append(scorer.item_outcome(rec["task"], probs))
     return out
 
 
@@ -229,6 +345,10 @@ def ece_by_type(scorer, outs: list[dict]) -> dict[str, float]:
 
     choice: the TOP-LABEL ECE on the hard tier only.  noul: the ECE of P(yes).
     score: the top-level ECE over every score item.
+
+    This is the raw ECE, in the units of an ECE.  The SCORER'S calibration for the
+    score type is not the same number: it is the mean of the top-level ECE and
+    (1 - nRPS) (see score.py).  calibration_by_type() is that one.
     """
     out: dict[str, float] = {}
     choice = [o for o in outs if o["type"] == "choice" and o["valid"] and o["tier"] == "hard"]
@@ -241,6 +361,18 @@ def ece_by_type(scorer, outs: list[dict]) -> dict[str, float]:
     if score:
         out["score"] = scorer.ece([(o["conf"], float(o["correct"])) for o in score])
     return out
+
+
+def calibration_by_type(scorer, outs: list[dict]) -> dict[str, float]:
+    """-> {type: the SCORER'S OWN calibration component} (0-100).
+
+    The scorer's own function, called, not re-implemented:
+      choice  100 (1 - ECE / 0.5), the top-label ECE on the hard tier;
+      noul    100 (1 - ECE / 0.5), the ECE of P(yes);
+      score   the mean of 100 (1 - top-level ECE / 0.5) and 100 (1 - mean nRPS).
+    """
+    _total, parts = scorer.calibration(outs)
+    return {k: v for k, v in (parts or {}).items() if v is not None}
 
 
 def tier_mix(records: list[dict]) -> dict[str, int]:
@@ -270,6 +402,8 @@ def fit_temperature(scorer, records: list[dict], qtype: str, objective: str,
             value = mean_nll(records, t)
         elif objective == "brier":
             value = mean_brier(records, t)
+        elif objective == "soft":
+            value = mean_soft_ce(records, t)
         else:
             value = ece_by_type(scorer, outcomes(scorer, records, t)).get(qtype)
             if value is None:
@@ -356,19 +490,41 @@ def split_70_30(records: list[dict], seed: int = SEED) -> tuple[list[dict], list
     return train, test
 
 
+def fold_temperatures(scorer, train: list[dict], objective: str,
+                      t_min: float = T_MIN, t_max: float = T_MAX) -> dict[str, float]:
+    """-> {type: the temperature fitted on THESE items}.
+
+    One place, so the cross-validation and the test that checks it cannot drift
+    apart: the test refits the fold from the training items alone and compares.
+    """
+    out: dict[str, float] = {}
+    for qtype in TYPES:
+        tr = [r for r in train if r["type"] == qtype]
+        out[qtype] = fit_temperature(scorer, tr, qtype, objective, t_min, t_max)[0] if tr else 1.0
+    return out
+
+
 def cross_validate(scorer, records: list[dict], objective: str, folds: int = FOLDS,
                    seed: int = SEED) -> tuple[dict[str, float], list[dict]]:
-    """-> ({id: the out-of-fold temperature}, the fold table)."""
+    """-> ({id: the out-of-fold temperature}, the fold table).
+
+    NO LEAKAGE, AND IT IS CHECKED HERE AND NOT ONLY PROMISED.  The temperature of a
+    fold is fitted on the other folds' items; the fold's own items are never in the
+    fit, and the code refuses to continue if they are.
+    """
     fold_items = stratified_folds(records, folds, seed)
     per_item: dict[str, float] = {}
     table = []
     for f in range(folds):
         held = fold_items[f]
         train = [r for g in range(folds) if g != f for r in fold_items[g]]
-        temps = {}
-        for qtype in TYPES:
-            tr = [r for r in train if r["type"] == qtype]
-            temps[qtype] = fit_temperature(scorer, tr, qtype, objective)[0] if tr else 1.0
+        held_ids = {r["id"] for r in held}
+        train_ids = {r["id"] for r in train}
+        overlap = held_ids & train_ids
+        if overlap:
+            raise AssertionError("the fold %d's own items are in its fit: %s"
+                                 % (f, ", ".join(sorted(overlap)[:5])))
+        temps = fold_temperatures(scorer, train, objective)
         for rec in held:
             per_item[rec["id"]] = temps[rec["type"]]
         hard_choice = sum(1 for r in held if r["type"] == "choice" and r["tier"] == "hard")
@@ -413,6 +569,18 @@ def fmt(value, digits: int = 4) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
 
 
+def file_digest(path: Path) -> str | None:
+    """The sha256 of a file, for the provenance block.  None if it cannot be read."""
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--items", type=Path, required=True, help="the scorer-shaped items file")
@@ -433,6 +601,12 @@ def main() -> int:
     ap.add_argument("--t-max", type=float, default=T_MAX)
     ap.add_argument("--bootstrap", type=int, default=1000,
                     help="resamples per type for the uncertainty check (0 = off)")
+    ap.add_argument("--source-dataset", default=DEFAULT_SOURCE_DATASET,
+                    help="what the pool is, for the provenance block")
+    ap.add_argument("--source-arm", default=DEFAULT_SOURCE_ARM,
+                    help="which arm of the run the fit reads")
+    ap.add_argument("--source-note", default=DEFAULT_SOURCE_NOTE,
+                    help="the caveat that belongs with the numbers")
     args = ap.parse_args()
 
     from datetime import date as _date
@@ -455,6 +629,13 @@ def main() -> int:
     for rec in allrecs:
         by_type.setdefault(rec["type"], []).append(rec)
 
+    # ---- how many items carry a human distribution (the soft objective's data)
+    soft_counts = {q: sum(1 for r in by_type.get(q, []) if r.get("target")) for q in TYPES}
+    print("[temperature] items with a human distribution: " +
+          "  ".join(f"{q} {soft_counts[q]}/{len(by_type.get(q, []))}" for q in TYPES))
+    # the choice ECE is measured on the hard tier only, so the slice matters
+    hard_choice = sum(1 for r in by_type.get("choice", []) if r.get("tier") == "hard")
+
     # ---- every objective, fitted on every item of the type
     fits: dict[str, dict[str, float]] = {}
     for objective in OBJECTIVES:
@@ -476,6 +657,8 @@ def main() -> int:
             "folds": table,
             "ece_before": ece_by_type(scorer, outs_before),
             "ece_after": ece_by_type(scorer, outs_after),
+            "calibration_before": calibration_by_type(scorer, outs_before),
+            "calibration_after": calibration_by_type(scorer, outs_after),
             "scorer": score_with_official_scorer(args.scorer, allrecs, dist),
         }
         print(f"[temperature] {objective:6s} out-of-fold ECE: "
@@ -491,8 +674,10 @@ def main() -> int:
     ho_scaled = []
     for rec in test30:
         probs = scale(rec["closed"], temps30[rec["type"]])
-        ho_scaled.append(scorer.item_outcome(rec["task"], scorer.normalized(rec["task"], probs)))
+        ho_scaled.append(scorer.item_outcome(rec["task"], probs))
     ho_after = ece_by_type(scorer, ho_scaled)
+    ho_cal_before = calibration_by_type(scorer, outcomes(scorer, test30))
+    ho_cal_after = calibration_by_type(scorer, ho_scaled)
 
     # ---- how sure is the fit?  the items resampled, the temperature fitted again
     boot = {q: bootstrap_ece(scorer, by_type.get(q, []), q, args.objective,
@@ -518,7 +703,7 @@ def main() -> int:
 
     # ---- the constants, with their provenance
     out = {
-        "version": 1,
+        "version": 2,
         "model": model,
         "fitted_on": when,
         "objective": args.objective,
@@ -527,6 +712,8 @@ def main() -> int:
             "brier": "the mean multiclass Brier score of the distribution against the gold label",
             "ece": "the scorer's own expected calibration error for the type (the top-label ECE on the "
                    "hard tier for choice, the ECE of P(yes) for noul, the top-level ECE for score)",
+            "soft": "the mean cross-entropy of the distribution against the item's HUMAN distribution "
+                    "(its target_probs), over the items that carry one",
         }[args.objective],
         "grid": {"min": args.t_min, "max": args.t_max, "step": COARSE_STEP},
         "seed": args.seed,
@@ -538,16 +725,24 @@ def main() -> int:
                        "same seed, stratified by type the same way) is the second check."),
         "temperature": {q: fitted[q] for q in TYPES},
         "temperature_by_objective": {o: fits[o] for o in OBJECTIVES},
+        "items_with_human_distribution": soft_counts,
         "source": {
-            "dataset": "jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42)",
-            "arm": "the serial first-token path, every item on the fast path",
-            "note": ("the constants are fitted on these same items, so a re-run of the sample "
-                     "is IN-SAMPLE; the honest number is the out-of-fold one below"),
+            "dataset": args.source_dataset,
+            "arm": args.source_arm,
+            "note": args.source_note,
+            "files": {
+                "items": {"path": str(args.items), "sha256": file_digest(args.items)},
+                "runlog": {"path": str(args.runlog), "sha256": file_digest(args.runlog)},
+                "predictions": {"path": str(args.predictions), "sha256": file_digest(args.predictions)},
+            },
         },
         "validation": {
             "out_of_fold": {o: {"ece_before": cv[o]["ece_before"], "ece_after": cv[o]["ece_after"],
+                                "calibration_before": cv[o]["calibration_before"],
+                                "calibration_after": cv[o]["calibration_after"],
                                 "folds": cv[o]["folds"], "scorer": cv[o]["scorer"]} for o in OBJECTIVES},
             "holdout_30": {"ece_before": ho_before, "ece_after": ho_after, "temperatures": temps30,
+                           "calibration_before": ho_cal_before, "calibration_after": ho_cal_after,
                            "train_items": {q: sum(1 for r in train30 if r["type"] == q) for q in TYPES},
                            "test_items": {q: sum(1 for r in test30 if r["type"] == q) for q in TYPES}},
             "bootstrap": boot,
@@ -568,6 +763,8 @@ def main() -> int:
     A("`temperature_calibration.json` next to this file; the server takes them from the")
     A("launch config (`\"systemone\": {\"temperature\": {...}}`).")
     A("")
+    A(f"**The pool:** {args.source_dataset} - {args.source_arm}.")
+    A("")
     A("## What was fitted")
     A("")
     A("One scalar per question type.  The temperature divides the logits before the")
@@ -586,9 +783,13 @@ def main() -> int:
     A("distribution), not to the per-trie-row logits: an option's weight is a product of")
     A("per-node probabilities and the per-row normalizers differ per option.")
     A("")
-    A("## The three objectives, and why the shipped one is the Brier score")
+    A("The expression is not written out a second time here: the fit calls the server's")
+    A("own `apply_temperature` (serve/logits_first_token.py), so the fit and the served")
+    A("numbers cannot drift apart.")
     A("")
-    A("They disagree on this data, so all three are fitted and cross-validated:")
+    A("## The four objectives, and why the shipped one is the Brier score")
+    A("")
+    A("They disagree on this data, so all four are fitted and cross-validated:")
     A("")
     A("| objective | what it minimizes | choice | noul | score |")
     A("|---|---|---:|---:|---:|")
@@ -598,6 +799,8 @@ def main() -> int:
       f"{fits['brier']['choice']} | {fits['brier']['noul']} | {fits['brier']['score']} |")
     A("| ece | the scorer's own ECE for the type | "
       f"{fits['ece']['choice']} | {fits['ece']['noul']} | {fits['ece']['score']} |")
+    A("| soft | the cross-entropy against the HUMAN distribution | "
+      f"{fits['soft']['choice']} | {fits['soft']['noul']} | {fits['soft']['score']} |")
     A("")
     A("The NLL is the textbook objective, and it wants a FLATTER distribution than the")
     A("expected calibration error does.  The reason is in the data: the NLL is")
@@ -607,6 +810,16 @@ def main() -> int:
     A("the confidence range, where it is UNDER-confident, so flattening makes the ECE")
     A("worse.  The Brier score is between the two: a smooth proper scoring rule, like")
     A("the NLL, but quadratic, so a confidently wrong item costs a bounded amount.")
+    A("")
+    A("The **soft** objective is the one that lines the probability up with how")
+    A("uncertain the PEOPLE were, not with a one-hot label: it is the cross-entropy")
+    A("against the item's `target_probs`, the annotators' own distribution.  It is")
+    A("only defined on the items that carry one, and the report says how many that is:")
+    A("")
+    A("| type | items | of those, with a human distribution |")
+    A("|---|---:|---:|")
+    for qtype in TYPES:
+        A(f"| {qtype} | {len(by_type.get(qtype, []))} | {soft_counts[qtype]} |")
     A("")
     A(f"**The shipped constants use the `{args.objective}` objective.**")
     A("")
@@ -624,6 +837,19 @@ def main() -> int:
         for qtype in TYPES:
             A(f"| {objective} | {qtype} | {fmt(cv[objective]['ece_before'].get(qtype))} | "
               f"{fmt(cv[objective]['ece_after'].get(qtype))} |")
+    A("")
+    A("The **scorer's own** per-type calibration (0-100) on the same out-of-fold")
+    A("predictions, from the scorer's `calibration` function: the top-label ECE on the")
+    A("hard tier for choice, the ECE of P(yes) for noul, and for score the mean of the")
+    A("top-level ECE and (1 - nRPS).  The ECE table above is the raw ECE, in ECE units;")
+    A("this table is what the scorer turns into its Calibration number.")
+    A("")
+    A("| objective | type | calibration before | calibration after (out-of-fold) |")
+    A("|---|---|---:|---:|")
+    for objective in OBJECTIVES:
+        for qtype in TYPES:
+            A(f"| {objective} | {qtype} | {fmt(cv[objective]['calibration_before'].get(qtype), 1)} | "
+              f"{fmt(cv[objective]['calibration_after'].get(qtype), 1)} |")
     A("")
     A("The 70/30 split (the same seed), fitted on its own train part:")
     A("")
@@ -703,15 +929,19 @@ def main() -> int:
     A("")
     A("## The limits")
     A("")
-    A("- **The 235-item re-run is in-sample.**  The constants are fitted on those items,")
-    A("  so the in-sample row above is not an unbiased estimate of anything.  The honest")
-    A("  number is the out-of-fold one.")
-    A("- **The dataset says not to fit on it** (its README: \"fit temperatures on your own")
-    A("  data, never on OpenDecisions\").  The roadmap asks for this fit, so the numbers")
-    A("  are labelled as they are, and the independent check is the jev-bench run with")
-    A("  human soft labels (roadmap item 1.2).")
-    A("- **The ECE of the choice questions is measured on the hard tier only** (53 of the")
-    A("  107 choice items), so it is a thin slice: the fold table above says how thin.")
+    A(f"- **What the fit is measured on:** {args.source_dataset} - {args.source_arm}.")
+    A(f"  {args.source_note}")
+    if "OpenDecisions" in args.source_dataset:
+        A("- **The 235-item re-run is in-sample.**  The constants are fitted on those items,")
+        A("  so the in-sample row above is not an unbiased estimate of anything.  The honest")
+        A("  number is the out-of-fold one.")
+        A("- **The dataset says not to fit on it** (its README: \"fit temperatures on your own")
+        A("  data, never on OpenDecisions\").  The roadmap asks for this fit, so the numbers")
+        A("  are labelled as they are, and the independent check is the jev-bench run with")
+        A("  human soft labels (roadmap item 1.2).")
+    A(f"- **The ECE of the choice questions is measured on the hard tier only** "
+      f"({hard_choice} of the {len(by_type.get('choice', []))} choice items), so it is a "
+      f"thin slice: the fold table above says how thin.")
     A("- **The noul's ECE is a wash.**  Its curve is jagged and shallow around T = 1 and")
     A("  its minimum does not survive the cross-validation; see the table above.")
     A("- **One temperature per type is one number for a whole family of questions.**  A")
@@ -720,6 +950,14 @@ def main() -> int:
     A("  the engine's top-k window and the T = 1 normalizer, not the full-vocabulary")
     A("  normalizer at T, so the confidence is the closed reading at T scaled by the mass")
     A("  the model put on the options (measured at T = 1).  See the serving side.")
+    A("")
+    A("The files the fit read, with their digests:")
+    A("")
+    A("| file | sha256 |")
+    A("|---|---|")
+    for key in ("items", "runlog", "predictions"):
+        info = out["source"]["files"][key]
+        A(f"| {key} (`{info['path']}`) | `{info['sha256']}` |")
     A("")
     args.out_report.parent.mkdir(parents=True, exist_ok=True)
     args.out_report.write_text("\n".join(lines) + "\n", encoding="utf-8")
