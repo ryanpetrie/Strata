@@ -4,7 +4,10 @@
 """
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -728,10 +731,6 @@ class LetterReadout(unittest.TestCase):
         self.assertIs(svc._systemone_readout(), sl)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PromptVariants(unittest.TestCase):
     """The per-type prompt variants (docs/research/prompt_variants.md §3).
 
@@ -1091,6 +1090,31 @@ class PromptVariantConfig(unittest.TestCase):
         self.assertIn('  no means "chit-chat" ; yes means "outage"',
                       sysone.render_answer_prompt("STATE", name, q,
                                                   svc._decision_prompt_variant("noul")))
+
+
+class StartupRefusal(unittest.TestCase):
+    """The config check at startup: the letter readout and a prompt variant cannot be
+    used together (serve/server.py:8842-8847).  The check runs before the server
+    binds, so the server is started with the mock engine and must exit with the
+    message - no GPU, no real engine, no port is held."""
+
+    def test_the_letter_readout_and_a_prompt_variant_are_refused(self):
+        config = {"model_name": "test-model",
+                  "systemone": {"enabled": True, "diagnostics": True,
+                                "readout": "letters",
+                                "prompt": {"noul": "swap"}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.json"
+            cfg.write_text(json.dumps(config), encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, "-m", "serve.server", "--engine", "mock",
+                 "--config", str(cfg), "--port", "0"],
+                cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+        output = (proc.stdout or "") + (proc.stderr or "")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("cannot be used together", output)
+        self.assertIn('"readout": "letters"', output)
+        self.assertIn("prompt variant", output)
 
 
 if __name__ == "__main__":
