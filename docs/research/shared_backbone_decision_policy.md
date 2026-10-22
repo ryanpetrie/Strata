@@ -2573,3 +2573,191 @@ letter readout is shipped as the opt-in readout it is - the config's `"systemone
   (no engine file changed); no test with more than 26 options against a live model
   (the sample's widest question has 7 options, so that path was not exercised
   live); no second model.
+
+---
+
+## 21. The letter readout on jev-bench, against the humans (2026-10-21)
+
+§20 measured the letter readout on the 235-item OpenDecisions sample: it won the
+official Capability by 3.4 points.  This section is the **independent check**, on the
+population that carries the **human label distributions** - jev-bench's 3% sample,
+683 items, 280 of them with a human distribution over the options.  It is the check
+that decides whether the letter readout could ever be the default, because the
+question there is not "is the model right" but "is the model's uncertainty as wide as
+the humans'".
+
+**The answer: the letter readout loses, clearly.**  Capability **48.3** against the
+direct readout's **55.1** (or 55.2 for the stored live run), and the mean distance to
+the human distribution goes from **0.4439** to **0.4688**.  It loses on every type,
+and its calibration drops by 11.5 points.
+
+### 21.1 The run
+
+**ENGINE FRESHLY RESTARTED** (§12.5): the server tree was stopped, the engine
+process exited with it, and the server was started again from the worktree with the
+letter-arm config (`"systemone": {"readout": "letters"}`, no temperature), so the
+model was loaded from scratch before the run.  The server started at 21:56:43, the
+model was loaded ~42 s later, the run took 2396 s and ended at 22:37:30.
+
+```
+python tools/decision_policy/jevbench.py --items <jevbench_sample3_items.jsonl> \
+  --out <jevbench_sample3_letter_predictions.jsonl> \
+  --log <jevbench_sample3_letter_predictions.runlog.jsonl> --config <the letter config>
+python <score.py> <jevbench_sample3_letter_predictions.jsonl> --data <jevbench_sample3_items.jsonl>
+```
+
+**683 of 683 answered, 0 failures, no 502.**  **539 items took the letter fast path;
+144 fell back**, every one of them with the reason "more options than letters" (§21.4).
+The minimum free VRAM was **1099 MiB** (1207 at load), above the engine's 1024 MiB
+warning threshold, no sample below it.
+
+### 21.2 The official scorer, against item 1.2's direct arm
+
+| arm | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---|---|---|
+| the direct arm (the stored T = 1 run) | **55.2** | **46.7** | **63.7** | 70.7% / 68.3 | 74.3% / 60.4 | 47.9% / 62.3 |
+| the direct arm (item 1.2's paired arm) | 55.1 | 46.6 | 63.6 | 71.1% / 69.3 | 74.3% / 57.8 | 48.5% / 63.6 |
+| **the letter arm** | **48.3** | **44.4** | **52.2** | 69.7% / 44.9 | 72.5% / 56.5 | 47.3% / 55.2 |
+
+(per type: accuracy and the scorer's calibration component; the competence numbers are
+in §21.5.)  The letter arm is **6.9 Capability points below** the direct arm, and the
+gap is almost all calibration (-11.5), not accuracy: the choice questions' accuracy is
+70.7% against 69.7%, the yes/no 74.3% against 72.5%, the score 47.9% against 47.3%.
+
+### 21.3 The distance to the human distribution
+
+The mean TVD over the 280 items that carry a human distribution, from the run logs'
+own stored per-item values:
+
+| | the direct arm | the letter arm |
+|---|---:|---:|
+| **all 280 items** | **0.4432** | **0.4688** |
+| the 130 choice items | 0.4697 | 0.5268 |
+| the 100 yes/no items | 0.3842 | **0.3559** |
+| the 50 score items | 0.4922 | 0.5437 |
+
+The letter readout is further from the humans on the choice questions and on the score
+questions, and **closer on the yes/no questions** - the one type where the humans are
+nearly certain (their entropy is 0.216 bits) and a sharper answer is the right one.
+
+### 21.4 The 144 items the letter readout could not serve
+
+Twenty-six letters, and jev-bench's multi-intent classification configs have more
+options than that: go_emotions (28 options, 50 items), ledgar (100, 23), massive (60,
+23), banking77 (77, 24), clinc150 (151, 24).  Those 144 questions have no letter for
+every option, so the letter readout declines them - and the endpoint then answers them
+from the **decode path**, which reports a degenerate 1.0/0.0 distribution and no
+probability at all.
+
+| the 144 items | Capability | Intelligence | Calibration | mean TVD |
+|---|---:|---:|---:|---:|
+| the direct arm | **58.4** | **60.3** | **56.5** | **0.7219** |
+| the letter arm | 38.1 | 58.2 | 18.1 | 0.8327 |
+
+The calibration collapses (56.5 → 18.1) because a confident wrong answer is what a
+degenerate distribution is.  **And the letter readout loses even on the 539 items it
+did serve**: Capability 57.8 → 53.8, Calibration 67.0 → 60.8, the mean TVD 0.3826 →
+0.3897.  On those items the choice questions' accuracy is the same (80.0% against
+80.0%) and the competence is the same (71.1 against 71.1); the loss is the
+calibration again (78.1 → 70.7).
+
+So the fallback is not the whole story: **the readout itself is worse on the items it
+can serve**, and the fallback makes it worse still.
+
+### 21.5 The mechanism: is the letter readout hedging?
+
+The hypothesis from §20's breakdown was that the letter readout's distribution over
+the ordinal levels is **flatter**, which pulls the expected level toward the middle
+and flatters the scorer's nMAE term.  **Measured, the opposite is true: the letter
+readout is SHARPER.**  The entropy of the reported distribution, the mass on its mode,
+and (for the score questions) the distance of the expected level from the gold:
+
+| | the direct arm | the letter arm |
+|---|---:|---:|
+| the choice questions' entropy | 0.531 bits | **0.188 bits** |
+| the choice questions' mass on the mode | 0.866 | **0.950** |
+| the yes/no questions' entropy | 0.312 bits | **0.251 bits** |
+| the score questions' entropy | 0.816 bits | **0.705 bits** |
+| the score questions' mass on the mode | 0.756 | **0.791** |
+| the score questions' argmax accuracy | **47.9%** | 47.3% |
+| the score questions' nMAE (the expected level's distance to the gold) | **0.2384** | 0.2450 |
+| the score questions' SIGNED distance (the expected level - the gold) | **+0.1348** | +0.2738 |
+
+On the items with a human distribution the shape is the whole story: the **humans are
+uncertain** (the choice questions' human distributions carry 1.144 bits of entropy),
+the direct readout answers with 0.803 bits on the same items, and the letter readout
+with **0.310 bits** - it is twice as certain as the direct readout and far more
+certain than the humans.  That is what the calibration component measures, and it is
+why the letter readout's choice calibration is 44.9 against the direct arm's 68.3.
+
+And on the score questions the OpenDecisions effect does not transfer: on that sample
+the letter readout's sharper distribution happened to centre better (the nMAE 0.0908
+against 0.1013, with the mode right less often: 72.9% against 79.7%); on jev-bench the
+same sharpening moves the expected level **further** from the gold (the signed
+distance +0.135 → +0.274, the nMAE 0.2384 → 0.2450), so the score type loses on both
+terms.
+
+### 21.6 The cost, and what it buys
+
+| | the direct arm | the letter arm |
+|---|---:|---:|
+| engine requests for the 683 items | 683 + **2171** (the trie walk: 163 colliding items, 5 to 30 extra each) | **683** (one per item; 539 with a real distribution, 144 with a degenerate one) |
+| latency median / p95 | 3137 / 9419 ms | 3293 / 6619 ms |
+| the paired median on the 539 served items | | **+209 ms** (the letter arm is slower) |
+| the paired median on the 144 fallback items | | **-1058 ms** (the letter arm is faster) |
+
+The letter readout makes **fewer engine requests** (683 against 2854: the direct path's
+trie walk costs 2171 extra rows on the 163 items whose options share their first
+token, up to 30 for one clinc150 item - a static count from the shipped code with the
+server's own tokenizer, `tools/decision_policy/trie_costs.py`) and it has a better
+p95, but it is slower on the median of the items it serves.  The 144 fallbacks cost
+no second request: the model's own text came with the same turn.
+
+So the trade is a real one: **the letter readout buys speed and simplicity with the
+quality of the distribution**, and on the population with the humans' labels it buys
+too much.
+
+### 21.7 What this settles
+
+* **The OpenDecisions win does not generalize.**  §20: +3.4 Capability.  Here:
+  **-6.9**.  Two populations, opposite signs, and the one with the human labels is
+  the one that decides the default question.
+* **The hedging hypothesis is refuted.**  The letter readout's distributions are
+  sharper, not flatter, in every type on both populations; the OpenDecisions score
+  gain was a sharpening that happened to centre better on that sample, and it does
+  not transfer.
+* **The letter readout cannot serve a question with more than 26 options**, and on
+  jev-bench that is 21% of the items; the fallback (the decode path) reports a
+  degenerate distribution and costs 20 Capability points on those items.  That part
+  is a fix, not a verdict: those questions should be read the direct way (the
+  options' own tokens, with the trie walk), not answered blind.
+* **The limits.**  One run of the letter arm, against a direct arm measured in
+  another session (item 1.2's), so the run-to-run wobble is not paired out of the
+  latency comparison; the jev-bench sample is validation-only and carries a per-source
+  licence, and its score questions are six-level similarity ratings, not the ordinal
+  routing questions of OpenDecisions, so the two populations' score types are not the
+  same thing.  The 280 items with a human distribution are the ones the distance
+  numbers rest on.
+* **What was not run.**  No second run of the letter arm; no direct arm re-run in
+  this session (the stored one is the reference); no run with a letter set larger than
+  26 letters; no run with the >26-options fallback changed to read those questions
+  the direct way; no GPU build (no engine file changed); no second model.
+
+### 21.8 The recommendation
+
+**Do not ship the letter readout as the default.**  The roadmap's exit criterion for
+item 1.3 is met on the OpenDecisions sample (§20: it wins Capability and simplicity
+without losing the latency), but this section is the independent check, and there the
+letter readout **loses Capability by 6.9 points**, loses the distance to the humans
+(0.4688 against 0.4432) and loses 11.5 points of calibration.  "Ship only if it wins
+on at least two of {Capability, latency, simplicity} without losing the other" does
+not survive a second population: the win was population-specific.
+
+What the letter readout is worth keeping for: it is **faster and simpler** where it
+works (one engine request per question, no trie walk, 683 requests against 2854 on
+jev-bench), and on the yes/no questions it is **closer to the humans** (the TVD 0.3559
+against 0.3842).  So the flag stays, the default stays the direct readout, and the
+next steps are: read the questions with more than 26 options the direct way instead
+of falling back to the decode path, and then measure the letter readout again on both
+populations - the OpenDecisions sample (where it won) and jev-bench (where it lost) -
+with that fix in, on one engine state, so the two can be compared paired.
