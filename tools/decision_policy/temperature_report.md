@@ -258,11 +258,12 @@ so its Intelligence is not fixed):
   right, the size is not known.  The Intelligence gain is the part that holds up;
   the Calibration gain is the least certain of the three.
 
-The files the fit read, with their digests:
+The files the fit read, with their digests (`<opencode temp>` is the temporary run
+directory, for example `%LOCALAPPDATA%\Temp\opencode`):
 
 | file | sha256 |
 |---|---|
-| items (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10_items.jsonl`) | `ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8` |
-| runlog (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\fix_serial.runlog.jsonl`) | `778db6e107621865bb776a956558cc4b1d240bc2e0ef1759e8b099e31759c453` |
-| predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\fix_serial.jsonl`) | `6ca1b3126673affcb4dbf566a58ec160d87106d5dfc713e779a5aff2a3942727` |
+| items (`<opencode temp>\opendecisions\sample10_items.jsonl`) | `ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8` |
+| runlog (`<opencode temp>\opendecisions\fix_serial.runlog.jsonl`) | `778db6e107621865bb776a956558cc4b1d240bc2e0ef1759e8b099e31759c453` |
+| predictions (`<opencode temp>\opendecisions\fix_serial.jsonl`) | `6ca1b3126673affcb4dbf566a58ec160d87106d5dfc713e779a5aff2a3942727` |
 

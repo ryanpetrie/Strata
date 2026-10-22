@@ -7,8 +7,9 @@ decides whether roadmap item 2.2's exit criterion can be tested as written.
 **What was measured and what was not.** Everything below is a measurement on this machine: the
 engine ran, the requests were sent, the bytes were compared. The script is
 `tools/decision_policy/lora_spike.py`; the raw results are in
-`C:\Users\ryanp\AppData\Local\Temp\opencode\lora_spike\` (`s01.json`, `s03-default.json`,
-`s03-nocpushare.json`, `s02.json` and the three engine logs). The engine was **not** changed: no
+`<opencode temp>\lora_spike\` - the temporary run directory,
+`%LOCALAPPDATA%\Temp\opencode` on this machine - as `s01.json`, `s03-default.json`,
+`s03-nocpushare.json`, `s02.json` and the three engine logs. The engine was **not** changed: no
 file under `src/`, `include/`, `metal/` or `sycl/` was touched, and no code was written for the
 adapter. One reading from the code is marked as unconfirmed static analysis (§6).
 
@@ -389,7 +390,7 @@ C:\tools\strata\.venv\Scripts\python.exe tools\decision_policy\lora_spike.py --o
 # the engine part (the server must be stopped: one engine instance may hold the card)
 C:\tools\strata\.venv\Scripts\python.exe tools\decision_policy\lora_spike.py \
     --config C:\tools\strata\strata-unsloth-ud-iq4_xs.json --only s0.1 \
-    --work C:\Users\ryanp\AppData\Local\Temp\opencode\lora_spike --out s01.json
+    --work <opencode temp>\lora_spike --out s01.json
 
 # the follow-up probe: the same LOGITS request eight times, back to back
 C:\tools\strata\.venv\Scripts\python.exe tools\decision_policy\lora_spike.py \

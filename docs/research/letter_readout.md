@@ -219,6 +219,9 @@ are the >26-options fix and a paired re-measurement on both populations.
 Both arms run over the same 235 ids, from the same build, on a freshly restarted
 engine (numbers from a long-running engine are invalid - the companion doc §12.5).
 
+In the commands below, `<opencode temp>` is the temporary run directory (on this
+machine, `%LOCALAPPDATA%\Temp\opencode`).
+
 ```sh
 # the engine: stop the running one, start it again with the arm's config, wait for
 # GET http://127.0.0.1:8080/v1/status to answer
@@ -226,18 +229,18 @@ C:\tools\strata\.venv\Scripts\python.exe strata.py serve --config <arm>.json
 
 # the run (the arm's config decides the readout)
 C:\tools\strata\.venv\Scripts\python.exe tools\decision_policy\opendecisions.py \
-  --items C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\opendecisions.jsonl \
+  --items <opencode temp>\opendecisions\opendecisions.jsonl \
   --out <arm>.jsonl \
-  --ids-file C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10.txt \
+  --ids-file <opencode temp>\opendecisions\sample10.txt \
   --batch-k 1
 
 # the score (the official scorer)
-C:\tools\strata\.venv\Scripts\python.exe C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py \
-  <arm>.jsonl --data C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10_items.jsonl
+C:\tools\strata\.venv\Scripts\python.exe <opencode temp>\opendecisions\score.py \
+  <arm>.jsonl --data <opencode temp>\opendecisions\sample10_items.jsonl
 
 # the comparison (the picks that moved, the fast-path rate, the latency)
-C:\tools\strata\.venv\Scripts\python.exe C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\compare_arms.py \
-  --items C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10_items.jsonl \
+C:\tools\strata\.venv\Scripts\python.exe <opencode temp>\opendecisions\compare_arms.py \
+  --items <opencode temp>\opendecisions\sample10_items.jsonl \
   --before <direct>.jsonl --after <letters>.jsonl \
   --before-runlog <direct>.runlog.jsonl --after-runlog <letters>.runlog.jsonl
 ```

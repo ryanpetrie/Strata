@@ -239,11 +239,12 @@ so its Intelligence is not fixed):
   right, the size is not known.  The Intelligence gain is the part that holds up;
   the Calibration gain is the least certain of the three.
 
-The files the fit read, with their digests:
+The files the fit read, with their digests (`<opencode temp>` is the temporary run
+directory, for example `%LOCALAPPDATA%\Temp\opencode`):
 
 | file | sha256 |
 |---|---|
-| items (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\items\p1b_pool.jsonl`) | `eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7` |
-| runlog (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.runlog.jsonl`) | `60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72` |
-| predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.jsonl`) | `7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589` |
+| items (`<opencode temp>\decision_policy_training\items\p1b_pool.jsonl`) | `eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7` |
+| runlog (`<opencode temp>\decision_policy_training\run\p1b_pool_T1.runlog.jsonl`) | `60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72` |
+| predictions (`<opencode temp>\decision_policy_training\run\p1b_pool_T1.jsonl`) | `7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589` |
 
