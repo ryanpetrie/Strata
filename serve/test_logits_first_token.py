@@ -908,6 +908,17 @@ class EngineWireFormat(unittest.TestCase):
         self.assertEqual(logz, 3.0)
         self.assertEqual(tokens, [7])
 
+    def test_park_zero_sits_between_max_new_and_the_ids(self):
+        # the decision path's opt-in key (docs/research/conversation_cache_oneshot.md): the engine's keys come
+        # BEFORE the ids (src/program/generate.cpp's key loop), so `park=0` there is the only place it parses
+        eng = self._engine(["L 1000 2.0", "DONE 0 2 3 4 stop"])
+        eng.logits([11, 22], 64, 32, threading.Event(), park=False)
+        written = eng.proc.stdin.write.call_args[0][0]
+        self.assertEqual(written, "LOGITS 64 32 park=0 11,22\n")
+        m = re.fullmatch(r"LOGITS (\d+) (\d+) park=0 ([\d,]+)\n", written)
+        self.assertIsNotNone(m, f"the server wrote {written!r}, which the engine cannot parse")
+        self.assertEqual([int(t) for t in m[3].split(",")], [11, 22])
+
     def test_the_engine_accepts_the_line_the_server_writes(self):
         # the engine's own parser (src/program/generate.cpp): LOGITS <k> <max_new> <ids>
         eng = self._engine(["L 1000 2.0", "DONE 0 2 3 4 stop"])
