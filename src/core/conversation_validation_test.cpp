@@ -211,7 +211,7 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     fail_copy = copy_calls + 1;
     check(!conversation_kv_verify(image.kv.back(),draft.st,g,9,false,fingerprint,error), "read-back transfer failure is not a successful fingerprint");
     reset(); copied_bytes = 0;
-    const ConversationView view{image.live.ids,image.live.imgs,image.checkpoints,true};
+    const ConversationView view{image.live.ids,image.live.imgs,image.checkpoints,true,kLoraNone};
     SavedConversation full,incremental;
     check(conversation_snapshot_save(full,view,ss,g,draft.st,error), "full capture through host transfer backend");
     const size_t full_copies = copied_bytes;

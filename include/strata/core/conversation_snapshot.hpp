@@ -83,6 +83,10 @@ struct ConversationView {
     const std::vector<ConversationImageKey>& images;
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
+    /// The adapter state the session these cells are read from was computed with (`ConversationLora`,
+    /// conversation_cache.hpp).  Carried into the image beside `cvec`: a captured image that lost it would be handed
+    /// to the next request as base-model state, whatever model actually wrote it.
+    ConversationLora lora;
 };
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
                                  const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);

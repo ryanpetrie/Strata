@@ -1,10 +1,12 @@
 // On-disk persistence of a conversation's state (SavedConversation): one file holding the running state, the
 // checkpoints the caller passes (the engine passes only the deepest one), every QSA layer's authoritative K/V and
-// the draft layer's K/V.  Pure host code: no CUDA.  Format v1 and the fail-closed read order are in
+// the draft layer's K/V.  Pure host code: no CUDA.  Format v2 and the fail-closed read order are in
 // docs/DETAILS.md (Session files).
 //
-// Format v1 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
+// Format v2 is little-endian, with fixed-width integers and IEEE-754 floats; a big-endian build is refused at
 // compile time.  The hashes detect accidental corruption; they do not authenticate a file: restore trusted files only.
+// v2 is v1 plus the image's adapter state (`SavedConversation::lora`, one 64-bit word in the payload); the reader
+// refuses a v1 file by its version rather than parsing a payload whose fields have moved.
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
@@ -79,9 +81,10 @@ struct SessionConfig {
     // scale, summed), the mode, the layer range and the direction; 0 when none is loaded
     uint64_t cvec = 0;
     // the LoRA adapter as loaded: `lora_digest` over its bytes, rank, alpha, target set and scaling; 0 when none is
-    // resident.  RECORDED FOR STEP 6 (commit C7) AND NOT USED YET: it is in neither `session_config_fingerprint`
-    // (`src/core/conversation_file.cpp`) nor the saved file, so two runs with different adapters still match the
-    // same saved state.  C7 must add it to both and bump the file version; until then nothing reads this field.
+    // resident.  In the fingerprint beside `cvec`: a file saved with one adapter must not be restored into a process
+    // that loaded another (or none), because the cells were computed by the adapted model and nothing in them says
+    // so.  Which STATE each request ran in is a separate question, and it lives per image in `SavedConversation::lora`
+    // (`ConversationLora`), not here: one engine answers both adapted and base requests.
     uint64_t lora = 0;
     // the arithmetic switches that change the computed state (name, value), in a fixed order
     std::vector<std::pair<std::string, int64_t>> switches;
