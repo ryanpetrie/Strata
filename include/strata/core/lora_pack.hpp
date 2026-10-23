@@ -16,10 +16,11 @@
 //
 // THE ORIENTATION, which is the trap this format exists to survive.  `ne0` is the CONTIGUOUS axis, the pack's
 // own convention (`include/strata/core/family_layout.hpp:12`), so an element (i, j) sits at `i + ne0 * j` and
-// the file holds each matrix TRANSPOSED against its row-major source: for a base tensor of GGUF shape
-// [out, in], the adapter's A is ne0=rank ne1=in (the file holds [in][rank]) and B is ne0=out ne1=rank (the file
-// holds [rank][out]).  Hugging Face / PEFT keep the LAST axis contiguous, so BOTH A and B are transposed on the
-// way in - the plan's first draft said only B (`docs/research/phase2_engine_lora_plan.md` 2.1, corrected by
+// the file holds each matrix TRANSPOSED against its row-major source: for a base tensor of GGUF shape [in, out]
+// (dim 0 is the CONTIGUOUS axis, which is the projection's INPUT), the adapter's A is ne0=rank ne1=in (the file
+// holds [in][rank]) and B is ne0=out ne1=rank (the file holds [rank][out]).  Hugging Face / PEFT keep the LAST axis
+// contiguous, so BOTH A and B are transposed on the way in - the plan's first draft said only B
+// (`docs/research/phase2_engine_lora_plan.md` 2.1, corrected by
 // `docs/research/phase2_lora_spike.md` 3).  Getting either one wrong produces a delta of the same magnitude as
 // the right answer and uncorrelated with it (measured: 27175 and 24515 against a norm of 24344, cosines -0.103
 // and 0.015), with no error anywhere.  `lora_delta_f32` below is the host reference that catches it.
@@ -55,8 +56,8 @@ struct LoraMatrix {
 /// stored transposed (see the orientation note above), so `delta = scale() * B @ (A @ x)`.
 struct LoraTarget {
     std::string base;  ///< the engine's name for the base tensor, e.g. "blk.3.attn_q.weight"
-    int64_t out = 0;   ///< the base tensor's ne0
-    int64_t in = 0;    ///< the base tensor's ne1
+    int64_t out = 0;   ///< the base tensor's ne1: the output width (GGUF order is [in, out])
+    int64_t in = 0;    ///< the base tensor's ne0: the contiguous axis, i.e. the projection's input
     int64_t rank = 0;
     double alpha = 0.0;
     LoraMatrix a;
