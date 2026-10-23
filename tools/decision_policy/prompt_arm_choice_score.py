@@ -170,8 +170,7 @@ def score_block(items: list[dict], base: dict, arm: dict) -> dict:
         s["tvd_ci"] = list(paired_ci(
             [tvd(base[it["id"]], h) - tvd(arm[it["id"]], h) for it, h in zip(both, hs)]))
         s["signed_ci"] = list(paired_ci(
-            [abs(b - hl) - abs(a - hl)
-             for b, a, hl in zip(base_levels, arm_levels, human_levels)]))
+            [b - a for b, a in zip(base_levels, arm_levels)]))
         s["top_items_lost"] = s["top_matches_base"] - s["top_matches_arm"]
         # the baseline the rule names: one point prediction at the humans' mean level
         mean_level = sum(human_levels) / len(both)
