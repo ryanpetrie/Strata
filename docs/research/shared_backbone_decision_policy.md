@@ -4078,3 +4078,81 @@ calibration one.
 **The limits, stated up front.**  One 3-level config with human labels; two 5-level configs with gold only; no
 engine is started (every arm is the stored T = 1 run re-scaled, `retemperature.py`'s principle); the 235 is
 reported, not judged; one parameter per config (no pooling across K, no per-family fit, no interaction with T).
+
+### 26.2 The results
+
+**Run: `tools/decision_policy/score_location.py`, `--out-json score_location.json --out-report
+score_location_report.md`, 2026-10-22.**  Its output files are in `tools/decision_policy/` beside the other arms.
+No engine was started: every arm is the stored T = 1 run re-scaled.
+
+| config | K | n (pool) | b_c | pool: T = 1 | pool: out of fold | the pool, paired (map - T = 1) |
+|---|---:|---:|---:|---|---|---|
+| `measuring_hate_speech` | 3 | 250 | **-2.203** | TVD 0.4106 | TVD **0.3299** | **-0.0807 [-0.1012, -0.0590]** |
+| `helpsteer2_helpfulness` | 5 | 125 | **+4.308** | level 1.044 | level 0.982 | -0.062 [-0.141, +0.020] |
+| `helpsteer2_verbosity` | 5 | 125 | **-4.249** | level 0.752 | level 0.648 | -0.104 [-0.197, -0.006] |
+
+| config | n (jev sample) | T = 1 | the map | the sample, paired | 26.1's tests |
+|---|---:|---|---|---|---|
+| `measuring_hate_speech` | 50 | TVD 0.4963 | TVD **0.3961** | **-0.1001 [-0.1405, -0.0554]** | (a) and (b) **pass** |
+| `helpsteer2_helpfulness` | 24 | level 0.928 | level 0.973 | +0.045 [-0.107, +0.191] | (c) and (d) pass by the letter |
+| `helpsteer2_verbosity` | 24 | level 0.790 | level **0.464** | **-0.326 [-0.509, -0.155]** | (c) and (d) pass |
+
+**Arm H passes both of its tests, and clearly.**  On `measuring_hate_speech` one location, `b = -2.2` (toward
+level 0), takes the out-of-fold TVD from 0.4106 to 0.3299 (**-0.0807 [-0.1012, -0.0590]**) on the pool it was
+fitted on, and from 0.4963 to 0.3961 (**-0.1001 [-0.1405, -0.0554]**) on the jev-bench sample's 50 items of the
+same config.  The five folds agree on the constant (-2.261, -2.357, -1.904, -2.137, -2.342), so this is not one
+fold carrying the result.  It is also the same **mechanism** 1.4 found for the noul: the error is a signed
+offset - here the model reads too much hate speech on a population whose gold levels average 0.55 out of 2, so
+it sits above the people - and a location, not a scale, moves it.
+
+**The two 5-level arms pass the letter of the rule and are NOT a calibration.**  Two things say so, and the
+second is a diagnostic run after these numbers were read (so it is reported as a qualifier, not a pre-registered
+test):
+
+1. **The constants are unstable or the gain is inside the noise.**  `helpsteer2_helpfulness` fits `b = 4.308`,
+   but its folds fit 3.486 to 5.291, and the pooled change (-0.062 levels) has a 95% interval through zero.
+   `helpsteer2_verbosity` fits -4.249 with folds -4.067 to -4.516 (stable) and a pooled change of -0.104
+   [-0.197, -0.006], which is real but small.
+2. **A constant that knows nothing but the population's mean level beats the fitted map on
+   `helpsteer2_verbosity`.**  "Predict the pool's mean gold level for every item" scores a mean |level error|
+   of **0.431** on verbosity (against T = 1's 0.752 and the map's 0.648).  On `helpsteer2_helpfulness` the
+   same prior scores 1.103, which is *worse* than T = 1's 1.044 - there the map's 0.982 is the best of the
+   three, but only 0.062 better than doing nothing.  So the tilt moves the model's distribution centre toward
+   the population's gold mean (verbosity) or leaves it barely better (helpfulness); it does not make the
+   distribution better per item.  For a 5-level question with gold-only labels that is all a one-parameter
+   location *can* do, which is why 26.1 said a pass here would be the weaker claim.
+
+**The 235, reported and not judged.**  Its **59** score items (26.1's table said 69 - that count was wrong; no
+test depends on it) at T = 1: mean |expected level - gold| **0.306 levels**, argmax accuracy **0.780**.  No arm
+is applied to them, because none of their configs is a jev config: a fitted b would arrive there as a foreign
+constant, which is the transfer 1.1b and 1.4 already measured failing.
+
+**The unit, as 26.1 predicted.**  Inside one config the normalised axis and the raw level index are the same
+one-parameter family, so the normalisation did no work in any of these three fits.  What 1.4 got wrong was
+sharing one b across K = 3, 4 and 5 with a raw index - not the index itself.  This run therefore does **not**
+vindicate "per config on the normalised axis" as a new mechanism; it measures one location per config, which is
+what the data could support.
+
+**Verdict, per 26.1.**
+
+* **Arm H (`measuring_hate_speech`): the location is a real, transferable fix for this config** - (a) and (b)
+  both pass, on out-of-fold data and on a sample it was never fitted on.  It is still a constant for one
+  population, and 1.1b/1.4 measured what a constant does on a third.  **No constant ships.**
+* **Arm G (`helpsteer2_helpfulness`, `helpsteer2_verbosity`): this line closes for these configs.**  The rule
+  passes, but a population-mean prior beats the map on verbosity, and on helpfulness the map's 0.062-level gain
+  has a 95% interval through zero with folds scattered from 3.5 to 5.3.  The finding is the one the exit
+  criterion named in advance: **with gold-only labels the score's location is a task property here, not a
+  calibration** - the information a per-item location would need is not in the labels this machine has.
+* **The one thing that would reopen it** is a human distribution for a 5-level score config.  There is none on
+  this machine (26.1's table); the licence record's rules decide where one could come from.
+
+**The limits, and what was not run.**
+
+* One 3-level config with human labels, two 5-level configs with gold only, one seed (42) and five folds; the
+  bootstrap is the programme's paired item bootstrap, 1,000 resamples.
+* The jev-bench samples are 50 and 24 items: Arm G's 24-item intervals are wide by construction, and (d)'s
+  0.10-level margin is generous for that size.
+* No engine, no live run: every arm is the stored T = 1 reading re-scaled, so this says nothing about the
+  endpoint's latency or about a live temperature.
+* No pooling across K, no per-family fit, no interaction with T, and no per-item (state-dependent) calibration -
+  the last is the thing a location cannot be.

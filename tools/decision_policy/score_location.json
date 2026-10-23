@@ -1,0 +1,235 @@
+{
+ "when": "2026-10-22",
+ "map": "p'_k = normalize(p_k * exp(b_c * (u_k - 0.5))), u_k = k/(K-1), T = 1",
+ "folds": 5,
+ "seed": 42,
+ "margins": {
+  "jev_tvd": 0.005,
+  "jev_level": 0.1
+ },
+ "arms": [
+  {
+   "config": "measuring_hate_speech",
+   "k": 3,
+   "n_pool": 250,
+   "b": -2.203,
+   "folds": [
+    {
+     "fold": 0,
+     "b": -2.261,
+     "fitted_on": 200,
+     "held": 50
+    },
+    {
+     "fold": 1,
+     "b": -2.357,
+     "fitted_on": 200,
+     "held": 50
+    },
+    {
+     "fold": 2,
+     "b": -1.904,
+     "fitted_on": 200,
+     "held": 50
+    },
+    {
+     "fold": 3,
+     "b": -2.137,
+     "fitted_on": 200,
+     "held": 50
+    },
+    {
+     "fold": 4,
+     "b": -2.342,
+     "fitted_on": 200,
+     "held": 50
+    }
+   ],
+   "objective": "soft",
+   "metric": "tvd",
+   "pool": {
+    "t1_mean": 0.4106060152326013,
+    "oof_mean": 0.32987929192279686,
+    "paired": {
+     "n": 250,
+     "mean": -0.08072672330980443,
+     "p025": -0.10123162474451625,
+     "p975": -0.05895743672179867,
+     "share_better": 0.752,
+     "resamples": 1000
+    }
+   },
+   "jev": {
+    "n": 50,
+    "t1_mean": 0.49625996438563985,
+    "arm_mean": 0.3960674689759759,
+    "paired": {
+     "n": 50,
+     "mean": -0.10019249540966403,
+     "p025": -0.14088340099983238,
+     "p975": -0.05524968227238884,
+     "share_better": 0.78,
+     "resamples": 1000
+    },
+    "b": -2.203
+   },
+   "verdict": {
+    "a_pool_improves": true,
+    "b_jev_not_worse": true,
+    "passes": true
+   }
+  },
+  {
+   "config": "helpsteer2_helpfulness",
+   "k": 5,
+   "n_pool": 125,
+   "b": 4.308,
+   "folds": [
+    {
+     "fold": 0,
+     "b": 5.291,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 1,
+     "b": 5.257,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 2,
+     "b": 3.773,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 3,
+     "b": 3.801,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 4,
+     "b": 3.486,
+     "fitted_on": 100,
+     "held": 25
+    }
+   ],
+   "objective": "gold",
+   "metric": "level",
+   "pool": {
+    "t1_mean": 1.0439071329966685,
+    "oof_mean": 0.9820773402012909,
+    "paired": {
+     "n": 125,
+     "mean": -0.06182979279537748,
+     "p025": -0.14067469734191543,
+     "p975": 0.020149105962749176,
+     "share_better": 0.648,
+     "resamples": 1000
+    },
+    "t1_accuracy": 0.336,
+    "oof_accuracy": 0.376
+   },
+   "jev": {
+    "n": 24,
+    "t1_mean": 0.928084301905003,
+    "arm_mean": 0.9733238452630388,
+    "paired": {
+     "n": 24,
+     "mean": 0.045239543358035796,
+     "p025": -0.10663839536486826,
+     "p975": 0.19121858720518303,
+     "share_better": 0.4583333333333333,
+     "resamples": 1000
+    },
+    "b": 4.308
+   },
+   "verdict": {
+    "c_pool_level_falls": true,
+    "d_jev_not_worse": true,
+    "passes": true
+   }
+  },
+  {
+   "config": "helpsteer2_verbosity",
+   "k": 5,
+   "n_pool": 125,
+   "b": -4.249,
+   "folds": [
+    {
+     "fold": 0,
+     "b": -4.059,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 1,
+     "b": -4.516,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 2,
+     "b": -4.197,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 3,
+     "b": -4.067,
+     "fitted_on": 100,
+     "held": 25
+    },
+    {
+     "fold": 4,
+     "b": -4.443,
+     "fitted_on": 100,
+     "held": 25
+    }
+   ],
+   "objective": "gold",
+   "metric": "level",
+   "pool": {
+    "t1_mean": 0.7517892399488052,
+    "oof_mean": 0.6481939992558504,
+    "paired": {
+     "n": 125,
+     "mean": -0.1035952406929548,
+     "p025": -0.19725213145235723,
+     "p975": -0.0061152258010702025,
+     "share_better": 0.664,
+     "resamples": 1000
+    },
+    "t1_accuracy": 0.472,
+    "oof_accuracy": 0.504
+   },
+   "jev": {
+    "n": 24,
+    "t1_mean": 0.7898198744993138,
+    "arm_mean": 0.46366459145478034,
+    "paired": {
+     "n": 24,
+     "mean": -0.32615528304453345,
+     "p025": -0.5088463017556525,
+     "p975": -0.1550979165025725,
+     "share_better": 0.8333333333333334,
+     "resamples": 1000
+    },
+    "b": -4.249
+   },
+   "verdict": {
+    "c_pool_level_falls": true,
+    "d_jev_not_worse": true,
+    "passes": true
+   }
+  }
+ ],
+ "od_235": {
+  "n": 59,
+  "mean_abs_level_error": 0.3059204055993025,
+  "accuracy": 0.7796610169491526,
+  "text": "The 235's 59 score items at T = 1: mean |expected level - gold| 0.306 levels, argmax accuracy 0.780. No arm is applied to them: none of their configs is a jev config, so a fitted b would arrive there as a foreign constant (26.1)."
+ }
+}
