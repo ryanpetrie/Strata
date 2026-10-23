@@ -613,7 +613,7 @@ class ServiceLogitsPath(unittest.TestCase):
     def test_engine_error_falls_back(self):
         svc = svc_with("q: a\n")
 
-        def boom(ids, k, max_new, cancel):
+        def boom(ids, k, max_new, cancel, park=True):
             raise RuntimeError("boom")
         svc.engine.logits = boom
         code, body = svc.systemone(req(), threading.Event())

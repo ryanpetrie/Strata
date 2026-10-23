@@ -56,9 +56,9 @@ def count_logits(svc: Service) -> list:
     calls = []
     original = svc.engine.logits
 
-    def counting(ids, k, max_new, cancel):
+    def counting(ids, k, max_new, cancel, park=True):
         calls.append(list(ids))
-        return original(ids, k, max_new, cancel)
+        return original(ids, k, max_new, cancel, park)
     svc.engine.logits = counting
     return calls
 
@@ -316,9 +316,9 @@ class MultiQuestion(unittest.TestCase):
         calls = []
         original = svc.engine.logits
 
-        def counting(ids, k, max_new, cancel):
+        def counting(ids, k, max_new, cancel, park=True):
             calls.append(svc.fifo.locked())
-            return original(ids, k, max_new, cancel)
+            return original(ids, k, max_new, cancel, park)
         svc.engine.logits = counting
         code, body = svc.systemone(self.req(), threading.Event())
         self.assertEqual(code, 200)

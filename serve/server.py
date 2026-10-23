@@ -311,10 +311,12 @@ ENGINE_READY_S = _timeout_env("STRATA_ENGINE_READY_S", 900.0)
 
 # ------------------------------------------------------------------------------------------------ engines
 def decision_park_off() -> bool:
-    """`STRATA_DECISION_PARK=1`: the decision path asks the engine not to park its conversations (`park=0` on the
-    LOGITS line).  The engine key is opt-in per request and absent means today's line, byte for byte; this switch is
-    what the first measurement turns on (docs/research/conversation_cache_oneshot.md)."""
-    return os.environ.get("STRATA_DECISION_PARK", "0") not in ("", "0")
+    """The decision path asks the engine not to park its conversations (`park=0` on the LOGITS line): a one-shot
+    question never reuses the state it leaves, so the park only costs a cache slot and evicts the chat.  Measured
+    (docs/research/conversation_cache_oneshot.md §11), so it is on by default; `STRATA_DECISION_PARK=0` (or empty)
+    turns it off and restores the park.  The engine key is opt-in per request: an engine without it skips the key and
+    parks as before, so both directions of a version skew are safe."""
+    return os.environ.get("STRATA_DECISION_PARK", "1") not in ("", "0")
 
 
 class Engine(Protocol):
@@ -4526,9 +4528,10 @@ class Service:
     def _engine_logits(self, ids, k, max_new, cancel):
         """One LOGITS request on the engine, for the decision path.
 
-        `STRATA_DECISION_PARK=1` adds the engine's `park=0`: the conversation this
-        request reads is not parked for the next one.  Off (the default), the call is
-        today's, argument for argument, and so is the line the engine sees."""
+        It carries the engine's `park=0` by default: the conversation this request
+        reads is not parked for the next one.  `STRATA_DECISION_PARK=0` turns the
+        key off and sends today's call, argument for argument, and the line the
+        engine sees is today's."""
         if decision_park_off():
             return self.engine.logits(ids, k, max_new, cancel, park=False)
         return self.engine.logits(ids, k, max_new, cancel)
