@@ -411,6 +411,7 @@ is in the companion doc's section 20.
 | `prompt_arm_run.py` | source | one prompt arm for the choice or the score: that type's 500 pool items, resume-safe, the endpoint's own probabilities and a runlog. |
 | `prompt_arm_choice_score.py` | source | the choice's and the score's pre-registered rule (companion doc §27): the TVD, the top-label mass, the expected level, the mean-level prior, the per-config hard half, and the 235 and jev-bench yardsticks. |
 | `test_prompt_arm_choice_score.py` | source | that rule's arithmetic: the TVD, the expected level on the item's order, the prior, the per-config halves, and the verdicts on a good and a bad arm. |
+| `letter_fallback.py` | source | what the letter readout's >26-option fallback costs: the three arms from the two stored jev-bench runs, the two subsets, and the pre-registered verdict. |
 | `prompt_design_set.py` | source | the design set's composition: the noul's two halves and their base rates. |
 | `test_prompt_probe.py` | source | the probe's arithmetic: the readouts and the pre-registered reading of them. |
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
