@@ -4324,3 +4324,75 @@ margin is re-chosen after a number is seen.
 * OpenDecisions remains validation-only and is a yardstick only. Nothing here is fitted on
   it.
 * One model, one quantization, one card, one item order, no AMD or Mac engine.
+
+## 28. The choice's prompt arms: two real position effects, and the confidence guard catches both (2026-10-23)
+
+The pre-registration is §27.3. Five arms (base + C1-C4) on the pool's 500 choice items,
+one fresh server and engine per arm, N4 kept on the noul in every config, the temperature
+absent. 500 of 500 items answered in every arm, **500/500 on the fast path**, 0 failures;
+the median latency 4.6-5.3 s and the median prompt 2,712-2,780 tokens (reported, not
+judged - the arms ran sequentially on one card, and no isolated timing run is part of the
+protocol).
+
+**The base arm.** On the 250 soft items (`go_emotions`, 28 options), the model's mean TVD
+to the human distribution is **0.6774**, its top-label mass **0.7478** against the humans'
+**0.5705**, and its top pick matches the humans' majority on **79 of 250** (31.6%). On the
+250 hard-label items the accuracy is **80.8%**, the per-config ECE 0.1172-0.1362. The
+choice is far from the people in both directions: too peaked, and often wrong about which
+option they prefer.
+
+| arm | (a) the mean TVD | (b) the humans' majority | (c) the hard half | verdict |
+|---|---|---|---|---|
+| **C1** `options-order` | **+0.0153** [+0.0016, +0.0296] | 79 -> 85 (**+6**) | -4 items (ledgar), ECE **+0.0497** | **FAIL** |
+| **C2** `evidence` | +0.0030 [-0.0045, +0.0106] | 79 -> 80 (+1) | -2 items, ECE +0.0250 | **FAIL** |
+| **C3** `one-best` | +0.0015 [-0.0049, +0.0083] | 79 -> 80 (+1) | +0 items, ECE +0.0054 | **FAIL** |
+| **C4** `options-first` | **+0.0287** [+0.0122, +0.0450] | 79 -> 89 (**+10**) | +0 items, ECE **+0.0383** | **FAIL** |
+
+The margins are §27.3's: 0.0074 on the TVD, 3 items on the majorities, 0.02 on the ECE.
+
+**Two levers are inert, and they are the two that change the instructions.** C2 (an added
+line saying what to do) moves the TVD by 0.0030 and C3 (the same rule as a shorter edit) by
+0.0015, both intervals through zero. On the choice, telling the model *how* to pick changes
+nothing measurable.
+
+**The two levers that change POSITION are real, and both are caught.** C1 reverses the
+options and C4 puts them before the question. Both cut the TVD by more than the margin with
+an interval clear of zero, both raise the humans' majority (6 and 10 items of 250), and both
+lower the top mass toward the humans'. But:
+
+* **C1 is a base-rate shift.** The 62 of 250 picks that moved cost 4 items on `ledgar`
+  (78.8% -> 73.8%) and raise its ECE by 0.050. A first-listed option's prior is exactly
+  what the option order is, and the hard half's four configs disagree about the cost, which
+  is the check (c) exists for.
+* **C4 is the batch's one real calibration effect, and the confidence guard is its only
+  failure.** Accuracy is unchanged on the hard half (+0 items, 3 of 4 configs within a
+  point), but the top probability's ECE rises **0.0383** overall (`massive` +0.038,
+  `clinc150` +0.017, `banking77` +0.009; `ledgar` -0.011). The distribution gets closer to
+  the people and the *confidence attached to the pick* gets less honest on the second
+  population. That is the same trade N1, N3 and N5 made on the noul, in a different metric.
+
+**No choice arm ships.** The rule is not re-chosen after the numbers: C4 clears every test
+but (c), so it cannot ship, and the 235 and jev-bench yardsticks were not run - §27.3 makes
+them guards for a candidate, and a variant that fails (a)-(c) cannot be rescued by them.
+**The batch's finding is that the prompt lever is not a noul-only thing**: the choice's
+template can move the humans' majority by 4 points (79 -> 89 of 250) and the distance to
+the people by 0.029, and no variant does it without a second-population cost.
+
+**A note on the guard, for the next experiment, not this one.** A single top-probability
+ECE over questions with 60-151 options is a coarse instrument; C4's failure is driven by
+`massive`'s 50 items (+0.038) while its accuracy does not move. If the choice's arms are
+revisited, the pre-registration should use a guard that separates "the confidence lost its
+ordering" from "the mean confidence moved" (for example the AUC of the top probability
+against correctness, which is a ranking measure). That is a new rule and needs its own
+pre-registration; nothing here changes today's verdict.
+
+**The limits, and what was not run.**
+
+* One run per arm. The margins come from the per-type run-to-run SD measured on the
+  jev-bench runs (0.0348, `prompt_variants.md` §5.2), not from a repeat of this pool; the
+  pool's own base repeat is not run.
+* Half A is one config (`go_emotions`, 28 options) and the humans' majority is the argmax
+  of a soft distribution, not a second human label. Half B is four configs whose option
+  count runs 60-151, so (c) is four small checks, not one 250-item one.
+* Not run: the 235, the jev-bench sample, a repeat, any AMD or Mac engine, a second model,
+  an isolated latency comparison.

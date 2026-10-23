@@ -479,7 +479,19 @@ on the 250 `measuring_hate_speech` items and the mean absolute level error **per
 5-level config** on the 250 `helpsteer2` items (gold only - no human distribution exists
 for a 5-level config), with the mean-level prior reported beside it. The margins come from
 each type's measured run-to-run SD (choice 0.0348, score 0.0255): 0.0074 and 0.0060 on the
-primary metrics after the Bonferroni correction for four variants.
+primary metrics after the Bonferroni correction for four variants).
+
+**The choice's arms ran (2026-10-23): none ships, and the batch found a real effect.**
+All four variants were inert on the instructions (C2 +0.0030 and C3 +0.0015 on the TVD,
+intervals through zero) and the two that move the options' **position** were real: C1
+`options-order` cuts the soft half's TVD by **0.0153** and raises the humans' majority by 6
+items, C4 `options-first` cuts it by **0.0287** and raises it by **10** items (79 -> 89 of
+250), both intervals clear of zero. Both fail rule (c): C1 loses 4 `ledgar` items and raises
+the ECE by 0.0497, C4 keeps the accuracy and raises the ECE by 0.0383 on the hard-label
+population. So the prompt lever is **not noul-only** - it can move the choice's distance to
+the people by 0.029 - but no variant clears the confidence guard on a second population.
+The 235 and jev-bench yardsticks were not run: no arm cleared the design set, and they are
+guards for a candidate. The record is companion doc §28; the score's arms are the next run.
 
 **What the design measured, and it changes the item's shape.** The per-item SD of
 the change in P(answer) between two runs of the same code is **0.0337** on the
