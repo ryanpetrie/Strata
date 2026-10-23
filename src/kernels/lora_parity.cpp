@@ -285,8 +285,10 @@ int main() {
         std::fprintf(stderr, "lora_upload: %s\n", err.c_str());
         return 2;
     }
-    check(k::lora().loaded() && k::lora().n_entries == (int64_t) spec.size() && k::lora().n_layers == 4,
-          "the device table holds every entry and stops at the last adapted layer");
+    check(k::lora().loaded() && k::lora().n_entries == (int64_t) spec.size() && k::lora().n_layers == 4 &&
+              k::lora().n_blocks == 2,
+          "the device table holds every entry and stops at the last adapted layer; n_blocks counts the two it "
+          "touches (n_layers is the span to layer 3 + 1, which a summary must not print as a count)");
     check(k::lora().covers(0) && k::lora().covers(3) && !k::lora().covers(1) && !k::lora().covers(4),
           "covers(): the two adapted layers, no others, and not past the table");
     check(k::lora_enabled(), "a fresh upload starts ON");

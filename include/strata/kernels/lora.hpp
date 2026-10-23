@@ -98,7 +98,8 @@ struct Lora {
     const int* on = nullptr;            ///< device int of the UPLOADING device: 0 = this request runs the base model.
                                         ///< `lora_apply_layer` reads the current device's own copy, so a caller that
                                         ///< launches its own kernel must not reuse this pointer after a layer split.
-    int64_t n_layers = 0;
+    int64_t n_layers = 0;   ///< `layers`' length: the highest adapted layer + 1, a SPAN, not a count of adapted blocks
+    int64_t n_blocks = 0;   ///< the layers the adapter actually touches (the count a summary should print)
     int64_t n_entries = 0;
     uint64_t bytes = 0;  ///< the fp16 A and B tables, as allocated
     bool loaded() const { return layers != nullptr && n_entries > 0; }

@@ -428,6 +428,8 @@ bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string
     g_lora = Lora{};
     g_lora.layers = g_layers_host.data();
     g_lora.n_layers = (int64_t) g_layers_host.size();
+    g_lora.n_blocks = 0;
+    for (const LoraLayer& l : g_layers_host) g_lora.n_blocks += l.n > 0 ? 1 : 0;
     g_lora.n_entries = (int64_t) g_plan.size();
     g_lora.bytes = (uint64_t) g_tables_host.size() * sizeof(uint16_t);
     g_on_host = true;   // a new adapter starts ON, like a new control vector
