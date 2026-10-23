@@ -945,7 +945,7 @@ decisive ones, which is why 1.1b and 1.5 are built that way.
 | 1.2 | jev-bench TVD to the human distribution | Lower than 0.4432 | **NOT met**: 0.4439 -> 0.4678; Capability 55.1 -> 52.0 |
 | 1.3 | The letter readout ships | Wins on two of three without losing the other | **Does not ship.** Met on OpenDecisions (82.7 vs 79.3, 0 extra requests); loses on jev-bench (48.3 vs 55.1). Opt-in flag stays |
 | 1.4 | The noul's TVD to the human distribution | Lower than **0.3844** (the shipping T = 1 arm; not 0.3897, which was the failed T = 0.67 arm) | **0.1234 out-of-sample** on the jev-bench test — and the same shift takes the 235 from 78.9 to 41.5 (wrong in sign there). **No constant ships** |
-| 1.4b | The score's TVD / the 235's score competence | Per-config location on `k/(K−1)`; TVD down and competence not down | not run |
+| 1.4b | The score's TVD / the 235's score competence | Per-config location on `k/(K-1)`; TVD down and competence not down | **Arm H passes**: `measuring_hate_speech` pool out-of-fold TVD 0.4106 -> 0.3299, jev sample 0.4963 -> 0.3961 (**-0.1001 [-0.1405, -0.0554]**). **Arm G closes**: the 5-level configs are gold-only, a mean-level prior beats the map on verbosity (0.431 vs 0.648), helpfulness gains 0.062 levels with an interval through 0. **No constant ships**; the 235 is reported (59 score items, level error 0.306) and not judged - no config match |
 | 1.5 | A prompt variant ships | The pre-registered rule's (a)-(f) | **N4 `criteria-first` clears all six** (TVD -0.0687, AUC -0.0013, 2 items on half B, 235 = a base re-run, jev noul -0.0623), and **reproduces** at -0.0620 [-0.0827, -0.0423] on a fresh-engine 100-item run. Not applied; one config key away |
 | Cache | A chat survives a decision burst; the walk's reuse intact | `M5 ≥ 0.9 × N5`, `evictions = 0` for the fix; `M5 = 0`, `evictions ≥ 18` without | **MET**: 99.6% reuse (0%), 0 evictions (19), the walk 99.5%/99.9% intact, the 235 235/235. Not the default yet |
 | Cache | The decision path's latency | No regression beyond the margin | **not measured** (shared card); not claimed |
@@ -975,6 +975,7 @@ distributions. They agree on one thing, and it is the result:
 | the letter readout (1.3) | **+3.4** Capability | **-6.9**, TVD 0.4439 -> 0.4688 |
 | the prompt's option order (1.5 probe) | not measured | a prior shift of +0.0212 P(yes), AUC unchanged |
 | **the prompt's criteria-first (1.5, N4)** | **80.7, the same as a base re-run; 4 picks of 235 move, net zero on the noul** | **the pooled noul ECE falls 0.3362 -> 0.2726 [-0.0875, -0.0464], AUC unchanged** |
+| a per-config location on the score (1.4b) | not applicable - none of the 235's score configs is a jev config | **`measuring_hate_speech` TVD 0.4963 -> 0.3961 [-0.1405, -0.0554]** (and the pool out-of-fold 0.4106 -> 0.3299); the two 5-level configs move 0.06 levels at best and a mean-level prior beats one of them |
 
 **For the interventions that change how decisively the endpoint answers, the
 OpenDecisions number moved opposite to the human-label agreement.** The sharpening
