@@ -4168,3 +4168,156 @@ what the data could support.
   endpoint's latency or about a live temperature.
 * No pooling across K, no per-family fit, no interaction with T, and no per-item (state-dependent) calibration -
   the last is the thing a location cannot be.
+
+## 27. The choice's and the score's prompt arms: the pre-registration (2026-10-22)
+
+**Written before any arm was run.** It is the rule for roadmap item 1.5's other two
+question types (the noul's rule is `prompt_variants.md` §6 and its record is §23). The
+variants and their exact text are `prompt_variants.md` §3.2 (§C1-C4), §3.3 (§S1-S4) and
+§3.6 (the lines); the mechanism is built and its byte-identity tests pass. **No C or S arm
+has been run on the pool.** Every margin below is fixed by this section; if one changes,
+the change is written here with its date and the runs it invalidates.
+
+### 27.1 Why the two types need their own rule
+
+The noul's failure is a **bias** - a signed offset - so its rule is written around the mean
+signed difference. The other two fail differently, and a rule copied from the noul would
+judge the wrong thing:
+
+* **The choice's failure is a shape error.** Its top-label mass is **0.7862** against the
+  humans' **0.6215** (measured, prompt_variants §3.2): the model is more peaked than the
+  people, which is why item 1.1's temperature made it worse. The metric is therefore the
+  distance to the human distribution, with the top-label mass reported beside it as a
+  **diagnostic** (its per-item run-to-run noise is not measured, so it is not a test).
+* **The score's failure is a location error, and it is per config.** The model's mean
+  expected level is 0.33 of a three-level scale above the humans' on
+  `measuring_hate_speech` (measured, prompt_variants §2.5), and item 1.4b found the two
+  5-level configs disagree in sign. The metric is therefore the **mean signed level
+  difference** and the mean absolute level error **per config**, never pooled across K.
+
+The design set is the same licence-clean pool (`p1b_pool.jsonl`) and the same 500 items per
+type that the noul's run used. The halves are the pool's own:
+
+| type | half | items | configs | the labels |
+|---|---|---|---|---|
+| choice | A (soft) | 250 | `go_emotions` | a human distribution over 28 options |
+| choice | B (hard) | 250 | `banking77` 80 (77 options), `clinc150` 40 (151), `ledgar` 80 (100), `massive` 50 (60) | the gold option only |
+| score | A (soft) | 250 | `measuring_hate_speech` | a human distribution over 3 levels |
+| score | B (hard) | 250 | `helpsteer2_helpfulness` 125, `helpsteer2_verbosity` 125 | the gold level only, 5 levels |
+
+Half A is the only place the **humans'** number exists; half B is the base-rate check,
+exactly as on the noul. **Half B of the score is gold, not people** - item 1.4b established
+that no 5-level human distribution exists on this machine - so a score arm that wins on
+half A is a claim about `measuring_hate_speech`, and half B can only veto it.
+
+### 27.2 The arms and the measurement
+
+Each type is one pre-registered experiment: **the base arm** (today's template, byte for
+byte) plus its four variants, **500 of 500 items** per arm, the same order, one attempt per
+item, nothing retried, a **fresh server and engine per arm**, the temperature block absent
+(T = 1), and N4 `criteria-first` kept on the noul in every config (it does not change a
+choice or score item; it keeps the arm configs identical to the shipping one). Each arm's
+predictions and runlog are its own files, and the comparison is item by item.
+
+The variants, one axis each, from prompt_variants §3.6:
+
+* **choice:** C1 `options-order` (the option lines reversed), C2 `evidence` (one added
+  line: pick the option the state best supports), C3 `one-best` (the existing line gains
+  ", the one the state best supports"), C4 `options-first` (the options before the
+  question's header).
+* **score:** S1 `direction` (highest first, levels reversed), S2 `wording` (", lowest
+  first" removed, order unchanged), S3 `levels-first` (the levels before the header),
+  S4 `full-scale` (one added line: any level, not only the ends).
+
+### 27.3 The rule (pre-registered)
+
+**The choice: a variant ships only if all of these hold.**
+
+> **(a) Calibration, on the design set.** Half A's mean TVD to the human distribution
+> falls by more than **0.0074** against the base arm. That is the minimum detectable
+> effect at n = 250 from the measured per-item SD of the choice's change in P(answer),
+> **0.0348** (prompt_variants §5.2): SE = 0.0348/√250 = 0.00220, 2.802 x SE = 0.00616,
+> and 3.340 x SE = 0.0074 after the Bonferroni correction for the best of four variants
+> (two-sided 5%, 80% power). The top-label mass is reported, not tested.
+>
+> **(b) Ranking, on the design set.** Half A's accuracy against the humans' majority
+> option does not fall by more than **3 items** of 250 (1.2 points). This is a
+> non-inferiority check: a variant that flattens every distribution could lower the TVD
+> and lose the picks.
+>
+> **(c) The base rate, on the design set.** Half B's accuracy does not fall by more than
+> **3 items** of 250, and half B's ECE of the top probability against the gold does not
+> rise by more than **0.02**. Reported **per config**, because the option count runs from
+> 28 to 151 and an option-position prior need not act the same way at each length. This
+> is the check that kills C1 or C4 if what they really do is move the first-listed
+> option's prior.
+>
+> **(d) The OpenDecisions 235.** The **107** choice items' accuracy does not fall by more
+> than **2 items** against the base arm's own run, and the 235's Capability does not fall
+> by more than the measured base spread of **1.8 points** against the base arm's own run.
+> The base arm's own run must itself land within 1.8 of the stored **79.8** (78.0, 81.7),
+> or the run is invalid and is repeated. (The noul's 0.6-point clause is not repeated:
+> §23.5 measured it to be narrower than the base's own spread and unsatisfiable.)
+>
+> **(e) The jev-bench test sample.** Its choice items' accuracy does not fall by more than
+> **2 items**, and the sample's official Capability does not fall by more than **1.8**
+> points against the base arm's own run of the same items.
+>
+> **(f) The cost.** The fast-path rate does not fall below the base arm's, and the median
+> prompt tokens are reported. Latency is **reported, not judged**: the arms are run
+> sequentially on one card and no isolated timing run is part of this protocol.
+
+**The score: a variant ships only if all of these hold.**
+
+> **(a) The location, on the design set.** Half A's mean signed level difference (the
+> model's expected level minus the humans') moves toward zero by more than **0.006
+> levels**, **and** half A's mean TVD to the human distribution falls by more than
+> **0.006**. The 0.006 is the MDE at n = 250 from the score's measured per-item SD,
+> **0.0255** (SE 0.00161, 2.802 x SE = 0.0045, 3.340 x SE = 0.0054, rounded up).
+> **The mean-level prior is reported with the result** - a point prediction at the
+> humans' population mean level, the baseline item 1.4b found beats a fitted map on
+> verbosity - and an arm that does not beat it on the mean absolute level error is not a
+> calibration improvement, whatever its TVD.
+>
+> **(b) Ranking, on the design set.** Half A's top-level accuracy against the humans'
+> majority does not fall by more than **3 items** of 250.
+>
+> **(c) The base rate, on the design set, per config.** On each 5-level config
+> separately, the mean absolute level error against the gold does not rise by more than
+> **0.05 levels**, and the exact-level accuracy does not fall by more than **5 items** of
+> 125 (4 points). Both configs' **signed** errors are reported: a variant that moves both
+> in the same direction is moving the scale's prior, which is a base-rate shift by the
+> rule's own definition even if it helps one config. **S1 and S2 are the variants this
+> check exists for** (items 1.4b's +0.51 on verbosity and -0.39 on helpfulness are the
+> measured opposite signs).
+>
+> **(d) The OpenDecisions 235.** The **59** score items' mean absolute level error and
+> argmax accuracy do not fall by more than the pre-registered margins of **0.05 levels**
+> and **2 items**, against the base arm's own run; the 235's Capability stays within
+> **1.8 points** of the base arm's own run, with the base arm's own run inside 1.8 of the
+> stored 79.8 (the same clause as the choice's).
+>
+> **(e) The jev-bench test sample.** On its 50 `measuring_hate_speech` items with a human
+> distribution, the mean TVD does not rise by more than **0.005**; on its 24 + 24
+> `helpsteer2` items, the mean absolute level error per config does not rise by more than
+> **0.05**; the sample's ECE of the picked level does not rise by more than **0.02**.
+>
+> **(f) The cost.** As the choice's: the fast-path rate, the prompt tokens, and latency
+> reported but not judged.
+
+**If the design set and a yardstick disagree, the variant does not ship.** It is recorded
+as population-specific with both numbers, exactly as N1 was (§23). **If no variant ships,
+that is a result**: the template is not the lever for that type, and the write-up says what
+the arm measured and moves on. No variant is re-run on a different item order, and no
+margin is re-chosen after a number is seen.
+
+### 27.4 What this pre-registration does not claim
+
+* The margins are the noul's *method* with each type's own measured noise floor. The
+  choice's and the score's run-to-run SDs (0.0348 and 0.0255) are from the jev-bench runs
+  of prompt_variants §5.2, not re-measured here; the pool's own repeat is not run.
+* The hard halves are smaller than the soft ones per config (125 each for the score), so
+  rule (c) is coarser than half A's tests; it is a veto, not a measurement.
+* OpenDecisions remains validation-only and is a yardstick only. Nothing here is fitted on
+  it.
+* One model, one quantization, one card, one item order, no AMD or Mac engine.
