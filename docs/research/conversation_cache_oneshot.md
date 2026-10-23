@@ -298,7 +298,7 @@ options above are ranked partly by how little engine they touch. (b2) is the
 only one that needs a build.
 
 * **The build.** `src/program/generate.cpp` is the `strata` target
-  (`CMakeLists.txt:724`), compiled as CUDA and, with `STRATA_ENABLE_HIP`, as HIP
+  (`CMakeLists.txt:728`), compiled as CUDA and, with `STRATA_ENABLE_HIP`, as HIP
   from the same sources (`generate.cpp:9094` has the HIP branch). SYCL and Metal
   are separate trees (`sycl/`, `metal/`); `generate.cpp` has no
   `STRATA_USE_METAL` (**static analysis**: I did not build either). Per the
@@ -341,7 +341,7 @@ Each is separately reviewable and testable.
 | 2 | the stopgap: the minimum length | the user's `strata-unsloth-ud-iq4_xs.json` (not this repo) | none; revert = delete the flag | §6.1 before/after; `skip parking` lines appear for the 20 decisions |
 | 3 | the `park=0` key | `src/program/generate.cpp` (`:11983`, `:12013`, `:9130`, `:12587`, `:14934`, `:883`), `docs/DETAILS.md` near `:1181` | medium: per-session state in the serve loop; needs CUDA + HIP builds | a manual `LOGITS ... park=0` then another request → no `parked` line; `park=1` → a `parked` line; the walk still shows `N-10 reused + 10 read` |
 | 4 | the server sends it | `serve/server.py:2168` (an argument to `Engine.logits`), behind `STRATA_DECISION_PARK` | low: one call site, decision-only | `serve/test_decision_engine_turn.py`: the line written to the engine carries `park=0`; the chat's `GEN` lines do not |
-| 5 | the measurement | a new `tools/decision_policy/cache_churn.py` | none | §6.1-6.3, both arms, 3 runs each |
+| 5 | the measurement | the scripts as run are outside the repository (`<opencode temp>\cache_measure`: `run_cache.py`, `cache_arm.py`, `analyze.py`); the plan named a `tools/decision_policy/cache_churn.py` that was not added | none | §6.1-6.3, both arms, 3 runs each |
 | 6 | make it the default | `serve/server.py` (drop the gate), this doc (the numbers) | low, but only after step 5 passes | the same measurement, one more time (§12) |
 
 Step 2 can ship alone and should, because it helps the user today. Step 3 does
@@ -387,12 +387,12 @@ for byte (§10.4), and the tests that say so are in §10.3.
 | `src/core/conversation_cache_test.cpp` | `561-573` | the engine test of that rule and of the slot it saves (§10.3) |
 | `serve/server.py` | `312-317` | `decision_park_off()`: `STRATA_DECISION_PARK` set and not `0` or empty (on by default since step 6, §12) |
 | | `2154-2184` | `StrataEngine.logits(..., park=True)`; `park=False` writes ` park=0` between `max_new` and the ids |
-| | `4514-4522` | `Service._engine_logits`, the one call the decision path uses. Off, it calls `self.engine.logits(ids, k, max_new, cancel)`, argument for argument today's |
-| | `4534` | the trie walk's steps take it (`_logits_row`) |
-| | `4685-4686` | the base request takes it |
+| | `4528-4537` | `Service._engine_logits`, the one call the decision path uses. Off, it calls `self.engine.logits(ids, k, max_new, cancel)`, argument for argument today's |
+| | `4758` | the trie walk's steps take it (`_logits_row`) |
+| | `4732` | the base request takes it |
 | `docs/DETAILS.md` | `1189-1197` | the key, what it does, what it does not do, and the log line |
 | `serve/test_decision_engine_turn.py` | `285-371` | the server's tests: off by default, on with the switch, on every walk step, never on a chat's `GEN` |
-| `serve/test_logits_first_token.py` | `911-921` | the wire format of `LOGITS <k> <max_new> park=0 <ids>` |
+| `serve/test_logits_first_token.py` | `1026-1031` | the wire format of `LOGITS <k> <max_new> park=0 <ids>` |
 
 The state is per session because parking is not the request's own decision: the request
 that *reads* a conversation decides whether it may be parked, and the request that
@@ -727,7 +727,7 @@ Capability points and differ in 2 noul items, §23); the key changes no arithmet
 | chat 5: `N = M reused + K read` | 7,463 = **7,404** + 59 (**99.2%** reused) |
 | evictions after the 20 decisions | **0** |
 | `parked=` at the end | 1 |
-| `skip parking (park=0)` lines | **25** (20 decisions + 5 walk steps) |
+| `skip parking (park=0)` lines | **25 in the cache session** (20 decisions + 5 walk steps; the 235 run in the same file adds 314) |
 | walk steps | `1,878 = 1,868 + 10` and `1,879 = 1,878 + 1` (99.5% / 99.9%) |
 | decisions | 20 base requests, all `0 reused` (the key does not make a fresh conversation reusable) |
 
@@ -742,7 +742,7 @@ not apply: the chat's `M5` is 99.2% on the run the decisions were interleaved wi
 
 **The limits of this run.** It is **one** run, not three: the effect's repeatability is
 §11's three runs an arm, and this run confirms the shipped configuration reproduces it.
-The `--resident-budget-gib 20` departure from §11 is gone: the host had 51.8 GiB free and
+The `--resident-budget-gib 20` departure from §11 is gone: the host had 51.5 GiB free and
 the admission accepted every park, so the 20 GiB copies §11 needed were not needed here.
 Latency is **not** a result: the run's own median was 4.6 s and p95 9.1 s per decision,
 but no same-day before arm was run on a quiet card, and §6.2's margin is not claimed.

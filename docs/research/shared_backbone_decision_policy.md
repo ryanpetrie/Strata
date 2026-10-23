@@ -4251,7 +4251,7 @@ The variants, one axis each, from prompt_variants §3.6:
 > **(c) The base rate, on the design set.** Half B's accuracy does not fall by more than
 > **3 items** of 250, and half B's ECE of the top probability against the gold does not
 > rise by more than **0.02**. Reported **per config**, because the option count runs from
-> 28 to 151 and an option-position prior need not act the same way at each length. This
+> 60 to 151 and an option-position prior need not act the same way at each length. This
 > is the check that kills C1 or C4 if what they really do is move the first-listed
 > option's prior.
 >
@@ -4337,14 +4337,14 @@ protocol).
 **The base arm.** On the 250 soft items (`go_emotions`, 28 options), the model's mean TVD
 to the human distribution is **0.6774**, its top-label mass **0.7478** against the humans'
 **0.5705**, and its top pick matches the humans' majority on **79 of 250** (31.6%). On the
-250 hard-label items the accuracy is **80.8%**, the per-config ECE 0.1172-0.1362. The
+250 hard-label items the accuracy is **80.8%**, the per-config ECE 0.0545-0.1362. The
 choice is far from the people in both directions: too peaked, and often wrong about which
 option they prefer.
 
 | arm | (a) the mean TVD | (b) the humans' majority | (c) the hard half | verdict |
 |---|---|---|---|---|
 | **C1** `options-order` | **+0.0153** [+0.0016, +0.0296] | 79 -> 85 (**+6**) | -4 items (ledgar), ECE **+0.0497** | **FAIL** |
-| **C2** `evidence` | +0.0030 [-0.0045, +0.0106] | 79 -> 80 (+1) | -2 items, ECE +0.0250 | **FAIL** |
+| **C2** `evidence` | +0.0030 [-0.0045, +0.0106] | 79 -> 80 (+1) | gained 2 items, ECE +0.0250 | **FAIL** |
 | **C3** `one-best` | +0.0015 [-0.0049, +0.0083] | 79 -> 80 (+1) | +0 items, ECE +0.0054 | **FAIL** |
 | **C4** `options-first` | **+0.0287** [+0.0122, +0.0450] | 79 -> 89 (**+10**) | +0 items, ECE **+0.0383** | **FAIL** |
 
@@ -4365,8 +4365,8 @@ lower the top mass toward the humans'. But:
   what the option order is, and the hard half's four configs disagree about the cost, which
   is the check (c) exists for.
 * **C4 is the batch's one real calibration effect, and the confidence guard is its only
-  failure.** Accuracy is unchanged on the hard half (+0 items, 3 of 4 configs within a
-  point), but the top probability's ECE rises **0.0383** overall (`massive` +0.038,
+  failure.** Accuracy is unchanged on the hard half (+0 items, 2 of 4 configs within a point (3 of 4 within one
+  item), but the top probability's ECE rises **0.0383** overall (`massive` +0.038,
   `clinc150` +0.017, `banking77` +0.009; `ledgar` -0.011). The distribution gets closer to
   the people and the *confidence attached to the pick* gets less honest on the second
   population. That is the same trade N1, N3 and N5 made on the noul, in a different metric.
@@ -4415,7 +4415,7 @@ re-measurement):**
 
 1. **Screen at n = 100 per half.** Run the base arm and each variant on 100 soft and 100
    hard items first, with the pre-registered margins scaled to that n (§27.3's arithmetic:
-   MDE = 2.802 x SD/sqrt(n), Bonferroni over the arms). A variant that fails any guard stops
+   MDE = 2.802 x SD/sqrt(n) uncorrected, 3.08 with the two-arm correction). A variant that fails any guard stops
    there. **Most do**: in the choice's batch, two of four were inert at 250 and would have
    been inert at 100.
 2. **Only survivors go to 250 + the yardsticks.** A variant that clears the screen is the
