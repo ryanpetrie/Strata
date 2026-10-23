@@ -3995,3 +3995,86 @@ evicted, and it is the one the after arm keeps.
   re-measured.
 
 
+
+## 26. The score's location, per config (1.4b) (2026-10-22)
+
+**26.1 is written BEFORE the run**, like 20.2 and 24.2: the rule below is committed before the first effect is
+read.  The counts in the data table were taken first (which items exist, in which config, with which labels), and
+they are not effects.
+
+### 26.1 The question, the data, and the rule
+
+1.4 closed with a finding and an open item.  The finding: the score's error at T = 1 is not one location.  On the
+jev-bench sample `helpsteer2_helpfulness` sits 0.39 levels BELOW the gold and `helpsteer2_verbosity` 0.51
+ABOVE it, so the type-wide +0.14 is two opposite errors cancelling; and a tilt fitted on the raw level index is
+not the same size on a 3-level question as on a 5-level one.  The open item (1.4b) asks whether a location on the
+NORMALISED position `u_k = k/(K-1)`, fitted PER CONFIG, transfers where the type-wide constant did not.
+
+**What the data on this machine can answer, counted before any effect was looked at.**
+
+| population | score items | with a human distribution | with a stored T = 1 run |
+|---|---:|---:|---|
+| the licence-clean pool | 500 | **250** (`measuring_hate_speech`, K = 3) | 1,500 of 1,500 |
+| the pool's `helpsteer2_helpfulness` / `_verbosity` | 125 + 125 (K = 5) | **0** - gold level only | yes |
+| the jev-bench sample, `measuring_hate_speech` | 50 | **50** | 683 of 683 |
+| the jev-bench sample, `helpsteer2_*` | 24 + 24 (K = 5) | **0** - gold only | yes |
+| the OpenDecisions 235 | 69 | 13 (its calibration items) | yes |
+
+Three consequences, and they shape the experiment rather than excuse it:
+
+* **The unit does not matter for a fit inside ONE config.**  With K fixed, `b * k/(K-1)` and `b' * k` describe
+  the same one-parameter family (`b' = b/(K-1)`) and give identical distributions.  Normalising matters when one
+  b is SHARED across configs of different K - which is what 1.4 did, and what made its tilt incommensurable - and
+  it matters for comparing fitted b's across configs.  So "per config on the normalised position" is, for a
+  single config, "one location fitted for that config", and this section says so instead of letting the
+  normalisation look like the thing being tested.
+* **Only one config can be fitted against PEOPLE**: `measuring_hate_speech` (K = 3), 250 pool items, transferred
+  to the 50 jev-bench sample items of the same config.  The two `helpsteer2` configs have no human distribution
+  anywhere on this machine, so their arm can only be fitted against the GOLD LEVEL - a location toward the gold,
+  not toward the annotators' spread.  That is a weaker target, and the rule below says so.
+* **The OpenDecisions 235 cannot be the yardstick for a per-config constant.**  Its 69 score items are
+  OpenDecisions' own families at K = 3, 4 and 5; none of them is a jev config, so a b fitted for
+  `measuring_hate_speech` would arrive there as a foreign constant - the transfer 1.1b and 1.4 already measured
+  failing.  The 235 is therefore reported for information (its score competence at T = 1, unchanged) and is
+  **not** a pass condition here.
+
+**The map.**  For a score question with K levels, `u_k = k/(K-1)`:
+
+    p'_k = normalize( p_k * exp(b_c * (u_k - 0.5)) ),   one b_c per config
+
+`T = 1` in every arm (a location, not a scale: 1.4's scale arm is measured and does not ship).  The `- 0.5` is
+cosmetic - a constant in the exponent cancels in the normaliser - and it makes `b_c = 0` the identity and `b_c`
+comparable across configs.
+
+**Arm H (against people).**  Config `measuring_hate_speech`.  Fit b by minimising the mean cross-entropy against
+the human distribution (the `soft` objective of 1.1b and 1.4), 5-fold leak-free CV
+(`temperature.stratified_folds`, seed 42), one b per held-out fold fitted on the other four.
+
+**Arm G (against the gold).**  Configs `helpsteer2_helpfulness` and `helpsteer2_verbosity`.  Fit b by
+minimising the mean cross-entropy against the ONE-HOT gold level, same folds and seed.  This is the only target
+the data carries for these configs, and a pass here says the level error is movable - not that the reported
+distribution is better calibrated against people.
+
+**The rule, fixed now.**
+
+| | the test | the baseline it must beat |
+|---|---|---|
+| **(a)** | Arm H: the pool's out-of-fold TVD to the human distribution improves | the pool's T = 1 arm (one run, paired) |
+| **(b)** | Arm H: the jev-bench sample's TVD for the same config does not get worse by more than **0.005** | T = 1, paired |
+| **(c)** | Arm G, each config: the pool's out-of-fold mean absolute LEVEL error (expected level minus gold) falls | T = 1, paired |
+| **(d)** | Arm G, each config: the jev-bench sample's mean absolute level error does not get worse by more than **0.10 levels** | T = 1, paired |
+
+0.005 is 1.1b's own margin (a fifth of what 1.1's constants cost on the human labels); 0.10 levels is a quarter
+of the smaller of 1.4's two measured errors (0.39).  Both are fixed before the numbers, so "not worse" cannot
+become "better" later.
+
+**What a pass means, and what it does not.**  A pass means the score's error is a LOCATION that a per-config
+constant can move, out of sample, which would make a per-workload calibration (the endpoint told which config it
+is serving) worth building.  It does not ship a constant: the fitted b's would be constants for these
+populations, and 1.1b and 1.4 measured what a constant does on a third.  A fail on (a)/(b) closes Arm H, and a
+fail on (c)/(d) closes Arm G, with the finding that the score's location there is a task property, not a
+calibration one.
+
+**The limits, stated up front.**  One 3-level config with human labels; two 5-level configs with gold only; no
+engine is started (every arm is the stored T = 1 run re-scaled, `retemperature.py`'s principle); the 235 is
+reported, not judged; one parameter per config (no pooling across K, no per-family fit, no interaction with T).
