@@ -286,11 +286,16 @@ human uncertainty.**
 
 So the letter readout stays an **opt-in flag** (`"systemone": {"readout":
 "letters"}`), the default stays the direct readout, and the item is recorded in the
-companion doc as a **population-specific** result. What would change the verdict:
-letters for a question with more than 26 options currently falls back to the
-decode path (144 of the 683 items, reporting a degenerate 1.0/0.0) — reading those
-the direct way, then one paired run of both arms on both populations, is the
-measurement that would settle it.
+companion doc as a **population-specific** result. **The >26-option fallback is fixed and
+measured (2026-10-23).** A question with more options than letters is now rendered and
+read on the direct path instead of falling back to decode, and the offline paired analysis
+of the two stored runs (the fix makes those requests byte-identical to the direct arm's, so
+no second engine run is needed) splits the loss cleanly: the fallback costs **3.8** of the
+6.9 Capability points and the readout costs the other **3.1** (fixed arm 52.1 against the
+direct arm's 55.2; human TVD 0.449 against 0.443). The flag stays opt-in and nothing becomes
+the default; the remaining deficit is the readout's own, not a bug. The record is
+`letter_readout.md`'s "The >26-option fallback: the result" and
+`tools/decision_policy/letter_fallback.py`.
 
 ### 1.4 Fit an AFFINE calibration per type, not a temperature (added 2026-10-21)
 

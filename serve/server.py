@@ -4645,6 +4645,12 @@ class Service:
         model wrote nothing at the answer position."""
         from serve import systemone as sysone
         readout = self._systemone_readout()
+        if hasattr(readout, "letter_options") and any(
+                readout.letter_options(q) is None for _, q in questions):
+            # A mixed request, or one question with more options than letters: the
+            # direct readout renders and parses it, as it does when the letters are off
+            # (the same rule as the single-question path's).
+            readout = sysone
         messages = [{"role": "system", "content": readout.system_message(questions)},
                     {"role": "user", "content": readout.render_prompt(
                         state_text, questions, getattr(self, "systemone_prompt", None))}]
@@ -4687,6 +4693,14 @@ class Service:
         # default) or as a letter (the config's "systemone": {"readout": "letters"}).
         # Both have the same shape, so the rest of the path does not change.
         readout = self._systemone_readout()
+        if hasattr(readout, "letter_options") and readout.letter_options(q) is None:
+            # More options than there are letters: there is no letter for every
+            # option, so the direct readout answers it - the same prompt and the same
+            # reading the token path has always used.  Falling back to the decode path
+            # here would report a degenerate 1.0/0.0 distribution (one of the two
+            # reasons the letter readout loses on jev-bench's long-option questions;
+            # docs/research/letter_readout.md).
+            readout = sysone
         # The answer line's prefix, prefilling the ASSISTANT's turn.  It ends at the
         # colon and NOT at a space: the answer's own space is part of the first token
         # the model writes (the merged " no"), so a prompt ending in a lone space
