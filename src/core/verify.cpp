@@ -34,6 +34,7 @@
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/route_prior.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
 #include "strata/kernels/gr.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -1293,6 +1294,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         }
         stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
+        // ---- the LoRA adapter's three activation rows for this group, indexed by `act` (`LoraIo`): the layer's
+        // input, the attention output after the heads are combined, and the SSM output.  The pointers are fixed
+        // here; their CONTENTS are written inside the branch below, because an entry's input is exactly the vector
+        // the base projection just read.  A layer kind's entries never name the other kind's activation - the loader
+        // checks every target against the model's own tensor list - so an unused pointer is never read.
+        strata::kernels::LoraIo lora_io[strata::kernels::kLoraActCount] = {
+            {xm, N}, {attn32_ + (size_t) tb * NH * HD, NH * HD}, {y_ + (size_t) tb * ZV, ZV}};
+        // Whether the adapter touches THIS layer: with no adapter, or one that does not, every site below is a no-op
+        // and the base path is untouched (the exit criterion's mechanical form).
+        const bool lora_here = strata::kernels::lora().covers(l);
         bool il_ready = false;   // xil_ holds xq_'s interleaved copy (reset whenever xq_ is rewritten)
         // a projection input's q8_1 blocks and their interleaved copy in one launch (native_quantize_q8_1_il, the same
         // bytes): Turing default (+0.5..+1 % decode, two launches fewer per GDN layer and per QSA layer); STRATA_QIL=0 / 1
@@ -1322,6 +1333,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             }
         };
         try {
+            if (lora_here) strata::kernels::lora_layer_begin(l);   // nothing of this layer applied yet (lora.hpp)
             if (!is_qsa_layer(g, l)) {
                 // ======================= GDN =======================
                 const WeightRef *wqkv = need(v, "attn_qkv.weight", err), *wg = need(v, "attn_gate.weight", err),
@@ -1375,6 +1387,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 const bool fuse_ab = fuse_convab_on() && !br && !batch_rec_ && !prof_on_ && !sidem;   // the side mixer computes the gates on its branch
                 if (!side_proj) mm(wqkv, qkv + (size_t) tb * C, (int) N, (int) C);   // with side_proj: above, first
+                // LoRA, attn_qkv.  HERE, not at the end of the block: the conv below reads this output, so a delta
+                // added after the recurrence would be written into a buffer nothing reads again - the projection
+                // would silently answer from the base weights.  Both writers are already done: side_proj's `mm` above
+                // also runs on `cs`, and this line's.
+                if (lora_here)
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_qkv.weight",
+                                                       {qkv + (size_t) tb * C, C}, cs);
                 stamp(l, 2, grp);
                 if (batch_rec_) {   // contiguous rows may be proposals for the same slot
                     for (int t = tb; t < te;) {
@@ -1418,6 +1437,13 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     return false;
                 }
                 }
+                // LoRA, attn_gate: its output is `z_` (the gate projection, ssm_value_dim wide), read by the
+                // recurrence below and by nothing in between.  Every variant has written it by here: the in-line `mm`
+                // in the else above, side_proj's branch (waited on `pjoin_` above) and `br`'s (joined at the top of
+                // the else).  NOT `gate`/`beta`: those are ssm_alpha/ssm_beta, which this build cannot serve.
+                if (lora_here)
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_gate.weight", {z_ + (size_t) tb * ZV, ZV},
+                                                       cs);
                 // the recurrence from the untouched state over tokens [0, te); outputs only for this group's
                 static const bool gdn_groups_on = [] {   // STRATA_BATCH_GDN_GROUPS=1, all slots in one launch
                     const char* v = std::getenv("STRATA_BATCH_GDN_GROUPS");
@@ -1457,6 +1483,10 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 if (!g_qfuse() || batch_rec_) quant_in(y_ + (size_t) tb * ZV, (int) ZV);
                 else il_ready = false;
                 mm(wout, bo_ + tb * N, (int) ZV, (int) N);
+                // LoRA, ssm_out: its input is the recurrence's `y_` (still the float image it wrote - quant_in above
+                // only reads it) and its output is this block's result, so the end of the block is its place.
+                if (lora_here)
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "ssm_out.weight", {bo_ + (size_t) tb * N, N}, cs);
             } else {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
@@ -1510,6 +1540,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     fork(0);
                     native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
                                 (int) (NH * 2 * HD), n, df_side_[0]);
+                    // LoRA, attn_q.  Right after the projection and before the q/gate split below, on the same
+                    // side stream: the split turns half of this output into the attention gate, so a delta added
+                    // after it would never reach the attention.  `qbr` is this path's own copy of the projection -
+                    // `q_chain` is the other call site for the same tensor, on `cs` or on side_proj's stream.
+                    if (lora_here)
+                        strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_q.weight",
+                                                           {qfull_ + (size_t) tb * NH * 2 * HD, NH * 2 * HD},
+                                                           df_side_[0]);
                     copy_rows_strided(qcur_ + tb * NH * HD, qfull_ + tb * NH * 2 * HD, (int64_t) n * NH, HD, 2 * HD,
                                       df_side_[0]);
                     norm_rope_on(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH, df_side_[0]);
@@ -1592,6 +1630,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                                                                    qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD), n, ns);
                     else native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N,
                                      (int) (NH * 2 * HD), n, ns);
+                    // LoRA, attn_q: the same site as `qbr`'s, on whichever stream this chain runs on (`cs` in line,
+                    // side_proj's own stream when the queries are forked), and before the q/gate split for the same
+                    // reason.
+                    if (lora_here)
+                        strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_q.weight",
+                                                           {qfull_ + (size_t) tb * NH * 2 * HD, NH * 2 * HD}, ns);
                     if (qb) {
                         if (fuse_nr) {   // the q/gate split reads q straight out of the q|gate rows (stride 2 * HD)
                             native_qsa_rms_norm_rope(qfull_ + tb * NH * 2 * HD, (int) (2 * HD), (const float*) wqn->data,
@@ -1642,6 +1686,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 7, grp);
                 mm(wk, kcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
                 mm(wv, vcur_ + tb * NKV * HD, (int) N, (int) (NKV * HD));
+                // LoRA, attn_k and attn_v: both outputs are written by the two `mm`s above, both on `cs`, and both
+                // are read by the norm/RoPE/rotation and the K/V append below - so this is the last point at which a
+                // delta reaches the model (later, the buffers hold the normalized and rotated form).
+                if (lora_here) {
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_k.weight",
+                                                       {kcur_ + (size_t) tb * NKV * HD, NKV * HD}, cs);
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_v.weight",
+                                                       {vcur_ + (size_t) tb * NKV * HD, NKV * HD}, cs);
+                }
                 if (qb) norm_rope(kcur_ + tb * NKV * HD, wkn, (int) (n * NKV), (int) HD, pos_k + tb * NKV);
                 else for (int t = tb; t < te; ++t) norm_rope(kcur_ + t * NKV * HD, wkn, (int) NKV, (int) HD, pos_ + t * NH);
                 if (st.kv_rot) {   // K and V rotated before they are stored (kv_q4.hpp)
@@ -1826,7 +1879,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 stamp(l, 14, grp);
                 quant_in(attn32_ + tb * NH * HD, (int) (NH * HD));
                 mm(wo, bo_ + tb * N, (int) (NH * HD), (int) N);
+                // LoRA, attn_output: its input is the gated attention image `attn32_` (the fp32 value the out
+                // projection just read) and its output is this block's result.
+                if (lora_here)
+                    strata::kernels::lora_apply_tensor(l, n, lora_io, "attn_output.weight",
+                                                       {bo_ + (size_t) tb * N, N}, cs);
             }
+            // Every entry of a layer the adapter targets must have found its site above.  A forgotten one is a
+            // projection that answers from the base weights while the rest of the model is adapted - silent
+            // everywhere else, so it is refused here, at capture, with the tensor's name (lora.hpp).
+            if (lora_here) strata::kernels::lora_layer_end(l);
         } catch (const std::exception& e) {
             err = "verify layer " + std::to_string(l) + ": " + e.what();
             return false;

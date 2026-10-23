@@ -33,8 +33,11 @@
 // element (k, j) at `k + rank * j` and `b` is B^T with element (i, k) at `i + out * k`.  The host reference the
 // parity test compares against is `core::lora_delta_f32` (`src/core/lora_pack.cpp`), which sums in double.
 //
-// NOT BUILT HERE: the forward-path hooks (steps 3 and 4) and the cache/session key (step 6).  This file is the
-// device side only.
+// WHAT IS BUILT WHERE.  This file is the device side (the tables, the flag, the delta).  The forward-path hooks are
+// `src/core/verify.cpp` (step 3) and, still to come, the prompt read and the single-token path (step 4); the cache
+// and session key is `ConversationLora` in `include/strata/core/conversation_cache.hpp` (step 6).  The hook applies
+// one tensor at a time (`lora_apply_tensor`) because a layer's projections do not all finish at the same point -
+// see that function's comment - and `lora_layer_end` makes a forgotten site loud.
 #pragma once
 
 #include <cstdint>
@@ -131,6 +134,28 @@ bool lora_enabled();
 /// The index of base tensor `base` (e.g. "attn_k.weight") among `layer`'s entries, or -1 when the adapter does not
 /// target it.  A call site uses it to fill `outs` for `lora_apply_layer` without assuming the adapter's order.
 int lora_find(int64_t layer, const char* base);
+
+/// One base tensor's delta, named the way the model names it: `base` is `"attn_qkv.weight"` and `out` is that
+/// projection's output rows.  Nothing is launched for a tensor the adapter does not target on `layer` - the forward
+/// path calls it unconditionally.  Throws like `lora_apply_layer`; the checks are the same, for the one entry.
+///
+/// WHY THIS EXISTS BESIDE `lora_apply_layer`.  A layer's projections do not all finish at the same point: the conv
+/// reads `attn_qkv`'s output before `attn_gate`'s exists, the q/gate split reads `attn_q`'s output and turns its
+/// second half into the attention gate, and the RMSNorm/RoPE read `attn_k`'s and `attn_v`'s.  A delta added after
+/// the layer has finished would be written into a buffer nothing reads again: the projection would silently answer
+/// from the base weights while the rest of the layer is adapted.  So each call site applies the tensors whose
+/// destination is FINAL at that point, and that is one entry per call (two where a pair is written back to back).
+void lora_apply_tensor(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const char* base, LoraOut out,
+                       void* stream);
+
+/// The capture-time coverage check, for the paths that call `lora_apply_tensor` site by site.  `begin` clears the
+/// layer's marks; every `lora_apply_tensor` that finds its entry marks it; `end` throws, naming it, if an entry of a
+/// layer the adapter targets was never applied.  This is the one failure this hook cannot show any other way: a
+/// forgotten site is a projection that answers from the base weights, a distribution no model was trained to
+/// produce, with no error and no cache miss.  Host only and cheap - the forward path calls it once per layer per
+/// graph capture, never per token.
+void lora_layer_begin(int64_t layer);
+void lora_layer_end(int64_t layer);
 
 /// Layer `layer`'s delta on `T` tokens, one launch for every entry of the layer.  `io` is indexed by `act` (the
 /// activation, shared by the entries that read it); `outs` has one element per entry of the layer, in the adapter's

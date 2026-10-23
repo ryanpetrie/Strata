@@ -1299,6 +1299,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(lora_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(lora_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME lora_parity COMMAND lora_parity)
+  # Phase 2.2 step 3 (the verify hook): the same kernel driven the way `src/core/verify.cpp` drives it - one
+  # `lora_apply_tensor` per projection at its own site, the window's seven tensors and three activations, the
+  # capture-time coverage check, and the order a call site depends on.  GPU, synthetic adapter, no model (the branch
+  # switches it cannot reach are named in the file's header).
+  add_executable(lora_verify_parity src/kernels/lora_verify_parity.cpp)
+  target_include_directories(lora_verify_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(lora_verify_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME lora_verify_parity COMMAND lora_verify_parity)
 
   # The rewritten per-hit and grouped expert kernels vs the previous ones, bitwise (GPU, synthetic, no model).
   # `--bench` adds previous/new timings on engine-like shapes.
