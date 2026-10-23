@@ -66,7 +66,9 @@ bool lora_replicate(std::string& err) {
 void lora_set_enabled(bool) {}   // nothing is ever uploaded, so there is nothing to switch
 bool lora_enabled() { return false; }
 int lora_find(int64_t, const char*) { return -1; }
-bool lora_apply_layer(int64_t, int64_t, const LoraIo[kLoraActCount], const LoraOut*, void*) { return false; }
+// unreachable: `lora_upload` always refuses here, so no layer has entries.  A no-op rather than a throw, because the
+// throw exists to catch a call site that reached a loaded adapter, and that state cannot occur on this build.
+void lora_apply_layer(int64_t, int64_t, const LoraIo[kLoraActCount], const LoraOut*, void*) {}
 }  // namespace strata::kernels
 
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and

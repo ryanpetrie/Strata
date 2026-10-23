@@ -7,7 +7,9 @@
 //     second cudaMalloc that fails half-way has no state worth unwinding, and because the adapter is read once
 //     at start-up and never grows - the same reason the control vector keeps one host copy and one table per
 //     device (`src/kernels/cuda/cvec.cu`).  It refuses an adapter that would eat the engine's VRAM reserve, with
-//     both numbers, before it touches the loaded one (`lora_vram.cuh`).
+//     both numbers (`lora_vram.cuh`), and it refuses a SECOND adapter while one is resident: the adapter is a
+//     start-up decision whose kernel node lives in every graph captured after the upload, so one process keeps
+//     one adapter and changing it means restarting the engine.
 //   * the flag.  A device `int` that `lora_set_enabled` writes between requests, synchronizing first, exactly
 //     as `cvec_set_enabled` does.  The kernel reads it on the device, so the captured graphs are the same with
 //     the adapter on and off, and "off" writes not one byte.
@@ -288,13 +290,22 @@ __global__ void lora_kernel(const LoraEntry* __restrict__ entries, const int* __
 const Lora& lora() { return g_lora; }
 
 bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string& err) {
+    // One adapter per process (the header's rule).  A second upload would have to free tables that graphs already
+    // captured still read, and nothing re-captures them: the result would be a plausible answer from freed memory.
+    if (g_lora.loaded()) {
+        err = "lora: an adapter is already resident (" + std::to_string(g_lora.n_entries) + " entries, " +
+              mb(g_lora.bytes) + "); this build loads one adapter at start-up, because its kernel node is inside "
+              "every graph captured after the upload, so replacing it would leave those graphs reading freed tables "
+              "- restart the engine to change adapters";
+        return false;
+    }
     if (a.targets.empty()) {
         err = "lora: the adapter has no targets";
         return false;
     }
 
-    // ---- 1. what the tables will hold.  Nothing below touches the loaded adapter, so a refusal leaves it (and
-    //         the previous request's graphs) exactly as they were.
+    // ---- 1. what the tables will hold.  Nothing below touches the resident adapter, so a refusal leaves it exactly
+    //         as it was.
     std::vector<PlanEntry> plan;
     plan.reserve(a.targets.size());
     std::vector<std::unique_ptr<std::string>> names;
@@ -354,10 +365,9 @@ bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string
     const uint64_t a_bytes = a_elems * sizeof(uint16_t);
     const uint64_t b_start = (a_bytes + kTableAlign - 1) / kTableAlign * kTableAlign;
     const uint64_t table_bytes = b_start + b_elems * sizeof(uint16_t);
-    // The loader checks shapes and ranks, never VRAM (step-2 checklist 2.2 assumed it did), so this is the only
-    // place an adapter that cannot sit under the engine's reserve is refused - with both numbers, before a byte
-    // is read and before the old adapter is freed.  A replace is measured with the old tables still allocated,
-    // so it is conservative by their size; the second check in `upload_here`, after they are freed, is not.
+    // The loader checks shapes and ranks, never VRAM (step-2 checklist 2.2 assumed it did), so this is where an
+    // adapter that cannot sit under the engine's reserve is refused - with both numbers, before a byte is read.
+    // `upload_here` checks again for a layer split, where there is no earlier point to refuse at.
     if (!vram_fits_here(table_bytes, err)) return false;
     std::vector<uint16_t> tables((size_t) (table_bytes / sizeof(uint16_t)), 0);
     uint64_t ao = 0, bo = b_start / sizeof(uint16_t);
@@ -406,18 +416,8 @@ bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string
         layers_host[(size_t) l].n = (int) entries_host[(size_t) l].size();
     }
 
-    // ---- 4. replace what every device holds, after a synchronize: nothing in flight may still read the old
-    //         tables (a layer split has graphs on several cards).
-    int prev = 0;
-    cudaGetDevice(&prev);
-    for (int d = 0; d < kDevices; ++d) {
-        if (g_dev[d].tables == nullptr) continue;
-        cudaSetDevice(d);
-        cudaDeviceSynchronize();
-        free_dev(g_dev[d]);
-    }
-    cudaSetDevice(prev);
-
+    // ---- 4. the host state, then this device.  There is no replace path: an adapter is resident for the life of
+    //         the process, so every device that never got one (a layer split) is served by `lora_replicate`.
     g_plan = std::move(plan);
     g_names = std::move(names);
     g_tables_host = std::move(tables);
@@ -484,22 +484,51 @@ int lora_find(int64_t layer, const char* base) {
     return -1;
 }
 
-bool lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const LoraOut* outs, void* stream) {
-    if (!g_lora.loaded() || T < 1) return true;
-    if (layer < 0 || layer >= (int64_t) g_entries_host.size()) return true;   // a layer the adapter does not touch
+void lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const LoraOut* outs, void* stream) {
+    if (!g_lora.loaded() || T < 1) return;   // no adapter: the base path, and nothing to check
+    if (layer < 0 || layer >= (int64_t) g_entries_host.size()) return;   // a layer the adapter does not touch
     const std::vector<LoraEntry>& es = g_entries_host[(size_t) layer];
-    if (es.empty()) return true;
+    if (es.empty()) return;
     const DevTables& t = g_dev[cur_device()];
-    if (t.layers == nullptr) return false;   // the tables are on another device; the caller must replicate
-    if (io == nullptr || outs == nullptr) return false;   // entries exist, so both arrays must too
-    if (es.size() > (size_t) kMaxEntriesPerLayer) return false;   // refused at upload; belt and braces
-    // Every activation and every destination this layer needs must be present BEFORE anything is launched: a
-    // partial apply would be a plausible, silently wrong model, so one missing pointer refuses the whole layer.
+    // Everything below is a programming error at the call site, not a data condition: a silent return would be a
+    // base-model answer wearing the adapter's name, which is the one outcome this path must not produce.  They
+    // throw exactly where `cvec_apply` throws (`src/kernels/cuda/cvec.cu:162-172`).
+    if (t.layers == nullptr)
+        throw std::runtime_error("lora_apply_layer: the adapter is not on this device (call lora_replicate for the "
+                                 "layer split)");
+    if (io == nullptr)
+        throw std::runtime_error("lora_apply_layer: layer " + std::to_string(layer) +
+                                 " has entries but the activation array is null");
+    if (outs == nullptr)
+        throw std::runtime_error("lora_apply_layer: layer " + std::to_string(layer) + " has " +
+                                 std::to_string(es.size()) + " entries but the output array is null");
+    if (es.size() > (size_t) kMaxEntriesPerLayer)
+        throw std::runtime_error("lora_apply_layer: layer " + std::to_string(layer) + " has " +
+                                 std::to_string(es.size()) + " entries; the output carrier holds " +
+                                 std::to_string(kMaxEntriesPerLayer));   // refused at upload; belt and braces
     LoraOuts arg{};
     for (size_t i = 0; i < es.size(); ++i) {
         const LoraEntry& e = es[i];
-        if (e.act < 0 || e.act >= kLoraActCount) return false;   // cannot happen; not worth indexing io[] with it
-        if (io[e.act].x == nullptr || outs[i].y == nullptr) return false;
+        const std::string name = e.name != nullptr ? e.name : ("entry " + std::to_string(i));
+        if (e.act < 0 || e.act >= kLoraActCount)
+            throw std::runtime_error("lora_apply_layer: " + name + " names activation " + std::to_string(e.act) +
+                                     ", which is not one of the three");   // cannot happen; never index io[] with it
+        if (io[e.act].x == nullptr)
+            throw std::runtime_error("lora_apply_layer: " + name + " reads activation " + std::to_string(e.act) +
+                                     " but that pointer was not passed (io[" + std::to_string(e.act) + "].x is null)");
+        if (outs[i].y == nullptr)
+            throw std::runtime_error("lora_apply_layer: " + name + "'s output is null (outs[" + std::to_string(i) +
+                                     "].y)");
+        // A stride smaller than the row's width would make token t read or write token t-1's bytes.  A non-positive
+        // stride is caught by the same comparison, because both widths are at least 1.
+        if (io[e.act].ld_x < (int64_t) e.n_in)
+            throw std::runtime_error("lora_apply_layer: " + name + ": the activation's row stride " +
+                                     std::to_string(io[e.act].ld_x) + " is smaller than its width " +
+                                     std::to_string(e.n_in));
+        if (outs[i].ld_y < (int64_t) e.n_out)
+            throw std::runtime_error("lora_apply_layer: " + name + ": the output's row stride " +
+                                     std::to_string(outs[i].ld_y) + " is smaller than its width " +
+                                     std::to_string(e.n_out));
         arg.e[i] = outs[i];
     }
     const dim3 grid((unsigned) es.size(), (unsigned) ((T + kTokensPerBlock - 1) / kTokensPerBlock));
@@ -507,7 +536,6 @@ bool lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], 
                                                              io[kLoraActInput], io[kLoraActAttn], io[kLoraActSsm],
                                                              arg);
     if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("lora_apply_layer: launch failed");
-    return true;
 }
 
 }  // namespace strata::kernels
