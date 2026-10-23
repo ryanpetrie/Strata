@@ -501,7 +501,19 @@ the ECE by 0.0497, C4 keeps the accuracy and raises the ECE by 0.0383 on the har
 population. So the prompt lever is **not noul-only** - it can move the choice's distance to
 the people by 0.029 - but no variant clears the confidence guard on a second population.
 The 235 and jev-bench yardsticks were not run: no arm cleared the design set, and they are
-guards for a candidate. The record is companion doc §28; the score's arms are the next run.
+guards for a candidate. The record is companion doc §28.
+
+**The score's arms ran (2026-10-23): none ships, and the score is the opposite of the noul.**
+The base arm is 0.33 levels above the humans (0.932 against 0.600) with a TVD of 0.4437, and
+the mean-level prior is **worse** than the model here (0.595 against 0.548), so 1.4b's
+verbosity finding does not generalise. S1 `direction` lowers the level by 0.042 and S2
+`wording` raises it by 0.031 - the same lever in two forms, moving the scale's prior in
+opposite directions - and both raise the TVD (+0.0119, +0.0092). S3 `levels-first`, the exact
+move that cut the noul's bias by 0.078 (N4), is the batch's big loser: the level moves **away**
+by 0.196, the TVD rises by 0.0749, and the humans' top level falls from 120 to 106 of 250.
+S4 `full-scale` also moves away (+0.048). **The template is the noul's lever, not the
+score's**: the score's error is a location error that 1.4b tied to the config and the
+gold-only labels. No yardsticks were run (no candidate). The record is companion doc §30.
 
 **What the design measured, and it changes the item's shape.** The per-item SD of
 the change in P(answer) between two runs of the same code is **0.0337** on the

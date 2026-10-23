@@ -4449,3 +4449,63 @@ before the multiple-comparison correction. Choice s = 0.0348 -> n = 100: SE 0.00
 n = 100: SE 0.00255, MDE 0.0071 (0.0085); n = 250: 0.00161 and 0.0045 (0.0054). Noul s =
 0.0337 -> n = 250: 0.0060 (0.0072). The margins in §27.3 and §6 are these numbers; the
 n = 100 screen uses the same formula, not a new one.
+
+## 30. The score's prompt arms: the scale's wording is not the lever (2026-10-23)
+
+The pre-registration is §27.3. Five arms (base + S1-S4) on the pool's 500 score items, one
+fresh server and engine per arm, N4 kept on the noul, the temperature absent. 500 of 500
+items answered in every arm, **500/500 on the fast path**, 0 failures; the median latency
+4.3-4.9 s and the median prompt 361-387 tokens (reported, not judged).
+
+**The base arm.** On the 250 soft items (`measuring_hate_speech`, 3 levels) the model's mean
+expected level is **0.932** against the humans' **0.600** - the +0.33 of §2.5, reproduced on
+a fresh run - its mean TVD **0.4437**, and its top level matches the humans' majority on
+**120 of 250** (48%). The mean-level prior (one prediction at 0.600 for every item) has a
+mean absolute error of **0.595 against the base's 0.548**: on this population the model beats
+the prior, so 1.4b's verbosity finding (the prior beat the fitted map) does not generalise to
+this config. On the 250 hard items: helpfulness signed -0.34, mean |error| 1.021; verbosity
++0.50, mean |error| 0.742.
+
+| arm | (a) the location and the TVD | (b) the humans' top level | (c) the 5-level configs | verdict |
+|---|---|---|---|---|
+| **S1** `direction` | level +0.042 toward zero; **TVD +0.0119** (rises) | 120 -> 123 (+3) | helpfulness -0.052, verbosity **+0.066** | **FAIL** |
+| **S2** `wording` | level **-0.031** (away); **TVD +0.0092** (rises) | 120 -> 118 (-2) | helpfulness +0.017, verbosity +0.030 | **FAIL** |
+| **S3** `levels-first` | level **-0.196** (away); **TVD +0.0749** | 120 -> 106 (**-14**) | helpfulness -0.029, verbosity -0.007 | **FAIL** |
+| **S4** `full-scale` | level **-0.048** (away); **TVD +0.0097** | 120 -> 117 (-3) | helpfulness -0.007, verbosity -0.030 (exact -6) | **FAIL** |
+
+The margins are §27.3's: 0.006 on the signed level and on the TVD, 3 items on the top
+level, 0.05 levels and 5 items per 5-level config.
+
+**No score arm ships, and the two wording arms move the level in OPPOSITE directions.** S1
+("highest first", levels reversed) lowers the mean level toward the people by **0.042**
+(interval **[+0.027, +0.059]** - a real move), but raises the distance to them (**+0.0119**,
+its interval through zero) and worsens verbosity's level error by **0.066**. S2 removes the
+words "lowest first" and leaves the list alone: it raises the level by **0.031** (away) and
+the distance by **0.0092**. The same scale read two ways moves its prior in opposite
+directions, which is what makes the wording a prior: the words and the list order each carry
+one, and neither moves the distribution's shape toward the people's. The rule asks for the
+distance to fall, so both fail (a) whatever the sign of the centre's move.
+
+**S3 is the batch's big loser, and the asymmetry with the noul is the finding.** Putting the
+levels before the question - the exact move that cut the noul's bias by 0.078 and its TVD by
+0.069 (N4) - moves the score's level **away** by 0.196 and its TVD by +0.075, and takes the
+humans' top level from 120 to 106 of 250. A mechanism, offered as static analysis and not
+measured: the noul's criteria are two short clauses, while the score's levels are three to
+five long sentences, so "levels first" makes the model read a long scale before it reads the
+question. The measured fact is the sign difference; the reason is a hypothesis for a future
+arm.
+
+**S4 ("any level, not only the ends") also moves away** (+0.048) and raises the TVD (+0.0097),
+with verbosity's exact accuracy down 6 of 125. The weakest hypothesis of the four, and it
+behaved as its own entry predicted: no end-bias was measured to motivate it.
+
+**The yardsticks were not run**: no arm cleared (a)-(c), and §27.3 makes the 235 and the
+jev-bench sample guards for a candidate. **The score's template is not its lever.** Its
+measured failure is a location error that 1.4b found to be per config and, for the 5-level
+configs, inseparable from the gold-only labels; the four prompt levers either move the scale
+prior (S1, S2, S4) or read the question through the scale (S3), and none closes the gap.
+
+**The limits** are §28's: one run per arm; the margins are the measured per-type noise
+(0.0255), not a repeat of this pool; half A is one 3-level config and half B two 5-level ones
+whose labels are gold; no yardsticks (no candidate); one model, one quantization, no AMD or
+Mac engine, no isolated latency comparison.
