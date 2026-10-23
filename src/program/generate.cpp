@@ -87,6 +87,7 @@
 #include "strata/kernels/cvec.hpp"
 #include "strata/kernels/lora.hpp"
 #include "strata/core/lora_pack.hpp"
+#include "strata/core/lora_request.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/emulate.hpp"
@@ -12049,6 +12050,15 @@ int main(int argc, char** argv) {
             std::string req_bias_text;
             bool req_bias_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            // lora=0|1: the loaded adapter for this request, and the ABSENT default is the opposite of `cvec`'s.
+            // Absent means the base model (a chat turn never carries the adapter by accident), while an absent
+            // `cvec` keeps the vector on.  Only a LOGITS line may ask for it: see lora_request_problem below.
+            // The value is kept as text until after the loop: only "0" and "1" are accepted, because `atoi` would
+            // read `lora=yes` or a bare `lora=` as 0 and answer the decision from the base weights without a word.
+            int req_lora = 0;
+            bool req_lora_asked = false;
+            bool req_lora_twice = false;   // the line gave `lora=` more than once (refused: one request, one value)
+            std::string req_lora_text;     // what followed `lora=`, unparsed (lora_key_problem decides)
             // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
             // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
             // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
@@ -12090,6 +12100,11 @@ int main(int argc, char** argv) {
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "lora") {
+                        req_lora_text = tok.substr(eq + 1);
+                        req_lora_twice = req_lora_asked;   // a second `lora=` on the line is refused below
+                        req_lora_asked = true;
+                    }
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
@@ -12119,6 +12134,23 @@ int main(int argc, char** argv) {
                         }
                     }
                     // unknown keys are skipped: the ids start at the first token without '='
+                }
+            }
+            // `lora=` is a decision request's key only, and asking for it on a chat line is a REFUSAL, not a silent
+            // fallback to the base model: the caller would otherwise believe its turn carried the adapter.  The same
+            // holds on an engine with no adapter resident (no --lora, or one refused at start-up): honoring it would
+            // answer the decision from the base weights and say nothing.  The key's own value is checked first, so
+            // `lora=yes` is refused whatever the line is.  `req_logits_k` is still in scope here, and it is 0 on
+            // every line that is not a LOGITS line.
+            {
+                std::string lora_problem = strata::core::lora_key_problem(req_lora_asked, req_lora_twice, req_lora_text);
+                if (lora_problem.empty() && req_lora_asked) req_lora = req_lora_text == "1" ? 1 : 0;
+                if (lora_problem.empty())
+                    lora_problem = strata::core::lora_request_problem(req_lora_asked && req_lora, req_logits_k,
+                                                                      strata::kernels::lora().loaded());
+                if (!lora_problem.empty()) {
+                    std::printf("ERR %s\n", lora_problem.c_str());
+                    continue;
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
@@ -12273,6 +12305,9 @@ int main(int argc, char** argv) {
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
             const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            // the structural guarantee of the phase 2 exit criterion: only a LOGITS line can raise the adapter's
+            // flag, so the chat turn beside it runs the base model whatever the cache, the slot or the graph holds
+            const bool want_lora = req_logits_k > 0 && req_lora && strata::kernels::lora().loaded();
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)
@@ -12679,6 +12714,16 @@ int main(int argc, char** argv) {
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            // UNCONDITIONAL every request, like the vector's line above: this is the line that turns the adapter
+            // BACK OFF after a LOGITS request, so a request that skips it would let the next chat turn run adapted.
+            //
+            // THE CACHE AND THE LIVE SESSION ARE NOT KEYED ON THE ADAPTER YET; that is step 6 (commit C7), which adds
+            // it to `best`/`parked_prefix_tokens` and to the session file.  Until then C5 (the verify hook) MUST NOT
+            // land before it: a `LOGITS ... lora=1` request writes adapted cells into the live session and every
+            // checkpoint, and the next chat turn restores them with the flag OFF - i.e. the base model reading state
+            // the adapted model produced, which is a silently wrong answer rather than a cache miss.  Inert today
+            // only because no forward path calls `lora_apply_layer` yet.
+            strata::kernels::lora_set_enabled(want_lora);
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             auto off_path = [&](const ConvCheckpoint& c) {
