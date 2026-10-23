@@ -3913,8 +3913,9 @@ The engine now takes `park=0` on a `GEN` or `LOGITS` line: the conversation that
 read is not parked by the request that replaces it, while its session stays continuable
 (`ckpt` stays 1), so a trie walk's next step still reuses it. `ckpt=0` would also stop the
 continuation, which is why it was rejected: 96% of the log's 14,393 walk steps reuse the
-session. The server sends the key on the decision path only, behind `STRATA_DECISION_PARK=1`,
-so the default path is byte for byte what it was. The as-built line map is in the plan's
+session. The server sends the key on the decision path only; for this measurement it was
+behind `STRATA_DECISION_PARK=1`, so the default path was byte for byte what it was, and it
+became the default at step 6 (§25.6). The as-built line map is in the plan's
 §10; the rule that a conversation **taken** from the cache is always parked again (it must
 be put back) is `conversation_park_allowed()` and is tested without a GPU.
 
@@ -3990,9 +3991,20 @@ evicted, and it is the one the after arm keeps.
 * The 20 GiB resident copy is the one departure from the live config; it changes what the
   engine keeps in RAM, not the cache's rules.
 * **Not run:** the latency comparison (the card is shared); three runs per arm on the 235
-  (one each); a default-on arm (the plan's step 6); the walk's answer identity on a stored
-  run; any AMD or Mac engine. The 235's run-to-run spread is quoted from §23, not
-  re-measured.
+  (one each); a default-on arm (the plan's step 6; it was run afterwards, §25.6); the
+  walk's answer identity on a stored run; any AMD or Mac engine. The 235's run-to-run
+  spread is quoted from §23, not re-measured.
+
+### 25.6 Step 6: on by default, and the verification (2026-10-22)
+
+The key is now the server's default (`STRATA_DECISION_PARK=0` restores the old call), the
+live config's `--conversation-cache-min-tokens` is back to 0, and `engine\strata.exe` is
+rebuilt from the merged source for sm_89. One run of the same recipe on the **shipping**
+config (36 GiB resident, no minimum) reproduced the effect: the chat's fifth turn
+`7,463 = 7,404 + 59` (**99.2%** reused), **0 evictions**, 25 `park=0` skips, the walk at
+`1,878 = 1,868 + 10` and `1,879 = 1,878 + 1`. The 235: **81.3** (79.8 baseline), 235/235 on
+the fast path, 5 answers moved. One run, not three; latency not claimed. The numbers, the
+backups and the limits are the companion doc's §12.
 
 
 

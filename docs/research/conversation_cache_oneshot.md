@@ -1,11 +1,14 @@
 # The conversation cache and a decision request's parked state
 
-**2026-10-22.** Status: the plan's steps 3 and 4 are built and step 5's measurement has been
-run (§11): the fix passes its pre-registered rule on three runs an arm. The engine was not
-touched on disk; `C:\tools\strata\engine\strata.exe` and the live config are as they were.
+**2026-10-22.** Status: **the fix is live.** The plan's steps 3 and 4 are built, step 5's
+measurement passed its pre-registered rule on three runs an arm (§11), and step 6 landed the
+same day (§12): `park=0` is on by default, `--conversation-cache-min-tokens` is back to 0,
+and `C:\tools\strata\engine\strata.exe` is the rebuild from the merged source. The record
+below is kept as written at each step, so where it says the engine and the config were
+untouched, that is the state *before* step 6; §12 is the current one.
 Every number in §1-§6 is from the user's engine log (`strata-unsloth-ud-iq4_xs.log`, 211,642
 lines, 64 engine lifetimes, last start 2026-10-22 02:37) or from a named line of the code;
-the numbers in §10-§11 are from the runs named there. Anything read from the code and not
+the numbers in §10-§12 are from the runs named there. Anything read from the code and not
 run is marked **static analysis**.
 
 ## 1. The problem
@@ -315,10 +318,12 @@ only one that needs a build.
 * **Default or opt-in.** The repo's rule is that a new feature is opt-in and the
   default path stays byte-identical. (b2) is opt-in by construction: absent, the
   engine behaves exactly as today, and an older engine ignores the unknown key,
-  so a version skew is safe. The server sends it **only** on the decision path,
-  behind `STRATA_DECISION_PARK=1` for the first measurement, then on by default
-  if the numbers hold. The config flag (a) is the user's choice, not a code
-  default, so it does not touch the rule at all.
+  so a version skew is safe. The server sent it **only** on the decision path,
+  behind `STRATA_DECISION_PARK=1` for the first measurement, and it is on by
+  default since step 6 (§12): `STRATA_DECISION_PARK=0` restores today's call.
+  Only the decision path's line changes; no chat `GEN` line carries the key. The
+  config flag (a) is the user's choice, not a code default, so it does not touch
+  the rule at all.
 * **The one thing that could bite:** a request that takes a parked conversation
   out of the cache must put it back. `park=0` must therefore never suppress the
   re-park of a conversation that was restored (`generate.cpp:12587`), only of
@@ -337,10 +342,10 @@ Each is separately reviewable and testable.
 | 3 | the `park=0` key | `src/program/generate.cpp` (`:11983`, `:12013`, `:9130`, `:12587`, `:14934`, `:883`), `docs/DETAILS.md` near `:1181` | medium: per-session state in the serve loop; needs CUDA + HIP builds | a manual `LOGITS ... park=0` then another request → no `parked` line; `park=1` → a `parked` line; the walk still shows `N-10 reused + 10 read` |
 | 4 | the server sends it | `serve/server.py:2168` (an argument to `Engine.logits`), behind `STRATA_DECISION_PARK` | low: one call site, decision-only | `serve/test_decision_engine_turn.py`: the line written to the engine carries `park=0`; the chat's `GEN` lines do not |
 | 5 | the measurement | a new `tools/decision_policy/cache_churn.py` | none | §6.1-6.3, both arms, 3 runs each |
-| 6 | make it the default | `serve/server.py` (drop the gate), this doc (the numbers) | low, but only after step 5 passes | the same measurement, one more time |
+| 6 | make it the default | `serve/server.py` (drop the gate), this doc (the numbers) | low, but only after step 5 passes | the same measurement, one more time (§12) |
 
 Step 2 can ship alone and should, because it helps the user today. Step 3 does
-not depend on it. Step 6 must not happen before step 5.
+not depend on it. Step 6 landed after step 5 passed (§12).
 
 ## 9. What this document does not measure
 
@@ -380,7 +385,7 @@ for byte (§10.4), and the tests that say so are in §10.3.
 | | `11933` | `LOAD` of a session file sets it back to true (no request key there) |
 | `include/strata/core/conversation_cache.hpp` | `201-206` | `conversation_park_allowed(park_key, took_parked)`: the one rule, `park_key || took_parked`. In the header so it can be tested without a GPU |
 | `src/core/conversation_cache_test.cpp` | `561-573` | the engine test of that rule and of the slot it saves (§10.3) |
-| `serve/server.py` | `312-317` | `decision_park_off()`: `STRATA_DECISION_PARK` set and not `0` or empty |
+| `serve/server.py` | `312-317` | `decision_park_off()`: `STRATA_DECISION_PARK` set and not `0` or empty (on by default since step 6, §12) |
 | | `2154-2184` | `StrataEngine.logits(..., park=True)`; `park=False` writes ` park=0` between `max_new` and the ids |
 | | `4514-4522` | `Service._engine_logits`, the one call the decision path uses. Off, it calls `self.engine.logits(ids, k, max_new, cancel)`, argument for argument today's |
 | | `4534` | the trie walk's steps take it (`_logits_row`) |
@@ -459,7 +464,8 @@ system Python has no `jinja2`):
 | `python -m unittest serve.test_server serve.test_logit_bias serve.test_model_card_sampling serve.test_cache_drop serve.test_prompt_encoder serve.test_request_accounting serve.test_structured` | 390 tests, OK (6 skipped) |
 | `python -m unittest serve.test_parallel` | 42 tests, OK |
 
-The four new server cases:
+The four new server cases (as built, when the switch defaulted off; step 6 swaps the
+first two, §12):
 
 1. **Not sent by default.** `STRATA_DECISION_PARK=0`: every LOGITS call the decision makes
    carries `park=True`, and the wire-format test pins the line itself,
@@ -687,5 +693,61 @@ Capability points and differ in 2 noul items, §23); the key changes no arithmet
 * Not run: the §6.2 latency comparison; the §6.3 three runs per arm (one each); a live
   default-on arm (§8's step 6); any AMD or Mac engine; a second model. The 235's own
   run-to-run spread is quoted from §23, not re-measured here.
+
+## 12. Step 6: the shipping state (2026-10-22)
+
+**What changed**, in three parts, each reversible:
+
+1. **The server sends the key by default** (`serve/server.py`, commit `158aae08`).
+   `decision_park_off()` is true unless `STRATA_DECISION_PARK` is `0` or empty, so
+   `STRATA_DECISION_PARK=0` restores the pre-fix call, argument for argument. The two
+   tests that pinned "not sent by default / sent when asked" became "sent by default /
+   not sent when turned off"; the walk and chat tests still pin that every walk step
+   carries it and no `GEN` line does. Four test doubles that patched `logits` with the
+   old four-argument signature now accept `park` and forward it, so a test that means to
+   reach the engine cannot pass by silently falling back on a `TypeError`.
+2. **The live config's minimum-length stopgap is gone**:
+   `--conversation-cache-min-tokens` is back to **0**. It existed only because the
+   shipped binary had no `park=0`; with the key, a decision never parks at any length and
+   a chat parks at every length, which is the point. The config before this change is
+   backed up outside the repo as `strata-config-before-park0.json`.
+3. **The engine is rebuilt from the merged source** (`e6e93e85`, which is the cache
+   branch's source plus 2.2 step 1's new LoRA files; none of those are on the serve
+   path). CUDA, `CMAKE_CUDA_ARCHITECTURES=89`, Release, `strata.exe` 75,546,112 bytes.
+   The binary it replaced is kept outside the repo as `strata-engine-before-park0.exe`;
+   `engine\strata.lkg.exe` is untouched.
+
+**The verification run.** One run of §6.1 with the **shipping config** (36 GiB resident,
+2 slots, minimum 0) and a fresh engine, the server started from `C:\tools\strata` with
+`STRATA_DECISION_PARK` unset. The run directory is `<opencode temp>\cache_measure\runs\S1`
+(config copy, server logs, `requests.jsonl`).
+
+| what | value |
+|---|---:|
+| chat 5: `N = M reused + K read` | 7,463 = **7,404** + 59 (**99.2%** reused) |
+| evictions after the 20 decisions | **0** |
+| `parked=` at the end | 1 |
+| `skip parking (park=0)` lines | **25** (20 decisions + 5 walk steps) |
+| walk steps | `1,878 = 1,868 + 10` and `1,879 = 1,878 + 1` (99.5% / 99.9%) |
+| decisions | 20 base requests, all `0 reused` (the key does not make a fresh conversation reusable) |
+
+The parks that remain are the chat's own (3), which is today's behaviour and the reason
+the stopgap could go: a chat turn parks and resumes itself whichever side of 2k it is.
+
+**The 235, fresh engine, same config:** 235/235 on the fast path, 0 failures,
+**Capability 81.3** (Intelligence 79.9, Calibration 82.8) against the stored baseline
+**79.8** (78.0, 81.7) — inside the sample's measured 1.8-point spread — and 5 answers
+moved (choice 2, noul 3, score 0) against the stored run. The §6.4 failure conditions do
+not apply: the chat's `M5` is 99.2% on the run the decisions were interleaved with, not 0.
+
+**The limits of this run.** It is **one** run, not three: the effect's repeatability is
+§11's three runs an arm, and this run confirms the shipped configuration reproduces it.
+The `--resident-budget-gib 20` departure from §11 is gone: the host had 51.8 GiB free and
+the admission accepted every park, so the 20 GiB copies §11 needed were not needed here.
+Latency is **not** a result: the run's own median was 4.6 s and p95 9.1 s per decision,
+but no same-day before arm was run on a quiet card, and §6.2's margin is not claimed.
+**HIP was not built** (no ROCm on this machine); the file it would compile is
+`src/program/generate.cpp`, unchanged by step 6, and its HIP claim still rests on §10's
+static reading, not a build.
 
 
