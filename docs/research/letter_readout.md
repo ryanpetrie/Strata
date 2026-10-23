@@ -246,7 +246,7 @@ That recombination is the measurement, and it is paired item by item.
 letters + direct fallback, recombined as above. Same items, same order, same scorer.
 
 **The rule.** "The fallback was the loss" only if the recombined arm's **official
-Capability** is within **1.8 points** of the direct arm's (the programme's measured
+Capability** is within **1.8 points** of the direct arm's (the program's measured
 run-to-run spread) **and** its mean **TVD to the humans** on the 280 items with a human
 distribution is no worse by more than **0.005**. Anything larger on either means the loss
 is the letter reading, and the 539 served items' own loss stands. The per-type numbers and

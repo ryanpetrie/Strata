@@ -20,8 +20,8 @@ reading is marked *static analysis*; it is not a runtime measurement.
 The hard constraints from the handoff still hold:
 
 - No second large model and no second copy of the base weights.
-- No change to default behaviour, default model settings, or the user's model files.
-- The server stays on `127.0.0.1` (the running instance is bound to `0.0.0.0`, see below); API-key behaviour is
+- No change to default behavior, default model settings, or the user's model files.
+- The server stays on `127.0.0.1` (the running instance is bound to `0.0.0.0`, see below); API-key behavior is
   preserved. No key, private content, or secret is written to any artifact here.
 - Experimental engine features are opt-in; ordinary inference is unchanged.
 - The machine cannot run two Strata instances: the running one already holds ~24.1 GiB of the RTX 4090's 24.6 GiB.
@@ -242,7 +242,7 @@ head was not worth it for speed, and the same capture point (§2.5, §2.6) is wh
 endpoint itself (§6) and, from 2026-10-20, the confidence read from the model's own
 next-token distribution (§10). The phases as written:
 
-* **Phase 2 (data):** the blocker is real. There is no labelled decision dataset from the user's agent workflow in
+* **Phase 2 (data):** the blocker is real. There is no labeled decision dataset from the user's agent workflow in
   this workspace, and no way to obtain one without running the user's agent and recording trajectories. The 60
   examples here are synthetic and rule-based and must not be read as real labels. Before any learned-policy claim,
   the data-collection path has to exist.
@@ -344,7 +344,7 @@ Contract points, all measured or tested:
 
 A decision API that returns a **structured action with a confidence**, not text; is fast for a **new** decision
 state; uses the **one loaded backbone**; and leaves normal chat untouched. The measured bottleneck is the prefill,
-not the decode, so the plan is organised around making the prefill cheap.
+not the decode, so the plan is organized around making the prefill cheap.
 
 ### 6.2 Stage A - orchestrator-side, no engine change (MEASURED 2026-10-19)
 
@@ -450,7 +450,7 @@ architecture's training path (§2.5, §2.6).
 | Step | Status | Needs |
 | --- | --- | --- |
 | Prompt research (Phase 1 + Stage A) | Measured. Compact preamble: 532 ms new-state, 1.0 synthetic accuracy. | Nothing further. |
-| `/v1/systemone` implementation | Deployed and serving (§6.4); the confidence came from the model's own distribution afterwards (§10.1). | Nothing further. |
+| `/v1/systemone` implementation | Deployed and serving (§6.4); the confidence came from the model's own distribution afterward (§10.1). | Nothing further. |
 | Real-data validation | Not started, and last in the user's priority order. | Access to real agent trajectories, or a decision to build the collection path. |
 
 ---
@@ -519,7 +519,7 @@ generated data and should stay out of version control unless the user asks.
 | `docs/research/strata_shared_backbone_decision_policy_handoff.md` | the original brief (historical) |
 | `docs/research/systemone_handoff.md` | the 2026-10-19 session handoff (historical) |
 | `tools/decision_policy/make_examples.py` | the schema, the label rule, and the frozen example generator |
-| `tools/decision_policy/examples.jsonl` | 60 synthetic, rule-labelled examples (generated) |
+| `tools/decision_policy/examples.jsonl` | 60 synthetic, rule-labeled examples (generated) |
 | `tools/decision_policy/baseline.py` | the API-only baseline harness |
 | `tools/decision_policy/baseline_report.json` | the measured results (generated) |
 | `tools/decision_policy/baseline_report.md` | the same, as a table (generated) |
@@ -1006,7 +1006,7 @@ ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
 
 ### 10.13 What is not done
 
-- **The real-trajectory data** (the 60-example synthetic set is rule-labelled, so it
+- **The real-trajectory data** (the 60-example synthetic set is rule-labeled, so it
   measures agreement with a rule, not quality). **Last in the user's priority order
   (2026-10-20)**: a published dataset is the reference for the endpoint's quality,
   and the OpenDecisions set is it. What the trajectories would add is the right
@@ -1107,7 +1107,7 @@ response says `"calibrated": true`.
 
 * The engine's turn is taken **once per question**: the fast path holds the FIFO while
   the engine answers and gives it back before the next question. Holding it across the
-  questions would serialise the requests wrongly - one request's questions would block
+  questions would serialize the requests wrongly - one request's questions would block
   every other request for the whole batch.
 * The merged response says `"calibrated": true` when **every** answer in it came from
   the fast path. A question that fell back to the decode path (a degenerate 1.0/0.0
@@ -1138,7 +1138,7 @@ shared prompt did, and it is what costs the 46 items of §9's batched arm.
 The shared prompt is still reachable: `"systemone": {"enabled": true, "multi":
 "shared"}` in the launch config. The default is `"separate"` (the new path). The
 endpoint itself is opt-in (`"enabled": true`), so this is a change to an opt-in
-endpoint's own behaviour, and the old behaviour is one config key away.
+endpoint's own behavior, and the old behavior is one config key away.
 
 ### 11.5 What it costs, and what it measures at
 
@@ -1300,7 +1300,7 @@ of N items is split into chunks of N and the engine is restarted between them.
 
 What the failed run means for the numbers in §10.8: **none of them.** Every one of
 those runs was measured on a freshly restarted engine, and the clean re-run in §12.2
-reproduced the sample's behaviour exactly (300/300, no failures). The numbers that
+reproduced the sample's behavior exactly (300/300, no failures). The numbers that
 are suspect are the ones taken on an engine that had been running for a long time -
 and the one that demonstrably was, the 327-item run, is invalid and is not used
 anywhere in this document.
@@ -1394,7 +1394,7 @@ to do, and the requests were waiting for a line that had already been consumed b
 a request that had already returned.  The server's own monitor showed
 `"in_flight": 4` with the engine idle for minutes.
 
-The fix is the chat path's own behaviour, applied to the decision path: stop the
+The fix is the chat path's own behavior, applied to the decision path: stop the
 engine and **drain to `DONE`**; end the engine when the drain cannot finish; keep
 the engine's `DONE` line's own prompt-token count as the identity of the answer
 (so a request can tell that the lines it read were another request's, and refuse
@@ -1486,7 +1486,7 @@ that says "I am not sure" is worth more here than a confident guess.
 
 Per config the spread is wide, and it tracks how ambiguous the task is:
 chaosnli 0.312, civil_comments 0.384, measuring_hate_speech 0.492, **go_emotions
-0.722** - the six-way emotion labelling, where the humans themselves were spread
+0.722** - the six-way emotion labeling, where the humans themselves were spread
 out.  Per type: noul 0.384, choice 0.470, score 0.492.
 
 ### 14.3 The other half, stated plainly
@@ -1515,7 +1515,7 @@ confident guess, and genuinely worse than the humans' own uncertainty.
 * It does **not** say the endpoint should be more confident: the finding is that
   the model is over-confident, so a consumer that wants calibrated uncertainty
   should read the `confidence` as an upper bound, not a probability.
-* The licence is per-source and mixed (several "research use only"), and the
+* The license is per-source and mixed (several "research use only"), and the
   dataset says validation only.
 * The rewrites suite asks the other half of the coherence question: not "is the
   answer right" but "does the distribution stay coherent when the question is
@@ -1963,7 +1963,7 @@ temperature of the fold it was **not** in):
 
 Per type, out-of-fold: the calibration 73.7 -> **75.5** (choice), 84.9 -> 84.3 (noul),
 86.3 -> **90.8** (score); the competence 86.7 -> 86.7 (choice), 80.5 -> 80.5 (noul),
-**66.9 -> 71.1** (score - the expected level moves towards the pick when the
+**66.9 -> 71.1** (score - the expected level moves toward the pick when the
 distribution is sharpened, and the scorer reads the expected level).
 
 **The NLL arm is the interesting one: it makes things worse** (Capability 79.1 against
@@ -2098,7 +2098,7 @@ the endpoint is used for uncertainty rather than for a pick.
   out-of-fold one: **81.5** against the baseline's 79.8.
 - **The dataset says not to fit on it.**  Its README: "fit temperatures on your own
   data, never on OpenDecisions".  The roadmap asks for this fit, so the numbers are
-  labelled as they are.  The independent check is the **jev-bench** run with the
+  labeled as they are.  The independent check is the **jev-bench** run with the
   human soft labels (roadmap item 1.2): there the question is not "is the model right"
   but "is the confidence calibrated to the uncertainty a human would feel" (§14).
 - **The open reading's meaning changed.**  The reported confidence is no longer the
@@ -2367,7 +2367,7 @@ should not be shipped.  The noul's constant in the config should go back to 1.0.
   path, one attempt each and nothing retried, on a freshly restarted engine, with
   the engine to itself.  The scorer's rule for a missing prediction was never
   needed.
-* **The limits.**  The licence is per-source and mixed (several "research use
+* **The limits.**  The license is per-source and mixed (several "research use
   only") and the dataset says validation only.  jev-bench has no difficulty tier,
   so every item is filed under "hard" and the scorer's tier weights collapse to one
   - that is not a difficulty claim.  The 235-item OpenDecisions re-run (§18.5) and
@@ -2406,8 +2406,8 @@ So the question is no longer "does a temperature help?"  It is:
 > endpoint's calibration population-specific?**
 
 The second population is the jev-bench **validation** split, fitted on a pool that is
-licence-clean and out of sample with respect to OpenDecisions: 500 items of every
-question type, drawn per config from the configs whose licence the record clears
+license-clean and out of sample with respect to OpenDecisions: 500 items of every
+question type, drawn per config from the configs whose license the record clears
 (`docs/research/decision_policy_training_data.md`), with the counts and the seed
 (20261021) in `tools/decision_policy/soft_label_pool.json`.  750 of the 1,500 items
 carry a **human distribution** (250 of every type: `go_emotions`,
@@ -2447,7 +2447,7 @@ fixed now, before the numbers, so that "not worse" cannot become "better" later.
   error to be a **bias**: the model over-predicts "yes" on 95 of the 100 items, the
   mean signed difference is +0.357 on a mean absolute 0.384, and 93% of its TVD is
   that offset (mean P(yes) 0.446 against the humans' 0.089).  A temperature divides
-  the logits; it cannot move a distribution's centre.  A noul that does not clearly
+  the logits; it cannot move a distribution's center.  A noul that does not clearly
   improve is left at **T = 1** and handed to item 1.4's affine fit, and **its failure
   does not block the choice and the score constants**.
 
@@ -2610,7 +2610,7 @@ endpoint stays at T = 1.**
 population to say so.**  The soft arm - the only objective fitted against the human
 distribution - moves the noul's TVD by **0.0025** (0.3836 -> 0.3811) while moving the
 choice's by 0.056 and the score's by 0.032.  A temperature cannot move a
-distribution's centre, and the noul's centre is wrong: the model over-predicts "yes"
+distribution's center, and the noul's center is wrong: the model over-predicts "yes"
 on 95 of the 100 items (§19).  The noul goes to item 1.4's **affine** fit, and the
 rule's clause that the noul's failure does not block the choice and the score
 constants is what is left to say - except that the choice and the score constants
@@ -3024,7 +3024,7 @@ it is 44.9 against 68.3, and even over the 539 items the letter arm served it is
 70.7 against 78.1.
 
 And on the score questions the OpenDecisions effect does not transfer: on that sample
-the letter readout's sharper distribution happened to centre better (the nMAE 0.0908
+the letter readout's sharper distribution happened to center better (the nMAE 0.0908
 against 0.1013, with the mode right less often: 72.9% against 79.7%); on jev-bench the
 same sharpening moves the expected level **further** from the gold (the signed
 distance +0.135 → +0.274, the nMAE 0.2384 → 0.2450), so the score type loses on both
@@ -3057,7 +3057,7 @@ too much.
   the one that decides the default question.
 * **The hedging hypothesis is refuted.**  The letter readout's distributions are
   sharper, not flatter, in every type on both populations; the OpenDecisions score
-  gain was a sharpening that happened to centre better on that sample, and it does
+  gain was a sharpening that happened to center better on that sample, and it does
   not transfer.
 * **The letter readout cannot serve a question with more than 26 options**, and on
   jev-bench that is 21% of the items; the fallback (the decode path) reports a
@@ -3067,7 +3067,7 @@ too much.
 * **The limits.**  One run of the letter arm, against a direct arm measured in
   another session (item 1.2's), so the run-to-run wobble is not paired out of the
   latency comparison; the jev-bench sample is validation-only and carries a per-source
-  licence, and its score questions are six-level similarity ratings, not the ordinal
+  license, and its score questions are six-level similarity ratings, not the ordinal
   routing questions of OpenDecisions, so the two populations' score types are not the
   same thing.  The 280 items with a human distribution are the ones the distance
   numbers rest on.
@@ -3098,7 +3098,7 @@ with that fix in, on one engine state, so the two can be compared paired.
 ## 23. The prompt probe and the noul's arms (2026-10-22)
 
 Roadmap item 1.5: the server's per-type template, varied one axis at a time, and
-measured against the licence-clean pool.  The design, the variant list, the
+measured against the license-clean pool.  The design, the variant list, the
 measurement design and the pre-registered rule are in
 [prompt_variants.md](prompt_variants.md).  This section is the record: what was
 run, what came out, and what it means.
@@ -3388,7 +3388,7 @@ arm's. The fast-path rates and the prompt-token counts are the comparable part:
 when the state supports the yes answer; otherwise answer no"*, it is well formed
 on both halves, and (c) applies to N5 unchanged. It names the answer, not the
 criterion, so the axis is still "the template states when to answer yes". No
-neighbour's text was changed and no neighbour had to be re-interpreted; the
+neighbor's text was changed and no neighbor had to be re-interpreted; the
 comparison stays one-axis. The change was made before any arm was scored.
 
 **The base 235 run, and a finding against the rule's 0.6 margin.** Rule (d) says
@@ -3414,7 +3414,7 @@ the roadmap owner.
 **no `--conversation-cache-min-tokens` argument** (checked after the stop), so the
 arms were started without the flag the orchestrator added mid-experiment. If that
 change reached any of the runs by another path, it reached their **latency** and
-not their picks: every latency figure here is labelled as a shared-engine figure,
+not their picks: every latency figure here is labeled as a shared-engine figure,
 none is used for a verdict, and (f) rests on the **100% fast-path rate** in every
 arm. The engine was shared with a local chat client through much of the session,
 so no latency is presented as an isolated measurement. The `answer-order` arm was
@@ -3448,12 +3448,12 @@ config is the orchestrator's and is not edited by this session.
 ## 24. The affine calibration, and the rule it is judged by (2026-10-22)
 
 Roadmap item 1.4.  The per-type temperature is one scalar, and a scalar moves a
-distribution's **scale**.  On the noul questions the measured error is the **centre**:
-the model over-predicts "yes" on 95 of the 100 human-labelled items, the mean signed
+distribution's **scale**.  On the noul questions the measured error is the **center**:
+the model over-predicts "yes" on 95 of the 100 human-labeled items, the mean signed
 difference is **+0.357** on a mean absolute **0.384** (93% of the TVD), and its mean
 P(yes) is **0.446** against the humans' **0.089** (§19.6).  The soft refit of §20 moved the
 noul's TVD by **0.0025** while moving the choice's by 0.056 and the score's by 0.032
-(§20.8).  A temperature cannot move a distribution's centre.  This item fits **two
+(§20.8).  A temperature cannot move a distribution's center.  This item fits **two
 parameters per type**.
 
 **This section is written BEFORE the fit is run.**  The rule below is the rule of §20.2,
@@ -3478,7 +3478,7 @@ p'_l = normalize( p_l ** (1/T) * exp(b * s_l) )
 |---|---|---|---|
 | noul | T, b | 0 for no, 1 for yes | `logit(P'(yes)) = logit(P(yes))/T + b`: the shift, in log-odds - exactly "a scale and a shift" |
 | score | T, b | the level's index 0..K-1 | a tilt along the ordinal axis, in log-odds per level: a location parameter |
-| choice | T | none | **not identified**: a shift that is the same for every option is cancelled by the normalizer |
+| choice | T | none | **not identified**: a shift that is the same for every option is canceled by the normalizer |
 
 **Why the score gets a tilt and not a shift.**  Its measured error is a **location**
 error: on the jev-bench direct arm the expected level sits **+0.1348** above the gold on
@@ -3492,13 +3492,13 @@ no-op under the normalizer.
 **Why the choice gets no second parameter.**  The choice's measured error is a **shape**
 error, not a location one: the model's top-label mass is 0.7862 against the humans'
 0.6215 (§19.5), and a scale is what fixes a shape.  There is also no order among the
-options to attach a shift to, and a constant shift over the options is cancelled by the
+options to attach a shift to, and a constant shift over the options is canceled by the
 normalizer.  Two parameters per type **where two are meaningful**, not two everywhere, is
 the honest answer: a fitted "shift" for the choice would be a number with no referent.
 
 **The map is invertible**, `undo(q) = apply(q, 1/T, -b*T)`, so a stored run carries every
 arm inside it - which is what makes the offline paired comparison exact (the
-`retemperature.py` trick generalised).  The tool checks the round trip on every item of
+`retemperature.py` trick generalized).  The tool checks the round trip on every item of
 every population and records the worst difference.  With `b = 0` the map **is** the
 server's `apply_temperature`, called, not copied.  Unlike a temperature it can **move the
 pick**: the noul can cross 0.5 and the score's argmax can move.  That is the point - the
@@ -3517,7 +3517,7 @@ what it does to the noul (it drives it to a near-degenerate "no").
 
 ### 24.3 The fit and the populations
 
-**The pool** is the licence-clean fitting set of item 1.1b:
+**The pool** is the license-clean fitting set of item 1.1b:
 `tools/decision_policy/soft_label_pool.json`, 1,500 items, 500 a type, of which **250 a
 type carry a human distribution** (`go_emotions`, `civil_comments`,
 `measuring_hate_speech`).  The fit reads the stored T = 1 pool run
@@ -3565,7 +3565,7 @@ Two readings of that rule are fixed here:
   asserts the subset table reproduces the all-three arm to 1e-9.  If the candidate set
   fails (c), the **noul is removed first** (it is judged separately) and (c) is re-checked
   for the others; a set that still fails (c) ships nothing.
-* **The noul's separate judgement** is its own (a), its own (b), and its own 235 row (its
+* **The noul's separate judgment** is its own (a), its own (b), and its own 235 row (its
   accuracy and competence on that population) - the table reports all three.
 
 ### 24.5 The expected outcome, before the numbers
@@ -3611,7 +3611,7 @@ log-odds, at `T = 2.63`.  In the population's own numbers: the pool's mean P(yes
 **0.4142** to the humans' **0.1096**; the out-of-fold mapped mean is **0.1080**.  Across
 the five folds `T` is 2.35 to 3.20 and `b` is **-2.22 to -2.41** - the sign and the size do
 not turn on the split.  The cross-entropy falls from 0.9068 to 0.2821 nats, which is what
-moving the centre to the people buys.
+moving the center to the people buys.
 
 **The choice's fit has no shift and finds the temperature again: 3.65.**  That is the
 soft temperature of §20.4 to two decimals, and it must be: with no coordinate to shift
@@ -3740,7 +3740,7 @@ P(yes) goes **0.4451 -> 0.1222** against the humans' **0.0892**; the TVD falls *
 0.1234** (the paired item bootstrap: **-0.2602 [-0.3214, -0.1993]**, 67% of items better),
 the bias **+0.3560 -> +0.0330**, and the AUC is **0.8577 either way** - a monotone map
 cannot move a binary ranking, and this one did not.  **91 of the 222 answers move and only
-one net answer is lost** (167 -> 166).  The gain is the **centre, not new information**:
+one net answer is lost** (167 -> 166).  The gain is the **center, not new information**:
 the AUC is unchanged and **33% of the items are further from the humans** - the shift
 moves the whole distribution, and the mean gap closes because the mean was where the error
 was.  This is the item's exit criterion's first half, met out of sample: the shift
@@ -3780,7 +3780,7 @@ T = 1**: `helpsteer2_helpfulness` is 0.39 levels *below* the gold and
 `helpsteer2_verbosity` 0.51 *above* it on the pool; the same opposition is on the test
 (-0.19 and +0.71) and in the 235's larger cells.  So the aggregate **+0.14** (§22.5's
 +0.1348 on its own run; +0.1401 on this one) is not one bias: it is opposite errors
-cancelling.  Even a correctly normalized tilt cannot serve two configs that want
+canceling.  Even a correctly normalized tilt cannot serve two configs that want
 opposite directions.  **A per-type location is the wrong unit for the score**; a
 per-config location is the right one, and that is a different item.
 
@@ -3887,7 +3887,7 @@ branch of the criterion.
   pre-registration.
 * **The same caveats as §20:** the two populations are different kinds of question
   (Jev-style typed decisions against content judgments), the constants belong to this
-  model and this quantization, and the pool is licence-clean but validation-only.
+  model and this quantization, and the pool is license-clean but validation-only.
 * **No engine, no server, no GPU, no new dependency.**  Everything above comes from the
   stored runs in
   `...\decision_policy_training\run\` and `...\opendecisions\`; the fit and the report are
@@ -3930,7 +3930,7 @@ departures from the plan's recipe, each forced and each recorded:
 * **`--resident-budget-gib 20`** instead of the live 36. With 36 GiB and another session
   holding 9.6 GB, the host had 261 MiB available and the engine's own admission refused every
   park (`need 671 MiB plus 2560 MiB floor`). Arm A could not park, which is not today's
-  behaviour. The 20 GiB copy leaves about 7 GB and the floor is met: the chat's snapshot is
+  behavior. The 20 GiB copy leaves about 7 GB and the floor is met: the chat's snapshot is
   704 MiB at 7,258 tokens, a decision's 263 MiB at 1,822. All other arguments are the live
   ones.
 * **The decisions are 1,815-1,881 tokens**, not under 500. The shipping config keeps
@@ -3954,7 +3954,7 @@ fifth chat turn reads all 7,467 tokens. In the after arm the decisions read the 
 and pay the same read, but take no slot: **zero evictions**, the chat stays the only entry,
 and its fifth turn resumes 99.6% of itself. The remaining parks in B (1, 2 and 3 across the
 runs) are the chat path parking and restoring its own conversation between turns, which is
-today's behaviour.
+today's behavior.
 
 The walk is untouched in both arms: its steps read `1,877 = 1,867 reused + 10 read` and
 `1,879 = 1,878 reused + 1 read` (99.5% / 99.9%) in every run. The 25 skips in B are the 20
@@ -3991,7 +3991,7 @@ evicted, and it is the one the after arm keeps.
 * The 20 GiB resident copy is the one departure from the live config; it changes what the
   engine keeps in RAM, not the cache's rules.
 * **Not run:** the latency comparison (the card is shared); three runs per arm on the 235
-  (one each); a default-on arm (the plan's step 6; it was run afterwards, §25.6); the
+  (one each); a default-on arm (the plan's step 6; it was run afterward, §25.6); the
   walk's answer identity on a stored run; any AMD or Mac engine. The 235's run-to-run
   spread is quoted from §23, not re-measured.
 
@@ -4018,15 +4018,15 @@ they are not effects.
 
 1.4 closed with a finding and an open item.  The finding: the score's error at T = 1 is not one location.  On the
 jev-bench sample `helpsteer2_helpfulness` sits 0.39 levels BELOW the gold and `helpsteer2_verbosity` 0.51
-ABOVE it, so the type-wide +0.14 is two opposite errors cancelling; and a tilt fitted on the raw level index is
+ABOVE it, so the type-wide +0.14 is two opposite errors canceling; and a tilt fitted on the raw level index is
 not the same size on a 3-level question as on a 5-level one.  The open item (1.4b) asks whether a location on the
-NORMALISED position `u_k = k/(K-1)`, fitted PER CONFIG, transfers where the type-wide constant did not.
+NORMALIZED position `u_k = k/(K-1)`, fitted PER CONFIG, transfers where the type-wide constant did not.
 
 **What the data on this machine can answer, counted before any effect was looked at.**
 
 | population | score items | with a human distribution | with a stored T = 1 run |
 |---|---:|---:|---|
-| the licence-clean pool | 500 | **250** (`measuring_hate_speech`, K = 3) | 1,500 of 1,500 |
+| the license-clean pool | 500 | **250** (`measuring_hate_speech`, K = 3) | 1,500 of 1,500 |
 | the pool's `helpsteer2_helpfulness` / `_verbosity` | 125 + 125 (K = 5) | **0** - gold level only | yes |
 | the jev-bench sample, `measuring_hate_speech` | 50 | **50** | 683 of 683 |
 | the jev-bench sample, `helpsteer2_*` | 24 + 24 (K = 5) | **0** - gold only | yes |
@@ -4035,11 +4035,11 @@ NORMALISED position `u_k = k/(K-1)`, fitted PER CONFIG, transfers where the type
 Three consequences, and they shape the experiment rather than excuse it:
 
 * **The unit does not matter for a fit inside ONE config.**  With K fixed, `b * k/(K-1)` and `b' * k` describe
-  the same one-parameter family (`b' = b/(K-1)`) and give identical distributions.  Normalising matters when one
+  the same one-parameter family (`b' = b/(K-1)`) and give identical distributions.  Normalizing matters when one
   b is SHARED across configs of different K - which is what 1.4 did, and what made its tilt incommensurable - and
   it matters for comparing fitted b's across configs.  So "per config on the normalised position" is, for a
   single config, "one location fitted for that config", and this section says so instead of letting the
-  normalisation look like the thing being tested.
+  normalization look like the thing being tested.
 * **Only one config can be fitted against PEOPLE**: `measuring_hate_speech` (K = 3), 250 pool items, transferred
   to the 50 jev-bench sample items of the same config.  The two `helpsteer2` configs have no human distribution
   anywhere on this machine, so their arm can only be fitted against the GOLD LEVEL - a location toward the gold,
@@ -4055,15 +4055,15 @@ Three consequences, and they shape the experiment rather than excuse it:
     p'_k = normalize( p_k * exp(b_c * (u_k - 0.5)) ),   one b_c per config
 
 `T = 1` in every arm (a location, not a scale: 1.4's scale arm is measured and does not ship).  The `- 0.5` is
-cosmetic - a constant in the exponent cancels in the normaliser - and it makes `b_c = 0` the identity and `b_c`
+cosmetic - a constant in the exponent cancels in the normalizer - and it makes `b_c = 0` the identity and `b_c`
 comparable across configs.
 
-**Arm H (against people).**  Config `measuring_hate_speech`.  Fit b by minimising the mean cross-entropy against
+**Arm H (against people).**  Config `measuring_hate_speech`.  Fit b by minimizing the mean cross-entropy against
 the human distribution (the `soft` objective of 1.1b and 1.4), 5-fold leak-free CV
 (`temperature.stratified_folds`, seed 42), one b per held-out fold fitted on the other four.
 
 **Arm G (against the gold).**  Configs `helpsteer2_helpfulness` and `helpsteer2_verbosity`.  Fit b by
-minimising the mean cross-entropy against the ONE-HOT gold level, same folds and seed.  This is the only target
+minimizing the mean cross-entropy against the ONE-HOT gold level, same folds and seed.  This is the only target
 the data carries for these configs, and a pass here says the level error is movable - not that the reported
 distribution is better calibrated against people.
 
@@ -4129,7 +4129,7 @@ test):
    `helpsteer2_verbosity`.**  "Predict the pool's mean gold level for every item" scores a mean |level error|
    of **0.431** on verbosity (against T = 1's 0.752 and the map's 0.648).  On `helpsteer2_helpfulness` the
    same prior scores 1.103, which is *worse* than T = 1's 1.044 - there the map's 0.982 is the best of the
-   three, but only 0.062 better than doing nothing.  So the tilt moves the model's distribution centre toward
+   three, but only 0.062 better than doing nothing.  So the tilt moves the model's distribution center toward
    the population's gold mean (verbosity) or leaves it barely better (helpfulness); it does not make the
    distribution better per item.  For a 5-level question with gold-only labels that is all a one-parameter
    location *can* do, which is why 26.1 said a pass here would be the weaker claim.
@@ -4139,8 +4139,8 @@ test depends on it) at T = 1: mean |expected level - gold| **0.306 levels**, arg
 is applied to them, because none of their configs is a jev config: a fitted b would arrive there as a foreign
 constant, which is the transfer 1.1b and 1.4 already measured failing.
 
-**The unit, as 26.1 predicted.**  Inside one config the normalised axis and the raw level index are the same
-one-parameter family, so the normalisation did no work in any of these three fits.  What 1.4 got wrong was
+**The unit, as 26.1 predicted.**  Inside one config the normalized axis and the raw level index are the same
+one-parameter family, so the normalization did no work in any of these three fits.  What 1.4 got wrong was
 sharing one b across K = 3, 4 and 5 with a raw index - not the index itself.  This run therefore does **not**
 vindicate "per config on the normalised axis" as a new mechanism; it measures one location per config, which is
 what the data could support.
@@ -4156,12 +4156,12 @@ what the data could support.
   criterion named in advance: **with gold-only labels the score's location is a task property here, not a
   calibration** - the information a per-item location would need is not in the labels this machine has.
 * **The one thing that would reopen it** is a human distribution for a 5-level score config.  There is none on
-  this machine (26.1's table); the licence record's rules decide where one could come from.
+  this machine (26.1's table); the license record's rules decide where one could come from.
 
 **The limits, and what was not run.**
 
 * One 3-level config with human labels, two 5-level configs with gold only, one seed (42) and five folds; the
-  bootstrap is the programme's paired item bootstrap, 1,000 resamples.
+  bootstrap is the program's paired item bootstrap, 1,000 resamples.
 * The jev-bench samples are 50 and 24 items: Arm G's 24-item intervals are wide by construction, and (d)'s
   0.10-level margin is generous for that size.
 * No engine, no live run: every arm is the stored T = 1 reading re-scaled, so this says nothing about the
@@ -4198,7 +4198,7 @@ judge the wrong thing:
   5-level configs disagree in sign. The metric is therefore the **mean signed level
   difference** and the mean absolute level error **per config**, never pooled across K.
 
-The design set is the same licence-clean pool (`p1b_pool.jsonl`) and the same 500 items per
+The design set is the same license-clean pool (`p1b_pool.jsonl`) and the same 500 items per
 type that the noul's run used. The halves are the pool's own:
 
 | type | half | items | configs | the labels |
@@ -4407,7 +4407,7 @@ and 8.2 SE at n = 100. The guards were the opposite: the 3-item accuracy margin 
 the 0.02 ECE margin is roughly 10 SE, so it fails a variant on a difference far smaller than
 the decision needs. **The primary was over-powered and the guards were not calibrated at
 all** - and no base-vs-base repeat was run for either type, so their margins were assumed,
-not measured. The GPU is the programme's critical path; this section is the rule that spends
+not measured. The GPU is the program's critical path; this section is the rule that spends
 it on the decision, not on precision nobody asked for.
 
 **The rule, for every arm from now on (1.5's next arms, the Phase 2 training arms, any
@@ -4462,7 +4462,7 @@ expected level is **0.932** against the humans' **0.600** - the +0.33 of §2.5, 
 a fresh run - its mean TVD **0.4437**, and its top level matches the humans' majority on
 **120 of 250** (48%). The mean-level prior (one prediction at 0.600 for every item) has a
 mean absolute error of **0.595 against the base's 0.548**: on this population the model beats
-the prior, so 1.4b's verbosity finding (the prior beat the fitted map) does not generalise to
+the prior, so 1.4b's verbosity finding (the prior beat the fitted map) does not generalize to
 this config. On the 250 hard items: helpfulness signed -0.34, mean |error| 1.021; verbosity
 +0.50, mean |error| 0.742.
 
@@ -4484,7 +4484,7 @@ words "lowest first" and leaves the list alone: it raises the level by **0.031**
 the distance by **0.0092**. The same scale read two ways moves its prior in opposite
 directions, which is what makes the wording a prior: the words and the list order each carry
 one, and neither moves the distribution's shape toward the people's. The rule asks for the
-distance to fall, so both fail (a) whatever the sign of the centre's move.
+distance to fall, so both fail (a) whatever the sign of the center's move.
 
 **S3 is the batch's big loser, and the asymmetry with the noul is the finding.** Putting the
 levels before the question - the exact move that cut the noul's bias by 0.078 and its TVD by

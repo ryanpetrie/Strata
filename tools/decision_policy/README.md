@@ -161,7 +161,7 @@ official scorer's Capability, Intelligence and Calibration.  The inversion is va
 ## The per-type affine calibration (roadmap item 1.4)
 
 The temperature is one scalar per type, and a scalar moves a distribution's **scale**.
-The noul's measured error is the **centre**: on the jev-bench human labels the model
+The noul's measured error is the **center**: on the jev-bench human labels the model
 over-predicts "yes" on 95 of 100 items, with a mean signed difference of +0.357 against a
 mean absolute 0.384 (companion doc §19.6).  This tool fits **two parameters per type**,
 in the type's own units:
@@ -174,7 +174,7 @@ p'_l = normalize( p_l ** (1/T) * exp(b * s_l) )
 |---|---|---|---|
 | noul | T, b | 0 for no, 1 for yes | `logit(P'(yes)) = logit(P(yes))/T + b`, in log-odds |
 | score | T, b | the level's index 0..K-1 (the measurement corrects the unit: the normalized position k/(K-1), and the location is per config - companion doc 24.10) | a tilt along the ordinal axis: a location parameter |
-| choice | T | none | **not identified** - a shift that is the same for every option is cancelled by the normalizer, so the choice's map is the scale only |
+| choice | T | none | **not identified** - a shift that is the same for every option is canceled by the normalizer, so the choice's map is the scale only |
 
 The map is **invertible** (`undo(q) = apply(q, 1/T, -b*T)`), so one stored run carries
 every arm and the comparison is paired; with `b = 0` it is the server's own
@@ -306,7 +306,7 @@ python tools/decision_policy/jevbench_rewrites.py --items <sample.jsonl> --out <
 calibration can be scored against how uncertain the humans were and not only against one right answer. The
 run log carries that distribution and the total variation distance to it per item. Caveats the sample's own
 metadata records: jev-bench has no difficulty tier, so every item is filed under `"hard"` and the scorer's
-tier weights collapse to one - say so in any write-up, it is not a difficulty claim; the licence is per-source
+tier weights collapse to one - say so in any write-up, it is not a difficulty claim; the license is per-source
 and mixed (several "research use only"); and the dataset says validation only.
 
 `jevbench_paired.py` makes the **paired** comparison of a run made with a temperature against the same run
@@ -342,7 +342,7 @@ missing answer as wrong), and neither retries a request that produced an answer.
 ## The soft-label training data
 
 The decision policy needs a copy of **human uncertainty**, not of the model's own confidence. Three
-public datasets carry a human label distribution, and the licence record for them (and for everything
+public datasets carry a human label distribution, and the license record for them (and for everything
 else that might be trained on) is
 [docs/research/decision_policy_training_data.md](../../../docs/research/decision_policy_training_data.md).
 
@@ -370,8 +370,8 @@ of the validation pool, 200 items per question type by default, so a per-type fi
 
 **The pool plan** (`soft_label_pool.json`, tracked in the repo) is the fitting pool of the per-type
 temperature: 500 items of every question type, with the per-config counts and the seed fixed in the file,
-so the pool is reproducible.  It also carries the **licence verdict** of every config, taken from the
-licence record, and the list of the configs that are out and why.  `--plan` draws per config (the types
+so the pool is reproducible.  It also carries the **license verdict** of every config, taken from the
+license record, and the list of the configs that are out and why.  `--plan` draws per config (the types
 in the fixed order choice, noul, score; the configs of a type in sorted order; one seeded generator), and
 a config the data does not have, or a count the split cannot fill, is an error rather than a smaller pool.
 
@@ -397,7 +397,7 @@ is in the companion doc's section 20.
 | File | Source or generated | Purpose |
 | --- | --- | --- |
 | `make_examples.py` | source | the state schema, the label rule (`decide`), and the generator. It asserts the rule matches every stated target. |
-| `examples.jsonl` | generated | 60 synthetic, rule-labelled examples. Do not hand-edit; change `make_examples.py` and re-run. |
+| `examples.jsonl` | generated | 60 synthetic, rule-labeled examples. Do not hand-edit; change `make_examples.py` and re-run. |
 | `baseline.py` | source | the harness: prompts, timing, validation, metrics, report. |
 | `baseline_report.json` / `.md` | generated | Phase 1 results. |
 | `stage_a.py` | source | the fixed-preamble experiment: verbose vs compact arms, new-vs-repeat split, prompt-token counts. |
@@ -433,9 +433,9 @@ is in the companion doc's section 20.
 | `jevbench_sample.py` | source | builds the 3% sample and its scorer-shaped items file from the dataset. |
 | `jevbench_rewrites.py` | source | the JevBench coherence metric over the endpoint's answers (the official laws, re-implemented). |
 | `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
-| `download_soft_labels.py` | source | fetches the licence-clean soft-label splits and writes the manifest of what it fetched. |
+| `download_soft_labels.py` | source | fetches the license-clean soft-label splits and writes the manifest of what it fetched. |
 | `soft_labels.py` | source | the soft-label data in the harness's item shape: the checks, the stratified sample and the scorer proof. |
-| `soft_label_pool.json` | source | the fitting pool: the per-config counts, the seed and the licence verdict of every config. |
+| `soft_label_pool.json` | source | the fitting pool: the per-config counts, the seed and the license verdict of every config. |
 | `test_soft_labels.py` | source | unit tests for the converter (no network, no data). |
 | `test_temperature.py` | source | unit tests for the fit: the server's transform, the soft objective, the no-leak property and the regression on the 235-item fit. |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |

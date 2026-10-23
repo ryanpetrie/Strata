@@ -606,7 +606,7 @@ recorded rather than hidden:
   engine held 34.5 GB and the host had **261 MiB** available; the engine's own admission
   then refused every park - `skip parking (physical RAM admission; need 671 MiB plus 2560
   MiB floor, 261 MiB available)`, measured in the first attempt - so arm A could not park,
-  which is not today's behaviour and cannot measure the fix. Every arm's config copy
+  which is not today's behavior and cannot measure the fix. Every arm's config copy
   therefore sets **`--resident-budget-gib 20`** and nothing else. The 20 GiB copy leaves
   ≈7 GB and the floor is met: the chat's snapshot is 704 MiB at 7,258 tokens and a
   decision's 263 MiB at 1,822.
@@ -645,7 +645,7 @@ read` (the server's `cached_tokens` agrees on all six). Every run answered all 2
   every run, the chat's entry stays the only one (`parked=1`), and turn 5 resumes it:
   **99.6% reused**. The parks that remain are the chat's own: the chat path parks and
   restores its own conversation between turns (1, 2 and 3 parks in the three runs), which is
-  today's behaviour and is not the key's doing.
+  today's behavior and is not the key's doing.
 * **The skip count is 25, not 20.** The 20 decision switches, plus 5 more: each trie-walk
   step resumes from a checkpoint 10 tokens back rather than from the live session, so it
   tries to park the base request's conversation too, and the key suppresses that as well.
@@ -731,7 +731,7 @@ Capability points and differ in 2 noul items, §23); the key changes no arithmet
 | walk steps | `1,878 = 1,868 + 10` and `1,879 = 1,878 + 1` (99.5% / 99.9%) |
 | decisions | 20 base requests, all `0 reused` (the key does not make a fresh conversation reusable) |
 
-The parks that remain are the chat's own (3), which is today's behaviour and the reason
+The parks that remain are the chat's own (3), which is today's behavior and the reason
 the stopgap could go: a chat turn parks and resumes itself whichever side of 2k it is.
 
 **The 235, fresh engine, same config:** 235/235 on the fast path, 0 failures,

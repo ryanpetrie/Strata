@@ -38,7 +38,7 @@ adapter. One reading from the code is marked as unconfirmed static analysis (§6
 | The engine's command line | the config's `exe` and `args`, plus `--serve` - the same line the server's own log records for the live server (`strata-unsloth-ud-iq4_xs.log:139373`) |
 | The engine's environment | the server's own `child_env()` (`serve/server.py:3258`) plus the config's `env` (`STRATA_HC_Q8=1`) |
 | The tokenizer | the config's pack tokenizer, through the repo's own `tools/strata_tokenizer.py`, with the model's own `chat_template.jinja` |
-| The server | **stopped for the measurement** (one engine instance may hold the card). The GPU had 23782 MiB free before the standalone engine started. The server was started again afterwards with the same command line and the same config. |
+| The server | **stopped for the measurement** (one engine instance may hold the card). The GPU had 23782 MiB free before the standalone engine started. The server was started again afterward with the same command line and the same config. |
 
 The prompts are fixed text, so the token ids are the same in every run:
 

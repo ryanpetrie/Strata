@@ -31,7 +31,7 @@ that the measurement cannot be a hill-climb.
 **Where this sits.** §1.5 of the roadmap is a **working-copy** item: it is in the
 orchestrator's uncommitted roadmap edits, not yet in a commit. The companion doc's
 §§12.5, 14, 18 and 19 that this document cites are in the committed
-`shared_backbone_decision_policy.md`. The licence record
+`shared_backbone_decision_policy.md`. The license record
 (`decision_policy_training_data.md` §7) is on the data branch
 `feat/data-softlabels`; it is cited here, not copied.
 
@@ -155,7 +155,7 @@ Questions:
   start your answer line with exactly "q:"
 ```
 
-**The licence-clean pool**, `decision_policy_training/items/p1b_pool.jsonl`, item
+**The license-clean pool**, `decision_policy_training/items/p1b_pool.jsonl`, item
 `civil_comments/validation/8822` (gold `no`; the humans' distribution is
 `{"yes": 0.0, "no": 1.0}`):
 
@@ -444,7 +444,7 @@ would test it, so nothing here is load-bearing on its own.
    first in **three** places: the system turn's `- A yes/no question takes
    exactly `yes` or `no`.`, the criteria line `yes means "X" ; no means "Y"`, and
    the line `answer yes or no`. A first-mentioned side is a plausible prior. The
-   two sides carry the same information, so a swap can only move the **centre**,
+   two sides carry the same information, so a swap can only move the **center**,
    never the ranking. **This is the base-rate axis.** Tested by N1 and N2 (§3.1)
    and measured by the probe P1 (§3.4).
 
@@ -514,7 +514,7 @@ the code says it cannot be:
 - `serve/systemone.py:426-432` and `484-487`: the decode path maps the text
   "yes" to yes and "no" to no, the same way.
 
-And the stored run agrees with itself: over the 100 human-labelled noul items the
+And the stored run agrees with itself: over the 100 human-labeled noul items the
 closed reading's `P(yes) >= 0.5` disagrees with the run log's recorded pick on
 **0** items, and the open and the closed readings differ by at most 0.0088 on any
 item. The open-versus-closed choice moves the mean P(yes) by 0.0029, so it is not
@@ -558,7 +558,7 @@ dataset's own criteria.
 |---|---|---|---|---|---:|
 | **N1** `criteria-order` | the order the two sides are presented in | the criteria line becomes `no means "{false}" ; yes means "{true}"` and nothing else changes | the affirmative side is named first in the template and carries a prior; taking it out lowers the mean P(yes) | **BASE RATE.** The two sides carry the same information, so the ranking cannot change. On the OpenDecisions 235 (55.1% "yes") it will lose accuracy: a uniform log-odds shift of -0.25 already costs 2 of the 69 items, -1.0 costs 4 and -1.5 costs 8 (measured from the stored run) | 0 tokens (a reorder) |
 | **N2** `answer-order` | the order the two sides are presented in, in the answer line | `answer yes or no` becomes `answer no or yes` | the same prior, in the one place the model reads when it decides | **BASE RATE**, and it is confounded with N1: the two move the same prior. Running both is what measures how big the prior is | 0 tokens (a reorder) |
-| **N3** `rule-form` | the criteria's connective | `yes means "{true}" ; no means "{false}"` becomes `answer yes if the state is "{true}"; answer no if the state is "{false}"` | the criteria read as a **definition** ("this is what yes means") invite a category judgement; read as a **rule** they invite a test ("does the state meet it?"). The noul's failure is a judgement that is too harsh, and a test reads more strictly than a category | it can also make the model *more* literal and therefore more likely to say yes. The direction is not predictable, which is the point | +~9 tokens (a 15-character edit) |
+| **N3** `rule-form` | the criteria's connective | `yes means "{true}" ; no means "{false}"` becomes `answer yes if the state is "{true}"; answer no if the state is "{false}"` | the criteria read as a **definition** ("this is what yes means") invite a category judgment; read as a **rule** they invite a test ("does the state meet it?"). The noul's failure is a judgment that is too harsh, and a test reads more strictly than a category | it can also make the model *more* literal and therefore more likely to say yes. The direction is not predictable, which is the point | +~9 tokens (a 15-character edit) |
 | **N4** `criteria-first` | the instruction line's position relative to the criteria | the criteria line is emitted **before** the `[q | noul] ...` header line; everything else is unchanged | the model reads the question *through* the criteria instead of the criteria *through* the question. On `civil_comments` the question is "Is this comment toxic?" - a question whose affirmative is salient. Reading the criteria first removes that priming | it can go the other way: knowing what "rude" means before reading the comment may make the model find more rude comments. The two orders make **opposite** predictions, which is why this is the best single variant to run | 0 tokens (a reorder) |
 | **N5** `decision-rule` | whether the template states a decision rule | one line is added: `answer yes only when the state supports the yes answer; otherwise answer no` | the template says nothing about what to **do** with the criteria, so the model falls back on its own prior. A rule that points at the answer changes the weighing | **confounded.** A rule of this shape also pushes the base rate down, so a win here cannot be told apart from N1/N2. It is the most useful variant and the least clean | +~36 tokens (a 58-character line) |
 
@@ -614,7 +614,7 @@ question**, and the readout is untouched.
    (measured, §5.2), so that is the floor.
 2. **The swap gap**, `d_i = P_yes(base) − P_yes(swap)`, and its mean. `d > 0`
    means the first-listed side carries a prior; `d ≈ 0` means the two
-   presentations produce the same judgement.
+   presentations produce the same judgment.
 3. **The AUC.** A presentation change should not change the ranking, so the AUC
    should not move.
 
@@ -631,7 +631,7 @@ the probe.
 | the two arms differ by about 0.0029 in the mean | the bias would be in the **readout's open/closed choice**. That is the measured worth of that choice, so it is not it either |
 
 **The probe is cheap and it is the first thing to run.** It costs one arm on the
-design set's 250 human-labelled noul items: 250 items at 3.5 s is **15 minutes**
+design set's 250 human-labeled noul items: 250 items at 3.5 s is **15 minutes**
 of GPU time plus a restart. If it finds no order component, N1 and N2 are dead
 and the budget goes to N3, N4 and N5 instead. **That is the whole point of
 running the probe first.** P1 is N1 and N2 **together**, so it measures the
@@ -812,7 +812,7 @@ there. All four are now written (§4.4).
   line builders (`:232`, `:273`, `:290`), the assembler `_question_lines`
   (`:311`), and the two renderers (`:333`, `:360`). All **fourteen** variants are
   implemented: the noul's N1-N5 and the probe P1, the choice's C1-C4 and the
-  score's S1-S4. The mechanism generalised cleanly to the choice and the score -
+  score's S1-S4. The mechanism generalized cleanly to the choice and the score -
   the same shape (a lead block, a body, a suffix) carries all three types - so all
   three are there, each with its own one-axis test.
 - `serve/server.py`: the config reader `systemone_prompt_variants` (`:8377`), the
@@ -953,7 +953,7 @@ Four things, and one of them is a defect the implementation found.
    probe is a run somebody else does later against a live server. The probe is
    marked as such in the code and here.
 2. **The choice's and the score's arms are implemented** (C1-C4, S1-S4), not only
-   the noul's. The mechanism generalised cleanly, and §6's last paragraph says the
+   the noul's. The mechanism generalized cleanly, and §6's last paragraph says the
    choice's and the score's arms need their own pre-registration before they are
    run; that is still true. The **noul's** arms were run on 2026-10-22; the
    choice's and the score's were not.
@@ -987,11 +987,11 @@ Four things, and one of them is a defect the implementation found.
 
 ## 5. The measurement design
 
-### 5.1 The design set: the licence-clean pool, and why it splits in two
+### 5.1 The design set: the license-clean pool, and why it splits in two
 
 The design set is item 1.1b's pool, `decision_policy_training/items/p1b_pool.jsonl`
 (seed 20261021, 1,500 items, 500 a type, 750 with a human distribution). It is
-licence-clean, so using it for an ablation is allowed: the licence record
+license-clean, so using it for an ablation is allowed: the license record
 (`decision_policy_training_data.md` §7, on the data branch) puts `civil_comments`
 (CC0), `paws` (free for any purpose), `strategyqa` (MIT) and the rest of the
 pool's configs in the "usable" list, and the `test` splits of every source stay a
@@ -1111,7 +1111,7 @@ The per-item costs, measured:
 |---|---:|---|---:|
 | the jev-bench test sample | 683 | 73.5 min (companion doc §19.1) | 6.46 s |
 | the OpenDecisions 235 | 235 | ~14 min (roadmap item 1.1b) | ~3.6 s |
-| the licence-clean pool | 1,500 | ~87 min (roadmap item 1.1b) | ~3.5 s |
+| the license-clean pool | 1,500 | ~87 min (roadmap item 1.1b) | ~3.5 s |
 | an engine restart | - | 2 min 13 s (companion doc §19.1: 19:24:33 to 19:26:46) | - |
 
 **The first batch: the noul only.**
@@ -1164,7 +1164,7 @@ it invalidates.
 > **Scope.** The noul arm only. One question type, one design set, one metric
 > family, five variants against one base arm.
 >
-> **The design set.** The licence-clean pool's 500 noul items
+> **The design set.** The license-clean pool's 500 noul items
 > (`p1b_pool.jsonl`). Half A: the 250 `civil_comments` items, which carry the
 > human distribution and the true/false criteria. Half B: the 250 `paws` and
 > `strategyqa` items, which carry a hard label and a 45.2% "yes" gold rate.
@@ -1248,7 +1248,7 @@ it invalidates.
 > is a base-rate shift (guard 2 or (d) fails while (a) passes), the conclusion
 > is that the template's bias is a **calibration** problem and not a prompt
 > problem: the run then hands over to roadmap item 1.4 (an affine fit per type),
-> which can move a distribution's centre, and it says so. **A variant that only
+> which can move a distribution's center, and it says so. **A variant that only
 > moves the base rate is not a result; it is item 1.4 wearing a prompt's
 > clothes.**
 >
@@ -1354,8 +1354,8 @@ base-rate guard, and without them the discipline is a formality.
 - **The model and the quantization are fixed.** The constants and the template
   belong to this model at this quantization. A variant that wins here is a
   candidate for this model, not a general claim about prompt templates.
-- **The licence record governs the design set.** `p1b_pool.jsonl` holds only
-  licences that oblige nothing beyond attribution, and the `test` split of every
+- **The license record governs the design set.** `p1b_pool.jsonl` holds only
+  licenses that oblige nothing beyond attribution, and the `test` split of every
   source stays a yardstick. OpenDecisions says in plain words that it is not for
   training, and it is used here only as a yardstick, never to choose a variant.
 
@@ -1363,7 +1363,7 @@ base-rate guard, and without them the discipline is a formality.
 
 ## 9. The results (2026-10-22)
 
-The probe and the noul arms were run on the licence-clean pool, each completed arm
+The probe and the noul arms were run on the license-clean pool, each completed arm
 on a freshly restarted engine, 500 of 500 items answered, 0 failures, 100% on the
 fast path. The record, the commands and the per-arm detail are in the companion
 doc **§23**.

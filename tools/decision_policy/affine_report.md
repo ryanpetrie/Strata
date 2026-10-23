@@ -21,7 +21,7 @@ p'_l = normalize( p_l ** (1/T) * exp(b * s_l) )
 |---|---|---|---|
 | noul | T, b | 0 for no, 1 for yes | `logit(P'(yes)) = logit(P(yes))/T + b`: the shift, in log-odds |
 | score | T, b | the level's index 0..K-1 | a tilt along the ordinal axis, in log-odds per level: a location parameter |
-| choice | T | none | **not identified**: a shift that is the same for every option is cancelled by the normalizer |
+| choice | T | none | **not identified**: a shift that is the same for every option is canceled by the normalizer |
 
 The map is invertible: `undo(q) = apply(q, 1/T, -bT)`, and the round trip is
 checked on every item of every population (the worst difference is in the JSON).
@@ -227,7 +227,7 @@ the 5-level configs disagree in **sign** (`helpsteer2_helpfulness` is 0.39 level
 *below* the gold and `helpsteer2_verbosity` 0.51 *above* it on the pool), so even a
 correctly scaled tilt could not serve both.  **The score's location error is
 per config, not per type** - the aggregate +0.14 of §22.5 is two opposite errors
-cancelling.  The normalized position k/(K-1) would fix the unit, not the sign; a
+canceling.  The normalized position k/(K-1) would fix the unit, not the sign; a
 per-config location is a different item.
 
 ## The control: the TVD objective

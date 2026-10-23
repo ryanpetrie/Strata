@@ -80,6 +80,6 @@ see below.
 
 ## The rule that still applies
 
-Training data is governed by [decision_policy_training_data.md](decision_policy_training_data.md): the licence
+Training data is governed by [decision_policy_training_data.md](decision_policy_training_data.md): the license
 record, and the rules that follow from it.  Nothing in this environment changes them - OpenDecisions stays
-validation-only, jev-bench stays the human yardstick, and a training run uses the licence-clean pool.
+validation-only, jev-bench stays the human yardstick, and a training run uses the license-clean pool.
