@@ -1,11 +1,10 @@
 # Phase 2.1: the training environment (2026-10-22)
 
-**Status: installed and smoke-tested; the exit criterion is NOT yet met.**  The stack is in place and a training
-step runs, but so far only on the CPU - the 4090 carries the user's chat model, and roadmap 2.1 asks for a
-training run **on the card**, which needs it free.
-
-This is roadmap item [2.1](decision_policy_roadmap.md#21-training-infrastructure-prerequisite) - the
-prerequisite for 2.2's verification, 2.3 and 2.3b.  Nothing here touches the server's own environment.
+**Status: DONE (2026-10-22).**  Installed and smoke-tested, and the exit criterion is met: on 2026-10-22 the
+trivial run completed **on the 4090** (`--cuda`: 3 steps, losses 3.877, 3.886, 3.875, adapter written), with the
+server stopped for the run.  This is roadmap item
+[2.1](decision_policy_roadmap.md#21-training-infrastructure-prerequisite) - the prerequisite for 2.2's
+verification, 2.3 and 2.3b.  Nothing here touches the server's own environment.
 
 ## Where it is, and why there
 
@@ -41,7 +40,19 @@ C:\tools\strata-train\Scripts\python.exe tools/phase2/smoke_train.py --cuda     
 
 `env_setup.ps1` is idempotent: it creates the venv only when it is missing and re-runs pip on top.
 
-## What the smoke test proves, measured (CPU, 2026-10-22)
+## The trivial run, measured on the card (2026-10-22)
+
+```
+[smoke] torch 2.11.0+cu128, device cuda, trainable tensors 4, trainable params 1024
+{'train_runtime': '0.4424', 'train_steps_per_second': '6.781', 'train_loss': '3.879'}
+[smoke] trained 3 steps on cuda; losses 3.877, 3.886, 3.875; adapter written to <out>
+```
+
+That is 2.1's exit criterion: one successful trivial training run, on the 4090, recorded and reproducible with
+the two commands above.  It says the stack trains on this card.  It does not say a real adapter fits in VRAM -
+see below.
+
+## What the CPU run proves, measured (2026-10-22)
 
 ```
 [smoke] torch 2.11.0+cu128, device cpu, trainable tensors 4, trainable params 1024
@@ -66,8 +77,6 @@ C:\tools\strata-train\Scripts\python.exe tools/phase2/smoke_train.py --cuda     
   download, no tokenizer, no pretrained weights, nothing to learn. It tests the plumbing, not a recipe.
 * **Nothing about VRAM.** A 4-parameter adapter on a 32-wide model says nothing about what a rank-16 adapter on
   48 layers costs to train, or whether Adam's state fits beside the user's model. That is 2.3's question.
-* **Not the exit criterion.** 2.1's exit is "one successful trivial training run, recorded, reproducible" **on the
-  4090**. The command is above and the code is committed; the run waits for a free card.
 
 ## The rule that still applies
 
