@@ -4167,7 +4167,10 @@ what the data could support.
 * No engine, no live run: every arm is the stored T = 1 reading re-scaled, so this says nothing about the
   endpoint's latency or about a live temperature.
 * No pooling across K, no per-family fit, no interaction with T, and no per-item (state-dependent) calibration -
-  the last is the thing a location cannot be.
+  the last is the thing a location cannot be.  The one version of this that could ship a constant -
+  **per-workload calibration**, where the endpoint is told the kind of task and carries a correction for it - is
+  **backlogged to the roadmap's Maybe / someday** (2026-10-23, the product owner's decision), because it needs
+  people's answer distributions per workload and this machine has one score config and the noul.
 
 ## 27. The choice's and the score's prompt arms: the pre-registration (2026-10-22)
 

@@ -271,6 +271,25 @@ pick changes between the two arms), the **swap gap** `mean(P_yes(base) - P_yes(s
 **AUC** of P(yes) against the humans' hard label.  The variant is a launch-config value, so the
 probe's arm is a server start: the server must be running with `"prompt": {"noul": "swap"}`.
 
+**The choice's and the score's arms** (C1-C4, S1-S4) use their own pair, because
+`prompt_probe.py` is the noul's probe and its report is the noul's bias:
+
+```sh
+python tools/decision_policy/prompt_arm_run.py --items <p1b_pool.jsonl> --type choice \
+  --arm base --out <the base arm.jsonl> --config <the arm's launch config>
+python tools/decision_policy/prompt_arm_choice_score.py --type choice \
+  --items <p1b_pool.jsonl> --base <the base arm.jsonl> --arm <the arm.jsonl> \
+  [--od235 ... --od235-base ... --od235-items ... --scorer <score.py>] \
+  [--jev ... --jev-base ... --jev-items ...]
+```
+
+`prompt_arm_run.py` runs one arm over that type's 500 pool items and is resume-safe;
+`prompt_arm_choice_score.py` applies the pre-registered rule (companion doc §27): the choice's
+mean TVD and top-label mass plus its accuracy and per-config hard-half ECE, the score's mean signed
+level difference, TVD and mean-level prior plus the two 5-level configs' signed errors, and rules
+(d)/(e) on the 235 and the jev-bench sample.  The server must be started with that type's variant
+in `"systemone": {"prompt": {...}}`.
+
 ## The other datasets
 
 `jevbench.py` and `jevbench_rewrites.py` run the two JevBench sets through the endpoint. They need the
@@ -389,6 +408,9 @@ is in the companion doc's section 20.
 | `vram_headroom.py` | source | the free VRAM during a run. |
 | `temperature.py` | source | the per-type temperature: the fit, the cross-validation, and the official scorer's numbers. |
 | `prompt_probe.py` | source | the prompt probe: the noul's template mirrored, the design set's half A, and the three readouts (the flip rate, the swap gap, the AUC). |
+| `prompt_arm_run.py` | source | one prompt arm for the choice or the score: that type's 500 pool items, resume-safe, the endpoint's own probabilities and a runlog. |
+| `prompt_arm_choice_score.py` | source | the choice's and the score's pre-registered rule (companion doc §27): the TVD, the top-label mass, the expected level, the mean-level prior, the per-config hard half, and the 235 and jev-bench yardsticks. |
+| `test_prompt_arm_choice_score.py` | source | that rule's arithmetic: the TVD, the expected level on the item's order, the prior, the per-config halves, and the verdicts on a good and a bad arm. |
 | `prompt_design_set.py` | source | the design set's composition: the noul's two halves and their base rates. |
 | `test_prompt_probe.py` | source | the probe's arithmetic: the readouts and the pre-registered reading of them. |
 | `temperature_calibration.json` | generated | the fitted constants and their provenance (the model, the date, the split rule, the seed, the ECE before and after). |
