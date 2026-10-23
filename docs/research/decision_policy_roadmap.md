@@ -286,7 +286,10 @@ human uncertainty.**
 
 So the letter readout stays an **opt-in flag** (`"systemone": {"readout":
 "letters"}`), the default stays the direct readout, and the item is recorded in the
-companion doc as a **population-specific** result. **The >26-option fallback is fixed and
+companion doc as a **population-specific** result. **Kept (2026-10-23, the owner's decision):**
+the flag stays, opt-in and fixed, for a caller who wants the lower request count and the
+simpler readout; it is not enabled anywhere, and it cannot be combined with a prompt variant.
+**The >26-option fallback is fixed and
 measured (2026-10-23).** A question with more options than letters is now rendered and
 read on the direct path instead of falling back to decode, and the offline paired analysis
 of the two stored runs (the fix makes those requests byte-identical to the direct arm's, so

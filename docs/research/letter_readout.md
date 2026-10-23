@@ -301,8 +301,10 @@ anyway, for two reasons: a decode-path answer that reports 1.0 on one option and
 rest is wrong for any caller that reads probabilities, and it recovers more than half of
 the flag's loss.  The flag's remaining 3.1-point deficit is the readout's own and is not a
 bug to fix; a user who turns the flag on gets a faster, simpler readout that is slightly
-worse against people.  If the owner would rather remove the flag than carry that, this
-result says removing it costs nothing measurable: no default uses it.
+worse against people.  **The owner's decision (2026-10-23) is to keep the flag**, opt-in and
+fixed: a caller who wants the lower request count and the simpler readout can have it, with
+the trade stated here.  It is not enabled anywhere, the default stays `tokens`, and it still
+cannot be combined with a prompt variant (the server refuses the pair at startup).
 
 **The limits.** The fixed arm's numbers for the 144 items are the **stored direct run's**
 readings, not a fresh run's.  The code path is identical (the same prompt, the same
