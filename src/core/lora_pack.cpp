@@ -153,7 +153,10 @@ bool parse_row(char* line, int lineno, Row& r, std::string& err) {
 /// not a formatting one (the plan's 3.3, whose two numbers this reproduces from the geometry in the name's shape).
 bool refuse_routed_expert(const std::string& name, const std::vector<int64_t>& shape, int64_t rank,
                           const ModelGeometry& g, std::string& err) {
-    const int64_t out = shape[0], in = shape[1], ne = shape[2];
+    // The layout table is in GGUF order: dim 0 is the CONTIGUOUS axis, which is the
+    // projection's INPUT (`ffn_gate_exps.weight` is {N, FF, NE}), so the expert tensor is
+    // [in, out, experts].
+    const int64_t in = shape[0], out = shape[1], ne = shape[2];
     const double fused = (double) rank * (double) (in * ne + out) * kFp16;
     const double per_expert = (double) ne * (double) rank * (double) (in + out) * kFp16;
     const int64_t layers = std::max<int64_t>(1, g.n_layers);
@@ -252,7 +255,11 @@ bool lora_load(const std::string& dir, const ModelGeometry& g, LoraAdapter& out,
                   "-dimensional tensor; a LoRA targets a projection";
             return false;
         }
-        const int64_t out_dim = shape[0], in_dim = shape[1];
+        // The layout table is in GGUF order: dim 0 is the CONTIGUOUS axis, which is the
+        // projection's INPUT (family_layout.hpp: `attn_k.weight` is {N, n_head_kv*head_dim}).
+        // PEFT's A is [rank, in] and B is [out, rank]; the file stores them transposed, so
+        // the index rows are A {rank, in} and B {out, rank}.
+        const int64_t in_dim = shape[0], out_dim = shape[1];
         const int64_t want0 = r.b ? out_dim : r.rank;
         const int64_t want1 = r.b ? r.rank : in_dim;
         if (r.m.ne0 != want0 || r.m.ne1 != want1) {
@@ -262,7 +269,7 @@ bool lora_load(const std::string& dir, const ModelGeometry& g, LoraAdapter& out,
                 if (o.base == r.base) (o.b ? b_shape : a_shape) =
                     "[" + std::to_string(o.m.ne0) + ", " + std::to_string(o.m.ne1) + "]";
             err = r.base + ": the adapter's A is " + a_shape + " and B is " + b_shape + "; the model's tensor is [" +
-                  std::to_string(out_dim) + ", " + std::to_string(in_dim) + "]";
+                  std::to_string(in_dim) + ", " + std::to_string(out_dim) + "]";
             return false;
         }
 

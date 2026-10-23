@@ -36,8 +36,9 @@ void check(bool ok, const std::string& what) {
 }
 
 /// A model small enough to write adapters for by hand.  The layout table reads every dimension from here, so
-/// `blk.3.attn_k.weight` is [out 3, in 3] and `blk.0.attn_qkv.weight` is [3, 4] - the same code path as the real
-/// geometry, with numbers a person can check.
+/// `blk.3.attn_k.weight` is {in 3, out 3} and `blk.0.attn_qkv.weight` is {in 3, out 4} - the same code path as the
+/// real geometry, with numbers a person can check.  The qkv tensor is the ASYMMETRIC case: a symmetric fixture
+/// cannot tell [in, out] from [out, in].
 ModelGeometry tiny_geometry() {
     ModelGeometry g;
     g.n_embd = 3;
@@ -229,6 +230,30 @@ int main() {
               "a wrong-shaped pair is refused with the adapter's A, its B, and the model's shape: " + err);
     }
     {
+        // AN ASYMMETRIC TENSOR, the case the symmetric fixture above cannot see.  The layout table's dim 0 is the
+        // projection's INPUT (`blk.0.attn_qkv.weight` is {in 3, out 4}), so a correct adapter is A {rank 2, in 3}
+        // and B {out 4, rank 2}.  Reading the table as [out, in] refuses exactly this pair.
+        const std::vector<std::string> rows = {
+            row("blk.0.attn_qkv.weight.lora_a", 2, 2.0, 2, 3, 0),
+            row("blk.0.attn_qkv.weight.lora_b", 2, 2.0, 4, 2, 12)};
+        const std::vector<uint16_t> blob(14, 0);          // 2 x 3 + 2 x 4 fp16 values
+        TempDir d;
+        check(write_adapter(d.path, rows, blob), "the asymmetric fixture is written");
+        LoraAdapter a;
+        std::string err;
+        check(lora_load(d.str(), g, a, err), "an adapter on a non-square tensor loads: " + err);
+        check(a.targets.size() == 1 && a.targets[0].in == 3 && a.targets[0].out == 4,
+              "the non-square tensor's in and out are the layout table's, not swapped");
+
+        // The mirrored pair (A {rank, out}, B {in, rank}) is the one the wrong reading accepted.
+        const std::vector<std::string> swapped = {
+            row("blk.0.attn_qkv.weight.lora_a", 2, 2.0, 2, 4, 0),
+            row("blk.0.attn_qkv.weight.lora_b", 2, 2.0, 3, 2, 16)};
+        const std::vector<uint16_t> blob2(14, 0);
+        const std::string e2 = refusal(g, swapped, blob2);
+        check(contains(e2, "[3, 4]"), "the refusal names the model's tensor as [in, out]: " + e2);
+    }
+    {
         // A tensor the model does not have.
         auto rows = golden_rows();
         rows[0] = row("blk.3.foo.weight.lora_a", 2, 2.0, 2, 3, 0);
@@ -247,18 +272,20 @@ int main() {
               "attn_q on a GDN layer is refused, naming the layers that have one: " + err);
     }
     {
-        // A routed-expert tensor, refused with BOTH sizes.  These are the plan's own numbers, reproduced from the
-        // real geometry: rank 16 on blk.3.ffn_gate_exps.weight is 10.6 MB fused for one tensor (507 MB over the 48
-        // layers, and 1.52 GB for the three expert tensors) and 52.4 MB per expert (7.55 GB over all 48).
+        // A routed-expert tensor, refused with BOTH sizes.  The tensor is {in 2560, out 640, 512 experts}: its
+        // dim 0 is the projection's INPUT, so a correct adapter is A {rank 16, in 2560} and B {out 640, rank 16}.
+        // The plan's arithmetic, re-run with the right labels: 42.0 MB fused for one tensor (2.01 GB over the 48
+        // layers, 6.03 GB for the three expert tensors) and 52.4 MB per expert (2.52 GB per tensor, 7.55 GB for
+        // the three).
         const ModelGeometry real;  // Qwen3.8-Flash-Next's compiled defaults
         auto rows = golden_rows();
-        rows[0] = row("blk.3.ffn_gate_exps.weight.lora_a", 16, 16.0, 16, 640, 0);
-        rows[1] = row("blk.3.ffn_gate_exps.weight.lora_b", 16, 16.0, 2560, 16, 20480);
-        std::vector<uint16_t> blob(16 * 640 + 16 * 2560, 0);
+        rows[0] = row("blk.3.ffn_gate_exps.weight.lora_a", 16, 16.0, 16, 2560, 0);
+        rows[1] = row("blk.3.ffn_gate_exps.weight.lora_b", 16, 16.0, 640, 16, 81920);
+        std::vector<uint16_t> blob(16 * 2560 + 640 * 16, 0);
         const std::string err = refusal(real, rows, blob);
-        check(contains(err, "routed-expert") && contains(err, "10.6 MB") && contains(err, "507.2 MB") &&
+        check(contains(err, "routed-expert") && contains(err, "42.0 MB") && contains(err, "2.01 GB") &&
                   contains(err, "52.4 MB") && contains(err, "2.52 GB"),
-              "a routed-expert tensor is refused with its two sizes (x3 = the plan's 1.52 GB / 7.55 GB): " + err);
+              "a routed-expert tensor is refused with its two sizes (per-expert x3 = the plan's 7.55 GB): " + err);
     }
     {
         // A rank above the engine's maximum.
