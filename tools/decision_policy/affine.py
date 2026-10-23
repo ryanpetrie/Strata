@@ -137,6 +137,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import sys
 from datetime import date as _date
@@ -163,11 +164,15 @@ PARAMETERS = {"choice": ("temperature",), "noul": ("temperature", "shift"),
 DEFAULT_SCORER = tp.DEFAULT_SCORER
 DEFAULT_CONFIG = tp.DEFAULT_CONFIG
 HERE = Path(__file__).resolve().parent
-RUN_DIR = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run")
-POOL_ITEMS = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\items\p1b_pool.jsonl")
+#: The data root: no tool in the repository carries this machine's absolute paths (CONTRIBUTING).  Set
+#: STRATA_DECISION_DATA to the directory holding `decision_policy_training/` and `opendecisions/`.
+DATA = Path(os.environ.get("STRATA_DECISION_DATA")
+            or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Temp" / "opencode"))
+RUN_DIR = DATA / "decision_policy_training" / "run"
+POOL_ITEMS = DATA / "decision_policy_training" / "items" / "p1b_pool.jsonl"
 POOL_RUNLOG = RUN_DIR / "p1b_pool_T1.runlog.jsonl"
 POOL_PREDICTIONS = RUN_DIR / "p1b_pool_T1.jsonl"
-OD_DIR = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions")
+OD_DIR = DATA / "opendecisions"
 OD_235_ITEMS = OD_DIR / "sample10_items.jsonl"
 OD_235_PREDICTIONS = RUN_DIR / "p1b_235_T1_from_current.jsonl"
 JEV_TEST_ITEMS = OD_DIR / "jevbench_sample3_items.jsonl"
