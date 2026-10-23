@@ -181,12 +181,20 @@ The HF names for the QSA projections are confirmed in this repo by the MTP inven
 `2560x6144`). The HF names for the **GDN** layers are **not found in this repo** - see §7, question 1.
 
 **The orientation trap (must be right, and is easy to get wrong).** The GGUF convention is "dim 0
-contiguous" (`include/strata/core/family_layout.hpp:12`), so the engine's `W` is `[in, out]` with
-`in` contiguous and computes `y = x @ W`. Hugging Face stores `W` as `[out, in]` with `in`
-contiguous. So **every LoRA `B` must be transposed** on the way in (`B` is `[out, r]` in PEFT; the
-engine wants `[r, out]`). LoRA `A` is `[r, in]` in PEFT and `[r, in]` in the engine - it maps
-directly. Getting `B` backwards produces plausible numbers and a silently wrong adapter; the
-converter's round-trip test must check it against a host reference (§4 step 1).
+contiguous" (`include/strata/core/family_layout.hpp:12`), so the engine's `W` is `[out, in]` with
+`out` contiguous and a LoRA's delta is `y += s * B @ (A @ x)`. Hugging Face keeps the LAST axis
+contiguous, so **BOTH matrices are transposed on the way in**: PEFT's `A` is `[r, in]` (row-major,
+`in` contiguous) and the file holds `Aᵀ` as `[in, r]`; PEFT's `B` is `[out, r]` and the file holds
+`Bᵀ` as `[r, out]`. The index's `ne0` is the contiguous axis, which is what makes the file rows
+`ne0=rank ne1=in` for A and `ne0=out ne1=rank` for B - one convention, the one the index example and
+§2.4 agree on (rank contiguous in A's file, out contiguous in B's).
+
+The first draft of this section said only `B` was transposed and that `A` "maps directly". The
+spike measured what that costs (`phase2_lora_spike.md` §3): the delta has the **same magnitude** as
+the right answer and is uncorrelated with it (norms 27175 and 24515 against 24344; cosines −0.103
+and 0.015), with no error anywhere. Both orientations are now pinned by a test:
+`src/core/lora_pack_test.cpp` (what the engine reads) and `tools/test_lora_pack.py` (what the
+converter writes) assert the same twelve fp16 values.
 
 ### 2.2 Loading and residency
 
@@ -529,22 +537,48 @@ of each request is already logged (`src/program/generate.cpp:11680-11696`), and
 
 ### Step 1 - The file format and the loader (host side; no GPU, no model)
 
-**Files:** `tools/lora_pack.py` (new), `include/strata/core/lora_pack.hpp` + `src/core/lora_pack.cpp`
-(new), `src/core/conversation_cache_test.cpp` or a new `src/core/lora_pack_test.cpp`.
+**Status: DONE (2026-10-22).** Built: `tools/lora_pack.py` (the converter), `include/strata/core/lora_pack.hpp` +
+`src/core/lora_pack.cpp` (the reader, the refusals, the host reference and the session digest), and two tests -
+`src/core/lora_pack_test.cpp` (registered as `lora_pack_test` under `STRATA_BUILD_CONVERSATION_TESTS`) and
+`tools/test_lora_pack.py`. Both pass. What that establishes, and what it does not:
 
-**Work.** The Python converter (safetensors -> `index.txt` + `lora.bin`), the name mapping of §2.1,
-the `B` transpose, the layout inference (2D vs 3D) from the file's own keys, and the host-side
-reader that pairs the A/B tensors and checks their shapes against `layer_tensors()`
-(`include/strata/core/family_layout.hpp:154-218`).
+* the layout is pinned from **both** ends: the same twelve fp16 values are asserted by the converter's test and by
+  the reader's, so the orientation cannot drift between them, and `--validate` reads a written adapter back and
+  compares it with the source **exactly** (it refuses a source that fp16 cannot hold);
+* every refusal of §3.5 is a case in the reader's test: the wrong shape (showing the adapter's A, its B and the
+  model's tensor), a name the model does not have, a QSA projection on a GDN layer (naming the layers that have
+  one), a routed-expert tensor (with both of its sizes, reproducing §3.3's arithmetic from the geometry), a rank
+  above the engine's maximum, half a pair, a stale blob, overlapping rows, a 1-D tensor, and a pack's
+  `index.txt` handed in as an adapter's;
+* the loader reads the model's own layout table (`layer_tensors`/`global_tensors`), so an adapter is checked
+  against the model it will run on, not against a list written twice;
+* **what it does not do**: it does not convert a full-model adapter yet. The converter maps the QSA projections
+  and the shared expert, and **refuses every other module by name**, because the 36 GDN layers' Hugging Face
+  module names are still open question 1 of §7 (the training recipe decides whether "attention-only" is 12 layers
+  or 48). The refusal is the planned behaviour, not a gap in the loader: a guessed name would be a silently wrong
+  adapter, which is the one failure this format cannot detect downstream.
 
-**Risk.** The orientation (§2.1). A transposed `B` produces plausible numbers. The mitigation is a
-round-trip test: the converter writes a known adapter, the reader reads it, and the host reference
-reproduces the same product.
+**Files:** `tools/lora_pack.py` (the converter), `include/strata/core/lora_pack.hpp` + `src/core/lora_pack.cpp`
+(the reader), `src/core/lora_pack_test.cpp` and `tools/test_lora_pack.py` (the two tests).
 
-**Test.** A host test that (a) round-trips an adapter, (b) rejects a wrong-shaped A/B with the
-tensor's name in the message, (c) rejects a tensor the model does not have, and (d) rejects a
-routed-expert tensor with the size in the message. No GPU, no model - it runs in the ordinary test
-suite (`python -m pytest` / the CMake test targets, `CMakeLists.txt:121-133`).
+**Format, as built.** `index.txt` starts with `# strata lora index v1` (a pack's index has another header and is
+refused by it), then `# name rank alpha ne0 ne1 offset bytes`, then one row per matrix. `lora.bin` holds fp16,
+little-endian, in the index's order, and the loader requires it to be **exactly** the bytes the rows describe (a
+leftover blob from another adapter is refused). `alpha` is PEFT's `lora_alpha` and the scaling is `alpha / rank`;
+`use_rslora` is refused because its scaling is `alpha / sqrt(rank)`.
+
+**The digest.** `lora_digest` hashes the rows (name, shape, rank, alpha), the scaling and the adapter's bytes.
+Step 6 puts it in `SessionConfig` beside the control vector's digest; the test pins that one byte of weight or one
+digit of alpha changes it.
+
+**Risk.** The orientation (§2.1). A transposed `B` produces plausible numbers. The mitigation is the round-trip
+test: the converter writes a known adapter, the reader reads it, and the host reference reproduces the same
+product.
+
+**Test.** A host test that (a) round-trips an adapter, (b) rejects a wrong-shaped A/B with the tensor's name in
+the message, (c) rejects a tensor the model does not have, and (d) rejects a routed-expert tensor with the size in
+the message. No GPU, no model - it runs in the ordinary test suite (`python -m pytest` / the CMake test targets,
+`CMakeLists.txt:121-133`).
 
 ### Step 2 - The device tables, the flag, and the delta kernel (CUDA + HIP)
 
