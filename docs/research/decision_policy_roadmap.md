@@ -660,8 +660,19 @@ is written.
 - **The adapter format has two orientation bugs that would have produced silently
   wrong adapters**: both A and B need their bytes transposed from PEFT's storage
   (the plan flags only B; getting A wrong gives a max diff of 1339 and a cosine of
-  -0.10 — plausible-looking and wrong), and the plan mixes two storage conventions
+  -0.10 - plausible-looking and wrong), and the plan mixes two storage conventions
   for `lora_b`. Fix the format document before step 1.
+
+**Step 1 is DONE (2026-10-22): the format, the loader and the converter, host-side, no GPU.**
+`tools/lora_pack.py` writes an adapter (and `--validate` reads it back and compares it with the
+source exactly); `include/strata/core/lora_pack.hpp` + `src/core/lora_pack.cpp` read it against the
+model's own layout table, with every refusal of the plan's 3.5; `src/core/lora_pack_test.cpp` and
+`tools/test_lora_pack.py` pin the **same twelve fp16 values** from both ends, so the orientation
+cannot drift between the converter and the reader. The format document's orientation paragraph and
+its `lora_b` convention are corrected (plan 2.1). **What it does not do:** convert a full-model
+adapter - the converter maps the QSA projections and the shared expert and refuses every other
+module **by name**, because the 36 GDN layers' Hugging Face module names are still open question 1
+of the plan's 7. That is the planned behaviour: a guessed name is a silently wrong adapter.
 
 Renegotiate **only the logits-row framing** with the maintainer, not the item.
 
