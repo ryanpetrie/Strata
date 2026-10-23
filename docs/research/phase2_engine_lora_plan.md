@@ -435,6 +435,16 @@ at `:11687-11694`). So the headroom above the threshold is **58 MiB during a run
 load**. A later run measured 1061 MiB (37 MiB); the figure moves with the run, and the conclusion
 does not.
 
+**Correction (2026-10-23, measured): the headroom column is not the fit rule.** With the shipping config and an
+11.4 MB adapter resident, `INFO` printed `expert_cache_mib=8744 expert_slots=3796 vram_free_mib=7348`, and the
+upload's own check passed. The adapter is uploaded **before** the expert cache is sized (the upload is at
+`src/program/generate.cpp:3805-3834`, the cache during session initialization), so its bytes are taken from the
+cache's budget, not from the 1024 MiB reserve - 45.6 MB is about twenty of 3,796 slots. So the "no"/"marginal" cells
+above mean "larger than that run's spare free VRAM", not "refused": this configuration would accept a 60.9 MB
+adapter. The shared expert is still out, for the different reason step 2 records (it is not served, so the upload
+refuses the whole adapter), and the routed-expert rows stay out because 4.54-7.55 GB would displace most of an
+8.7 GiB cache. Rank is not VRAM-limited here; rank 16 is the pre-registered choice, not a ceiling.
+
 **Correction (2026-10-23): the shared-outer row used the gate tensor's dims swapped.** The layout
 table is GGUF order, so `ffn_gate_exps.weight` is {in N=2560, out FF=640, 512 experts}; an earlier
 revision of this table read it as [out N, in FF], which is why it said 761 M / 1.52 GB. Re-run with
@@ -443,10 +453,12 @@ and up 42.0 MB each per tensor, down 10.6 MB). The per-expert row (7.55 GB) is u
 formula is symmetric in in/out. The conclusion is unchanged and stronger. The reader's orientation
 was the same bug, fixed in `src/core/lora_pack.cpp` with an asymmetric test.
 
-**Conclusion.** On this card, the only MoE-compatible adapter is **QSA attention-only at a modest
-rank** (rank 16 -> 11.4 MB; rank 32 -> 22.8 MB; rank 64 -> 45.6 MB). The routed experts are out of
-the question at any rank that matters. This is a hard number, and it settles roadmap item 2.5
-("maybe: selected-expert LoRA") before any of it is built.
+**Conclusion.** On this card the only adapter worth building is **QSA attention-only at a modest rank** (rank 16 ->
+11.4 MB; rank 32 -> 22.8 MB; rank 64 -> 45.6 MB). That conclusion comes from what the engine **serves**, not from
+what fits - see the correction above: all three ranks pass the upload, and the 24-layer set would too. The routed
+experts are out of the question at any rank that matters: at 4.54-7.55 GB they would displace most of the expert
+cache. This is a hard number, and it settles roadmap item 2.5 ("maybe: selected-expert LoRA") before any of it is
+built.
 
 **A consequence for the training side (roadmap 2.3).** PEFT's standard
 `target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]` names the **QSA** layers' projections
@@ -659,13 +671,23 @@ step 5's status): the kernel cannot be tested without the flag, and the flag can
    weights. Attention-only is therefore **12 of 48 layers** (the QSA layers 3, 7, ..., 47). The GDN projections
    `attn_qkv`, `attn_gate` and `ssm_out` **are** served, so a recipe that trains them too reaches **24 of 48** -
    and that is a decision 2.3's recipe has to make before it trains, not after. Arithmetic on §3.3's own table:
-   a rank-16 adapter over all 24 served layers is 46.2 MB, more than the 37 MiB of headroom the 1061 MiB run
-   leaves, so the wider recipe needs a lower rank or more free VRAM. Neither was measured; the two sizes are.
-2. **The adapter does not fit.** The step-2 checklist assumed the loader checked free VRAM; it does not -
-   `core::lora_load` checks shapes, ranks and rows and never calls a memory query. So the check is in the upload:
-   the tables (rounded **up** to whole MiB) plus the engine's reserve, against the free VRAM `cudaMemGetInfo`
-   reports (rounded **down**), with both numbers and the way out in the message. Against the spike's measured
-   **1061 MiB free**, rank 16 (11.4 MB) and rank 32 (22.8 MB) fit and rank 64 (45.6 MB) does not.
+   a rank-16 adapter over all 24 served layers is 46.2 MB. **That fits** (see item 2's correction): the cost is
+   expert-cache capacity, not a refusal, so the wider recipe is available as soon as the converter can name the
+   GDN modules. The two sizes are computed from the layout table; neither was trained.
+2. **The adapter's memory cost is expert-cache capacity, not a fit veto.** The step-2 checklist assumed the loader
+   checked free VRAM; it does not - `core::lora_load` checks shapes, ranks and rows and never calls a memory query.
+   So the check is in the upload: the tables (rounded **up** to whole MiB) plus the engine's reserve (1024 MiB on
+   Windows), against the free VRAM `cudaMemGetInfo` reports (rounded **down**), with both numbers and the way out.
+   **What that check actually sees was measured on 2026-10-23**: the shipping config, engine loaded, the 11.4 MB
+   adapter resident, `INFO` printed `expert_cache_mib=8744 expert_slots=3796 vram_free_mib=7348`. The adapter is
+   uploaded before the expert cache is sized and the cache takes what is left, so an adapter's bytes come out of the
+   cache - 45.6 MB is 0.5% of 8,744 MiB, about twenty of 3,796 slots - and the refusal only fires when the card is
+   already nearly full at start-up (another process holding VRAM). **So rank is not VRAM-limited in this
+   configuration**: rank 16, 32 and 64 all pass, and so does the 46.2 MB 24-layer recipe. The **1061 MiB** figure in
+   §3.3 and §7.5 of the checklist is a serving-time minimum from a *different* configuration (6,445 slots, 14.53 GiB
+   of cache) and describes how tight that run was, not this one's upload check. Rank 16 stays because the
+   pre-registration chose it and because it is the cheapest thing that fits a card that may be shared; rank 32 is
+   available if 2.3's develop set shows underfitting.
 
 **Metal.** §4.9 said `--lora` is an unknown argument there. **That was wrong**: the parser is shared, so `--lora` is
 accepted; `metal/src/engine/missing.cpp` stubs the device side, and the flag prints "no LoRA on Metal: the delta
