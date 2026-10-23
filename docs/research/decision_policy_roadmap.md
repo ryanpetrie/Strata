@@ -330,19 +330,6 @@ exactly, as it must be).
   235 cost; the affine shift cuts it to ~0.00 and costs the 235 21 points. **The
   prompt is the cheaper, shippable lever; the affine fit proves the level can be
   moved and that a constant fitted on one population is not the way.**
-
-### 1.4b The score's location, per config, on the normalised level (added 2026-10-22)
-
-- **Effort:** 1–2 days, offline (the fit harness and the arms exist).
-- **Why:** 1.4 showed the score's error is opposite in sign between its 5-level
-  configs at T = 1, and that the level index is the wrong unit across K. The map to
-  try is a location on the normalised position `k/(K−1)`, fitted **per config**,
-  with its own pre-registration (the 1.1b/1.5 rule).
-- **Exit criterion:** the score's TVD falls out-of-sample on the pool **and** the
-  235's score competence does not fall; if the per-config map does not transfer
-  either, the score's location is a task property, not a calibration one, and this
-  line of work closes with that finding.
-
 - **Effort:** 2–4 days (mostly compute; the mechanism is a small change to the
   probability module).
 - **Gain:** targets the failure the temperature could not fix. The noul's error on
@@ -359,6 +346,28 @@ exactly, as it must be).
   the noul's TVD falling out-of-sample with nothing else regressing. *The result is
   the status above: the first half passes, the second fails, and the reason is a
   sign reversal between the two populations.*
+
+### 1.4b The score's location, per config, on the normalised level (added 2026-10-22)
+
+- **Effort:** 1–2 days, offline for the fit and the paired evaluation (the harness
+  and the arms exist); a GPU run only if the fitted map is then measured live.
+- **Why:** 1.4 showed the score's error is opposite in sign between its 5-level
+  configs at T = 1, and that the level index is the wrong unit across K. The map to
+  try is a location on the normalised position `k/(K−1)`, fitted **per config**,
+  with its own pre-registration (the 1.1b/1.5 rule).
+- **Exit criterion:** the score's TVD falls out-of-sample on the pool **and** the
+  235's score competence does not fall; if the per-config map does not transfer
+  either, the score's location is a task property, not a calibration one, and this
+  line of work closes with that finding.
+- **Depends on:** 1.4's fit tooling (`tools/decision_policy/affine.py`), the
+  pool's stored run (its score items carry both the human distribution and the
+  config), and the 235's stored score items — all in hand.
+- **Work:** swap the raw level index for `k/(K−1)` in the tilt, fit one location
+  per config on the pool, and evaluate paired without a second engine
+  (`retemperature.py`'s re-scaling), reporting both populations as 1.4 did. The
+  pre-registered rule has to name, before the numbers are read, what happens if the
+  two configs' locations disagree again — because that is the outcome 1.4 makes
+  likely.
 
 ### 1.5 Per-type instructions — a pre-registered ablation, not a hill-climb (added 2026-10-21)
 
