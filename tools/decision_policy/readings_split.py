@@ -23,7 +23,14 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
+
+#: The data root: no tool in the repository carries this machine's absolute paths
+#: (CONTRIBUTING: no private paths).  Set STRATA_DECISION_DATA to the directory that holds
+#: `decision_policy_training/` and `opendecisions/`.
+DATA = Path(os.environ.get("STRATA_DECISION_DATA")
+            or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Temp" / "opencode"))
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -78,7 +85,7 @@ def main() -> int:
     log = {r["id"]: r for r in read_jsonl(args.runlog)}
 
     # the per-item correctness, from the official scorer's own rule
-    scorer_path = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
+    scorer_path = DATA / "opendecisions" / "score.py"
     import importlib.util
     spec = importlib.util.spec_from_file_location("od_score", scorer_path)
     scorer = importlib.util.module_from_spec(spec)

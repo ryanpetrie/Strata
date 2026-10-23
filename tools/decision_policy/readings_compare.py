@@ -30,9 +30,15 @@ import argparse
 import importlib.util
 import json
 import math
+import os
 from pathlib import Path
 
-DEFAULT_SCORE = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
+#: The data root: no tool in the repository carries this machine's absolute paths
+#: (CONTRIBUTING: no private paths).  Set STRATA_DECISION_DATA to the directory that holds
+#: `decision_policy_training/` and `opendecisions/`.
+DATA = Path(os.environ.get("STRATA_DECISION_DATA")
+            or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Temp" / "opencode"))
+DEFAULT_SCORE = DATA / "opendecisions" / "score.py"
 
 
 def load_scorer(path: Path):
