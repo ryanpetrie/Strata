@@ -406,13 +406,22 @@ The adapter's size is `(rank x in + out x rank)` parameters per targeted project
 | All attention (QSA + GDN's `attn_qkv`, `attn_gate`, `ssm_out`) | 23.10 M | **46.2 MB** | marginal - ~80 % of the headroom |
 | All attention + the shared expert (48 layers x 3) | 30.47 M | **60.9 MB** | **no** - exceeds the 58 MiB headroom |
 | Routed experts, per-expert (2D, vLLM's default) | 3.775 G | **7.55 GB** | **no** - 130x the headroom |
-| Routed experts, shared-outer (`enable_moe_shared_loras`) | 761 M | **1.52 GB** | **no** - 26x the headroom |
+| Routed experts, shared-outer (`enable_moe_shared_loras`) | 2.27 G | **4.54 GB** | **no** - ~75x the headroom |
 
 The headroom: the minimum free VRAM during the 235-item run was **1082 MiB** and **1206 MiB at
 load** (companion doc §10.8, measured), against the engine's **1024 MiB** warning threshold on
 Windows (`src/program/generate.cpp:1412` `kVramSafeMib` = 1024 under `_WIN32`, 512 elsewhere; warned
 at `:11687-11694`). So the headroom above the threshold is **58 MiB during a run** and **182 MiB at
-load**.
+load**. A later run measured 1061 MiB (37 MiB); the figure moves with the run, and the conclusion
+does not.
+
+**Correction (2026-10-23): the shared-outer row used the gate tensor's dims swapped.** The layout
+table is GGUF order, so `ffn_gate_exps.weight` is {in N=2560, out FF=640, 512 experts}; an earlier
+revision of this table read it as [out N, in FF], which is why it said 761 M / 1.52 GB. Re-run with
+the right labels the formula gives **2.27 G params / 4.54 GB** for the three expert tensors (gate
+and up 42.0 MB each per tensor, down 10.6 MB). The per-expert row (7.55 GB) is unaffected - its
+formula is symmetric in in/out. The conclusion is unchanged and stronger. The reader's orientation
+was the same bug, fixed in `src/core/lora_pack.cpp` with an asymmetric test.
 
 **Conclusion.** On this card, the only MoE-compatible adapter is **QSA attention-only at a modest
 rank** (rank 16 -> 11.4 MB; rank 32 -> 22.8 MB; rank 64 -> 45.6 MB). The routed experts are out of
