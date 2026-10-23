@@ -753,18 +753,37 @@ and `metal/src/engine/missing.cpp` (the stubs).
 mirror `sycl/src/core/verify.cpp` **only if** the feature is to be built for SYCL (see the scope note
 in §4.9).
 
-**Work.** One delta-add per targeted projection, placed **after the branch joins** so that every
-optimization variant (`side_proj` at `:1343`, `br` at `:1367`, `qbr` at `:1509`, `qb` at `:1504`,
-`batch_rec_` at `:1379`) is covered by a single call site.
+**Work.** One delta-add per targeted projection, placed **at the point where that projection's
+destination is final**.  The earlier revision of this step said "after the branch joins, so a single
+call site covers every variant".  **That was wrong, and it was corrected during the build
+(2026-10-23):** five of the seven servable tensors have their projection output consumed *inside*
+the layer block - the conv reads `attn_qkv`, the recurrence reads `attn_gate`'s `z_`, the q/gate
+split reads `attn_q`'s output (its second half *is* the attention gate), and the RMSNorm/RoPE/append
+read `attn_k` and `attn_v`.  A delta added after the join would land in a buffer nothing reads
+again: the projection would answer from the base weights while the rest of the layer ran adapted,
+with no error anywhere.  So the hook is `kernels::lora_apply_tensor` per projection, by name
+(`lora_find` resolves it inside, so no call site carries an index), and the variant coverage is a
+per-site table rather than one site: `attn_qkv` after both writers before the conv, `attn_gate`
+after `pjoin_`/`join`, `ssm_out` after `mm(wout)`, `attn_q` at its two projection sites (the `qbr`
+fork and `q_chain`, mutually exclusive), `attn_k`/`attn_v` after their `mm`s, `attn_output` after
+`mm(wo)`.
 
-**Risk.** **This is the step where a mistake is silent.** Missing one branch produces a wrong
-distribution, not a crash. The mitigation is a parity test that compares the adapted row against a
-host reference for a fixed synthetic input, run with the branch switches **on and off**
-(`STRATA_DF_BRANCH`, `STRATA_SIDE_MIXER`, `STRATA_DEC_BATCH`, `STRATA_DF_QB_Q4`). The engine's own
-convention for this kind of check is a `_parity.cpp` target (`src/kernels/verify_parity.cpp`,
-`src/kernels/verify_batch_parity.cpp`).
+**The mitigation for a forgotten site is mechanical**, not a review promise:
+`lora_layer_begin`/`lora_layer_end` bracket the layer body and `lora_layer_end` **throws, naming
+the tensor**, if an entry of a covered layer was never applied.  It runs once per layer per capture,
+on the host, never per token.
 
-**Test.** The parity target above, plus the end-to-end check in step 8.
+**Risk.** **This is the step where a mistake is silent.** Missing one site produces a wrong
+distribution, not a crash. The mitigation is the coverage check above plus a parity test that
+compares the adapted row against a host reference for a fixed synthetic input.  Note what the
+switches can and cannot prove: `STRATA_DF_BRANCH`, `STRATA_SIDE_MIXER`, `STRATA_DEC_BATCH` and
+`STRATA_DF_QB_Q4` gate code in `verify.cpp`, which a kernel-level parity target cannot reach, so
+"the test passed with the switches on and off" is **not** evidence about the variants - the per-site
+table is, and it is static analysis.
+
+**Test.** `src/kernels/lora_verify_parity.cpp` (the verify window's exact call sequence, seven
+tensors, T = 1/6/9, flag off bit-identical, flag on against `core::lora_delta_f32` per tensor on its
+own activation, the coverage check), plus the end-to-end check in step 8.
 
 ### Step 4 - The hook in the prefill path and the single-token path
 
