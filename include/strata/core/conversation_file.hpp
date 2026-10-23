@@ -78,6 +78,11 @@ struct SessionConfig {
     // the control vectors as loaded: a digest of the tables the engine uploaded (every file's content x its exact
     // scale, summed), the mode, the layer range and the direction; 0 when none is loaded
     uint64_t cvec = 0;
+    // the LoRA adapter as loaded: `lora_digest` over its bytes, rank, alpha, target set and scaling; 0 when none is
+    // resident.  RECORDED FOR STEP 6 (commit C7) AND NOT USED YET: it is in neither `session_config_fingerprint`
+    // (`src/core/conversation_file.cpp`) nor the saved file, so two runs with different adapters still match the
+    // same saved state.  C7 must add it to both and bump the file version; until then nothing reads this field.
+    uint64_t lora = 0;
     // the arithmetic switches that change the computed state (name, value), in a fixed order
     std::vector<std::pair<std::string, int64_t>> switches;
 };
