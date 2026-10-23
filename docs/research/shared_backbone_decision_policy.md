@@ -4396,3 +4396,56 @@ pre-registration; nothing here changes today's verdict.
   count runs 60-151, so (c) is four small checks, not one 250-item one.
 * Not run: the 235, the jev-bench sample, a repeat, any AMD or Mac engine, a second model,
   an isolated latency comparison.
+
+## 29. Test volume and stopping: the rule for the next experiment (2026-10-23)
+
+**The problem this fixes.** The choice's batch spent about five GPU hours to answer a
+question that 100 items per half would have answered: the two real effects were +0.0153 and
++0.0287 on a mean TVD whose per-item SD is 0.0348, i.e. 7 and 13 SE at n = 250 and still 4.4
+and 8.2 SE at n = 100. The guards were the opposite: the 3-item accuracy margin at 250 is
+1.2 points, which a 250-item run cannot reliably resolve (about 500 items are needed), and
+the 0.02 ECE margin is roughly 10 SE, so it fails a variant on a difference far smaller than
+the decision needs. **The primary was over-powered and the guards were not calibrated at
+all** - and no base-vs-base repeat was run for either type, so their margins were assumed,
+not measured. The GPU is the programme's critical path; this section is the rule that spends
+it on the decision, not on precision nobody asked for.
+
+**The rule, for every arm from now on (1.5's next arms, the Phase 2 training arms, any
+re-measurement):**
+
+1. **Screen at n = 100 per half.** Run the base arm and each variant on 100 soft and 100
+   hard items first, with the pre-registered margins scaled to that n (§27.3's arithmetic:
+   MDE = 2.802 x SD/sqrt(n), Bonferroni over the arms). A variant that fails any guard stops
+   there. **Most do**: in the choice's batch, two of four were inert at 250 and would have
+   been inert at 100.
+2. **Only survivors go to 250 + the yardsticks.** A variant that clears the screen is the
+   one worth spending the long-option prompts and a yardstick run on.
+3. **Size each guard to the smallest difference that would change the decision, and write
+   that difference down before the run.** If a 1-point accuracy loss would not change what
+   we ship, the guard is descriptive and n = 100 is enough; if it would, buy the ~500 items
+   **for that guard only**. A margin copied from another type is not a margin.
+4. **One base-vs-base repeat per type, before the margins are set.** It costs one arm and it
+   is the only way to know the noise floor the guards are compared against. The noul has it
+   (two base runs, 1.8 Capability points on the 235); the choice and the score do not, and
+   their guard margins are the weaker for it.
+5. **Yardsticks only for a candidate**, and the 235 is a **1.8-point screen**, never a fine
+   guard (its own base spread is 1.8).
+6. **A GPU budget cap per question: one GPU-day, stated before the run.** Stop at the first
+   decisive answer. The Phase 2 kernel and the teacher pilot come first; a prompt arm that
+   cannot change a decision does not get a second day.
+7. **What is never cut:** the paired design (it is what makes 100 items enough), the
+   pre-registration, the hard half **as a screen**, the shuffled-target control for the
+   training arms, and the chat byte-identity check for the LoRA.
+
+**What this changes in the already-run work: nothing.** The choice's and the score's rules
+and verdicts stand; they were pre-registered at 250 and that is the record. The rule applies
+to the next experiment, and the next experiment's pre-registration must carry its estimated
+cost and its stop point.
+
+**The arithmetic, so the next author does not re-derive it.** For a paired mean change with
+per-item SD s at n items: SE = s/sqrt(n), and the 80%-power two-sided MDE is 2.802 x SE
+before the multiple-comparison correction. Choice s = 0.0348 -> n = 100: SE 0.00348, MDE
+0.0097 (0.0116 with four arms); n = 250: SE 0.0022, MDE 0.0062 (0.0074). Score s = 0.0255 ->
+n = 100: SE 0.00255, MDE 0.0071 (0.0085); n = 250: 0.00161 and 0.0045 (0.0054). Noul s =
+0.0337 -> n = 250: 0.0060 (0.0072). The margins in §27.3 and §6 are these numbers; the
+n = 100 screen uses the same formula, not a new one.

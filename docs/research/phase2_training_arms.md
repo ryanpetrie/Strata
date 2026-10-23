@@ -193,8 +193,8 @@ An adapter ships only if **all** of the following hold. The margins are the meas
 run-to-run noise of each type (the per-item SD of the change in P(answer) between two runs:
 noul **0.0337**, choice **0.0348**, score **0.0255**, `prompt_variants.md` §5.2), turned
 into a minimum detectable effect at the develop set's n = 250 by the same arithmetic as §27
-(2.802 x SE, and 3.340 x SE after the Bonferroni correction over the two arms):
-**0.0074 for the noul and the choice, 0.0060 for the score.**
+(2.802 x SE, and 3.08 x SE after the Bonferroni correction over the two arms):
+**0.0068 for the noul and the choice, 0.0050 for the score.**
 
 > **(a) The develop set, per type.** The mean TVD to the human distribution falls by more
 > than the type's margin (above). For the noul, the mean signed difference also moves toward
