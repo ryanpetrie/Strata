@@ -1,4 +1,4 @@
-"""tools/decision_policy/logits_prob.py - probabilities over answer options from next-token logits.
+"""serve/logits_prob.py - probabilities over answer options from next-token logits.
 
 The server reads the model's next-token logits after a prefill and computes real
 probabilities over answer options, instead of generating text and reporting

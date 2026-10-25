@@ -1,6 +1,6 @@
-"""tools/decision_policy/test_logits_prob.py - unit tests for logits_prob.
+"""serve/test_logits_prob.py - unit tests for logits_prob.
 
-    python -m unittest tools.decision_policy.test_logits_prob -v
+    python -m unittest serve.test_logits_prob -v
 """
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from tools.decision_policy import logits_prob as lp  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from serve import logits_prob as lp  # noqa: E402
 
 
 class SoftmaxTests(unittest.TestCase):
