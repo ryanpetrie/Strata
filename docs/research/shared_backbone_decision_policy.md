@@ -1,7 +1,8 @@
 # Shared-backbone System 1 decision policy in Strata
 
 **Status:** the endpoint is built and measured (§10, §11); the engine's stale-context
-failure is under investigation and the evidence is corrected (§12).
+failure is under investigation and the evidence is corrected (§12); the decision is a
+request in the Monitor like any other (§15).
 **Date:** 2026-10-21 (the sections before §6 are the 2026-10-19 record, kept as it was
 then)
 **Task:** explore whether Strata can serve a fast, specialized agent decision policy from the already-loaded
@@ -493,7 +494,7 @@ python tools/decision_policy/trie_costs.py --items <D>\sample10_items.jsonl
 python tools/decision_policy/trie_examples.py --items <D>\sample10_items.jsonl
 
 # 8. the tests (venv python: system python lacks jinja2)
-C:\tools\strata\.venv\Scripts\python.exe -m unittest serve.test_systemone serve.test_logits_first_token -v
+C:\tools\strata\.venv\Scripts\python.exe -m unittest serve.test_systemone serve.test_logits_first_token serve.test_decision_monitor -v
 ```
 
 `<D>` = `C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions` - the data, the
@@ -523,6 +524,7 @@ generated data and should stay out of version control unless the user asks.
 | `tools/decision_policy/baseline_report.md` | the same, as a table (generated) |
 | `serve/systemone.py` | the endpoint's pure module: validate, render, parse, respond |
 | `serve/test_systemone.py` | the endpoint's tests, MockEngine, no GPU |
+| `serve/test_decision_monitor.py` | the decision in the server's telemetry: the live state, the request list, the totals, the timings |
 | `serve/server.py` | wired: flag + config, admission, dispatch, `Service.systemone`, dialects |
 | `tools/decision_policy/opendecisions.py` | OpenDecisions harness: serial + batch arms, resume-safe, official predictions output |
 | `serve/logits_first_token.py` | the first-token lookup and the trie walk: both readings, the resolution, the end factor, the checks |
@@ -1035,8 +1037,11 @@ ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
   one item of the sample, against the 1-7 the walk needs).
 - **The chat path's telemetry for the decision path.** The decision path takes the
   engine's turn and the engine's DONE line, but it does not go through
-  `Service.run`, so the monitor's live request list does not show a decision
-  request. It shows as idle while a decision runs.
+  `Service.run`, so the monitor's live request list did not show a decision
+  request. It showed as idle while a decision runs. **Done (§15):** the decision
+  path is now a first-class request in the server's telemetry - the Monitor says
+  "Deciding" while it runs, and the request list carries the decision and what it
+  answered.
 - **The engine's stale context** (§12). A long run once answered another question's
   options, and the 2026-10-20 handoff recorded it as an engine cache bug that
   invalidated every long measurement. The evidence does not support that: the log
@@ -1507,3 +1512,64 @@ confident guess, and genuinely worse than the humans' own uncertainty.
 * The rewrites suite asks the other half of the coherence question: not "is the
   answer right" but "does the distribution stay coherent when the question is
   reworded, negated or combined".  It is measured next.
+
+---
+
+## 15. The decision in the Monitor (2026-10-21)
+
+§10.13 listed an open item: the decision path takes the engine's turn and the
+engine's DONE line, but it does not go through `Service.run`, so the monitor's
+live request list did not show a decision request, and the model showed as idle
+while a decision ran.  It is done.
+
+### 15.1 What it was, measured
+
+The running instance (port 8080, `qwen3.8-flash-next-unsloth-ud-iq4_xs`), one
+decision request in flight, polled every 0.4 s:
+
+| | before | after |
+| --- | --- | --- |
+| `/metrics` `live.state` | `idle` for the whole decision | `reading`, with `live.decision: true` and `live.phase: "deciding"` |
+| the prompt's progress | not reported | 887 / 897 tokens, 99 % |
+| `/metrics` `live.queued` | 0 | 1 while the decision waits for the engine's turn |
+| the request list (`/metrics` `requests`) | 12 rows before and 12 after | one new row, `kind: "decision"` |
+| `/metrics` `totals` | `requests` 39 before and 39 after | `requests` +1, and `decisions` +1 |
+
+The browser's Monitor tab follows: the header pill says **Deciding · 99 %**,
+the state card says **Deciding** with the prompt's progress, and the request
+table has a **Decision** row.
+
+### 15.2 What a decision row carries
+
+One row per request, whatever path answered it (the fast path does its own
+engine turn; the decode path goes through `Service.run`, which hands its
+figures to the decision instead of writing a chat row of its own):
+
+```
+kind          "decision"          the row is a decision, not a chat turn
+questions     3                  how many questions it answered
+answers       {"verdict": "good", "healthy": "yes (1.00)"}   what it picked
+path          "fast"             the model's own probability, or "decode"
+calibrated    true               every answer came from the model's distribution
+prompt_tokens / reused / prompt_ms / decode_ms / decode_tok_s
+hit_rate / pcie_share / drafts_offered / drafts_accepted
+              the engine's own figures for the request, as a chat row has them
+finish        "stop"             or "error" when the request could not be answered
+```
+
+The answer itself now carries the `timings` the chat path reports
+(`prompt_n`, `cache_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`,
+`predicted_ms`, `predicted_per_second`), so a client can see what the decision
+cost without a second request.  The several-questions path merges them the way
+it merges the usage.
+
+### 15.3 The two limits, said plainly
+
+* **The batch slots.**  With `--batch` the chat path does not hold the engine's
+  turn and keeps a status per request, so a decision leaves the shared status
+  alone: the Monitor would not say "Deciding" in that mode.  The decision path
+  itself is unchanged.
+* **A decision is counted as a request.**  Its tokens and its time are real
+  engine work, so the totals count it (`totals.decisions` counts them apart).
+  A server with the endpoint on therefore reports more requests than one with
+  it off - which is what happened.
