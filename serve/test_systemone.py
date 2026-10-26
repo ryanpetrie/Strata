@@ -623,6 +623,28 @@ class LetterReadout(unittest.TestCase):
         # option, so the direct path answers it
         self.assertIsNone(sl.readings(questions, {65: 2.0}, ByteTokenizer(), "q:", 3.0))
 
+    def test_past_26_options_the_server_answers_it_on_the_direct_path(self):
+        # the module declines the question, and the SERVER must not fall back to the
+        # decode path (whose distribution is a degenerate 1.0/0.0).  It renders and
+        # reads the question the way the token path does: 27 one-byte option names,
+        # all sharing the leading space, so one trie step tells them apart.
+        names = list("0123456789ABCDEFGHIJKLMNOPQ")          # 27 one-byte options
+        svc = svc_with("q: not an answer\n")
+        svc.systemone_readout = "letters"
+        first = lft.option_token_ids(["0"], svc.tok, "q:")["0"][0]
+        svc.engine.logits_rows = [({first: 8.0}, 8.0),
+                                  ({ord(c): (5.0 if c == "K" else 1.0) for c in names}, 8.0)]
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                        "criteria": {c: None for c in names}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])                  # the fast path, not decode
+        self.assertEqual(body["answers"]["q"]["choice"], "K")
+        self.assertEqual(sorted(body["answers"]["q"]["probabilities"]), sorted(names))
+        prompt = svc.tok.decode(svc.engine.last_prompt)
+        self.assertIn("answer with exactly one of these option names", prompt)
+        self.assertNotIn("these letters", prompt)
+
     def test_the_letters_are_one_token_each(self):
         # the byte tokenizer of the tests gives every letter its own id, so the
         # letters cannot collide: that is why the trie walk is not needed
