@@ -132,6 +132,33 @@ remove relations. The harness says so in the report rather than counting a missi
 Both harnesses are resume-safe, both omit a failed request from the predictions file (the scorer counts a
 missing answer as wrong), and neither retries a request that produced an answer.
 
+## The soft-label training data
+
+The decision policy needs a copy of **human uncertainty**, not of the model's own confidence. Three
+public datasets carry a human label distribution, and the licence record for them (and for everything
+else that might be trained on) is
+[docs/research/decision_policy_training_data.md](../../../docs/research/decision_policy_training_data.md).
+
+```sh
+python tools/decision_policy/download_soft_labels.py --out-dir <D>       # fetch the splits, write the manifest
+python tools/decision_policy/soft_labels.py --data-dir <D> --out items.jsonl          # the whole split
+python tools/decision_policy/soft_labels.py --data-dir <D> --sample --out sample.jsonl # the seeded sample
+python tools/decision_policy/soft_labels.py --data-dir <D> --validate --out items.jsonl
+```
+
+`download_soft_labels.py` fetches the train and validation splits of the three configs with a human
+distribution (`civil_comments`, `measuring_hate_speech`, `go_emotions`) and the validation split of a
+type-covering set, then writes `manifest.json` next to the data: the URL, the byte size, the sha256, the
+line count, the type mix and how many records carry a soft label. **The data stays outside the repo.**
+
+`soft_labels.py` turns a downloaded split into items the harness can run and the official scorer can
+read: `id`, `state`, `question` (type, instructions, criteria), `labels`, `expected`, `tier` and
+`target_probs`. The row-to-item conversion is `jevbench_sample.to_item`, reused as is. `--validate`
+checks every item against the scorer's rules and then runs the official `score.py` over the file twice:
+once with an empty predictions file, once with a uniform prediction on every item (that second run
+exercises the scorer's own normalization on every item). `--sample` writes a stratified, seeded sample
+of the validation pool, 200 items per question type by default, so a per-type fit has a stable split.
+
 ## The options' shape
 
 ```sh
@@ -167,6 +194,9 @@ whose options share a first token.
 | `jevbench_sample.py` | source | builds the 3% sample and its scorer-shaped items file from the dataset. |
 | `jevbench_rewrites.py` | source | the JevBench coherence metric over the endpoint's answers (the official laws, re-implemented). |
 | `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
+| `download_soft_labels.py` | source | fetches the licence-clean soft-label splits and writes the manifest of what it fetched. |
+| `soft_labels.py` | source | the soft-label data in the harness's item shape: the checks, the stratified sample and the scorer proof. |
+| `test_soft_labels.py` | source | unit tests for the converter (no network, no data). |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |
 | `first_token_report.md`, `first_token_analysis.json` | generated | the first-token study's results. |
 
