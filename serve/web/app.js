@@ -193,7 +193,11 @@ function render(m) {
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
   // the header pill
-  if (live.state === "reading") {
+  if (live.decision) {
+    // a decision is a request of its own: the engine reads the state and answers it
+    const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
+    setPill("reading", pct != null ? `Deciding · ${pct}%` : "Deciding");
+  } else if (live.state === "reading") {
     const pct = live.prompt_total ? Math.round((100 * live.prompt_read) / live.prompt_total) : null;
     setPill("reading", pct != null ? `Reading prompt · ${pct}%` : "Reading prompt");
   } else if (live.state === "generating") {
@@ -246,7 +250,8 @@ function renderTotals(t) {
   const read = t.prompt_tokens - t.reused;
   const pSpeed = t.prompt_ms > 0 && read > 0 ? ` at ${fmt(read / (t.prompt_ms / 1000))} tok/s` : "";
   const oSpeed = t.decode_ms > 0 && t.output_tokens > 0 ? ` at ${fmt(t.output_tokens / (t.decode_ms / 1000), 1)} tok/s` : "";
-  return `Since ${since}: ${fmt(t.requests)} requests · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
+  const decisions = t.decisions ? ` (${fmt(t.decisions)} decision${t.decisions === 1 ? "" : "s"})` : "";
+  return `Since ${since}: ${fmt(t.requests)} requests${decisions} · ${fmt(read)} prompt tokens read${pSpeed} (${fmt(t.reused)} reused) · ` +
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
@@ -255,7 +260,18 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   for (const b of document.querySelectorAll("#state-badges .st-badge")) b.classList.toggle("on", b.dataset.s === on || b.dataset.s === live.state);
   const prog = $("state-progress");
   let label = "Waiting for a request", detail = "", pct = 0;
-  if (live.state === "reading") {
+  if (live.decision) {
+    // a decision: the engine reads the state and answers the questions.  The prefill
+    // is the whole cost of it, so the progress is the prompt's.
+    label = "Deciding";
+    prog.dataset.tone = "info";
+    if (live.prompt_total) {
+      pct = (100 * live.prompt_read) / live.prompt_total;
+      detail = `${fmt(live.prompt_read)} / ${fmt(live.prompt_total)} tokens · ${fmt(pct)}%`;
+    } else {
+      detail = `${fmt(live.prompt_tokens)} tokens`;
+    }
+  } else if (live.state === "reading") {
     label = "Reading prompt";
     prog.dataset.tone = "info";
     if (live.prompt_total) {
@@ -345,8 +361,13 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   } else {
     const badge = {stop: ["", "Done"], length: ["", "Max tokens"], cancel: ["st-badge--queued", "Stopped"],
                    disconnect: ["st-badge--queued", "Closed"], error: ["st-badge--error", "Error"]};
+    // a decision's own badge: the tone says how it went, the word says what it was
+    const decisionTone = {stop: "st-badge--generating", error: "st-badge--error",
+                           cancel: "st-badge--queued", disconnect: "st-badge--queued",
+                           length: "st-badge--queued"};
+    const finished = {stop: "finished", length: "hit the token limit", cancel: "stopped",
+                      disconnect: "closed", error: "failed"};
     body.innerHTML = requests.slice(0, reqShowAll ? requests.length : 12).map((r) => {
-      const [cls, text] = badge[r.finish] || ["", r.finish || "–"];
       const t = new Date(r.time * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
       const proj = r.projection == null ? "" : ` <span class="st-badge${r.projection ? " st-badge--reading" : ""}" title="experimental speed projection ${r.projection ? "on" : "off"}">${r.projection ? "ESP" : "stock"}</span>`;
       // #588: the VRAM share; the PCIe share (--pcie-frac) beside it when there is one
@@ -355,8 +376,19 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
       // Reused tokens are not prefetched again. Match the Monitor's existing Prefill metric.
       const fresh = r.prompt_tokens == null ? null : Math.max(0, r.prompt_tokens - (r.reused || 0));
       const prefillRate = fresh > 0 && r.prompt_ms > 0 ? fresh / (r.prompt_ms / 1000) : null;
-      return `<tr><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
-        <td class="num">${fmt(r.reused)}</td><td class="num">${fmt(r.output_tokens)}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
+      // A decision has no text output: what it answered is what the row carries.  One
+      // badge per row - a decision says what it was, the tone says how it went - so the
+      // table keeps its width and every column stays in sight.
+      const decision = r.kind === "decision";
+      const picks = decision ? Object.entries(r.answers || {}).map(([k, v]) => `${k}: ${v}`).join(" · ") : "";
+      const [cls, text] = decision ? [decisionTone[r.finish] || "", "Decision"]
+                                    : (badge[r.finish] || ["", r.finish || "–"]);
+      const title = decision
+        ? ` title="${esc(`${fmt(r.questions)} answer${r.questions === 1 ? "" : "s"} · ${finished[r.finish] || r.finish}${picks ? ` · ${picks}` : ""}`)}"`
+        : "";
+      const out = decision ? `${fmt(r.questions)} answer${r.questions === 1 ? "" : "s"}` : fmt(r.output_tokens);
+      return `<tr${title}><td>${esc(t)}</td><td><span class="st-badge ${cls}">${esc(text)}</span>${proj}</td><td class="num">${fmt(r.prompt_tokens)}</td>
+        <td class="num">${fmt(r.reused)}</td><td class="num">${out}</td><td class="num">${fmt(prefillRate)}</td><td class="num">${fmt(r.decode_tok_s, 1)}</td>
         <td class="num">${hit}</td><td class="num">${fmt(r.duration_s, 1)} s</td></tr>`;
     }).join("");
   }

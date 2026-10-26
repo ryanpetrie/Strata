@@ -100,7 +100,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
-.monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
+/* The request table has nine columns; the card gets the wider share of the row so
+   they all fit (a scrollbar here hides the duration). */
+.monitor-row { display: grid; grid-template-columns: minmax(250px, 0.9fr) minmax(0, 2.9fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
 .ctx-gauge .st-gauge { width: 150px; height: 150px; }
@@ -112,11 +114,12 @@ main { flex: 1; min-height: 0; display: flex; }
            margin-top: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .req-card { display: flex; flex-direction: column; gap: var(--st-s-3); min-width: 0; }
 .table-wrap { overflow-x: auto; }
-/* Recent requests: keep headings, values and status badges on one line. */
+/* Recent requests: keep headings, values and status badges on one line, and keep the
+   nine columns inside the card (a scrollbar here hides the duration). */
 #req-wrap .st-table th,
 #req-wrap .st-table td {
   white-space: nowrap;
-  padding-inline: 8px;
+  padding-inline: 6px;
 }
 .req-head { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-2); }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
