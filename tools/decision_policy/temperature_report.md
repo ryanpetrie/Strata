@@ -174,6 +174,25 @@ is the temperature and nothing else.
 | the same run with the temperature undone | 78.9 | 75.9 | 81.8 |
 | the run with the temperature | 80.1 | 77.0 | 83.1 |
 
+## The single-scalar arm
+
+The roadmap asks for this comparison: **if per-type does not beat a single
+scalar, ship a single scalar and say so.**  This is that arm - ONE temperature
+for all three types, fitted on the pooled records with the same objective, the
+same grid, the same seed and the same five folds, so the two arms are measured
+the same way.
+
+The single scalar is **0.7** (the per-type constants are choice 0.62, noul 0.67, score 0.77).
+
+| run | Capability | Intelligence | Calibration | choice | noul | score |
+|---|---:|---:|---:|---:|---:|---:|
+| the baseline arm (T = 1) | 79.8 | 78.0 | 81.7 | 73.7 | 84.9 | 86.3 |
+| the per-type fit (brier), out-of-fold | 81.5 | 79.4 | 83.5 | 75.5 | 84.3 | 90.8 |
+| the single scalar, out-of-fold | 81.5 | 79.7 | 83.3 | 74.6 | 85.7 | 89.5 |
+
+(the three right-hand columns are the scorer's own per-type calibration
+components, 0-100, higher is better.)
+
 ## The official scorer
 
 The out-of-fold predictions (all the items, each scaled by the temperature of the

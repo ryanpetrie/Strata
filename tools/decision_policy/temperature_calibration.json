@@ -878,6 +878,154 @@
         }
       }
     },
+    "single_scalar": {
+      "temperature": 0.7,
+      "out_of_fold": {
+        "ece_before": {
+          "choice": 0.13127217543588357,
+          "noul": 0.07561924931885602,
+          "score": 0.10818720700054921
+        },
+        "ece_after": {
+          "choice": 0.12677762681870472,
+          "noul": 0.07153427068736724,
+          "score": 0.07793958268094889
+        },
+        "calibration_before": {
+          "choice": 73.7455649128233,
+          "noul": 84.8761501362288,
+          "score": 86.3339326194054
+        },
+        "calibration_after": {
+          "choice": 74.64447463625905,
+          "noul": 85.69314586252655,
+          "score": 89.48046816489912
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 48,
+            "temperature": 0.83,
+            "tiers": {
+              "choice/easy": 2,
+              "choice/hard": 15,
+              "choice/judge": 3,
+              "choice/standard": 2,
+              "noul/easy": 3,
+              "noul/hard": 3,
+              "noul/judge": 6,
+              "noul/standard": 2,
+              "score/easy": 2,
+              "score/hard": 7,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 15
+          },
+          {
+            "fold": 1,
+            "n": 48,
+            "temperature": 0.85,
+            "tiers": {
+              "choice/easy": 3,
+              "choice/hard": 13,
+              "choice/judge": 2,
+              "choice/standard": 4,
+              "noul/easy": 2,
+              "noul/hard": 6,
+              "noul/judge": 4,
+              "noul/standard": 2,
+              "score/easy": 1,
+              "score/hard": 8,
+              "score/judge": 2,
+              "score/standard": 1
+            },
+            "hard_choice_items": 13
+          },
+          {
+            "fold": 2,
+            "n": 47,
+            "temperature": 0.63,
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 9,
+              "choice/judge": 5,
+              "choice/standard": 1,
+              "noul/easy": 2,
+              "noul/hard": 4,
+              "noul/judge": 3,
+              "noul/standard": 5,
+              "score/easy": 1,
+              "score/hard": 6,
+              "score/judge": 3,
+              "score/standard": 2
+            },
+            "hard_choice_items": 9
+          },
+          {
+            "fold": 3,
+            "n": 47,
+            "temperature": 0.53,
+            "tiers": {
+              "choice/easy": 7,
+              "choice/hard": 6,
+              "choice/judge": 5,
+              "choice/standard": 3,
+              "noul/easy": 4,
+              "noul/hard": 3,
+              "noul/judge": 4,
+              "noul/standard": 3,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 2,
+              "score/standard": 2
+            },
+            "hard_choice_items": 6
+          },
+          {
+            "fold": 4,
+            "n": 45,
+            "temperature": 0.63,
+            "tiers": {
+              "choice/easy": 6,
+              "choice/hard": 10,
+              "choice/judge": 5,
+              "noul/easy": 3,
+              "noul/hard": 5,
+              "noul/judge": 5,
+              "score/easy": 2,
+              "score/hard": 6,
+              "score/judge": 3
+            },
+            "hard_choice_items": 10
+          }
+        ],
+        "scorer": {
+          "capability": 81.50440938738743,
+          "intelligence": 79.73612255354662,
+          "calibration": 83.27269622122824,
+          "competence_per_type": {
+            "choice": 86.70504752978981,
+            "noul": 80.47619047619048,
+            "score": 72.02712965465957
+          },
+          "calibration_per_type": {
+            "choice": 74.64447463625905,
+            "noul": 85.69314586252655,
+            "score": 89.48046816489912
+          },
+          "accuracy_per_type": {
+            "choice": 89.7196261682243,
+            "noul": 91.30434782608695,
+            "score": 79.66101694915254
+          },
+          "items": 235,
+          "predicted": 235,
+          "calibration_items_tvd": 0.24281550662828943,
+          "calibration_items": 13
+        }
+      }
+    },
     "official_scorer_baseline": {
       "capability": 79.8319081369493,
       "intelligence": 78.01193371774609,
