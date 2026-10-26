@@ -45,7 +45,7 @@ namespace strata::core {
 namespace {
 constexpr char kMagic[8] = {'S', 'T', 'R', 'S', 'E', 'S', 'S', '\x01'};
 constexpr char kEnd[8] = {'S', 'T', 'R', 'S', 'E', 'N', 'D', '\x01'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;   // 2: the image's adapter state beside its control vector's (v1 files are refused)
 constexpr size_t kHeader = 64, kTrailer = 16;
 
 // Progress for a transfer: one report after every block that was handed to (or read from) the OS, whatever its size
@@ -688,7 +688,7 @@ void put_checkpoint(Out& o, const ConversationCheckpoint& c) {
 
 void put_payload(Out& o, const SavedConversation& s, const std::vector<SessionKvSource>* sources = nullptr) {
     for (int64_t g : s.geometry) o.i64(g);
-    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0);
+    o.i64(s.layer_lo); o.i64(s.layer_hi); o.u64(s.cvec ? 1 : 0); o.u64((uint64_t) s.lora);
     put_checkpoint(o, s.live);
     o.u64(s.checkpoints.size());
     for (const auto& c : s.checkpoints) put_checkpoint(o, c);
@@ -767,13 +767,17 @@ bool get_payload(In& in, SavedConversation& s) {
     // checked before any state array is read: a file of another geometry allocates nothing
     if (in.limits.geometry && *in.limits.geometry != s.geometry)
         return in.fail("saved with another model geometry than this runtime's");
-    uint64_t cvec = 0;
-    if (!in.i64(s.layer_lo) || !in.i64(s.layer_hi) || !in.u64(cvec)) return false;
+    uint64_t cvec = 0, lora = 0;
+    if (!in.i64(s.layer_lo) || !in.i64(s.layer_hi) || !in.u64(cvec) || !in.u64(lora)) return false;
     if (in.limits.layer_range &&
         (in.limits.layer_range->first != s.layer_lo || in.limits.layer_range->second != s.layer_hi))
         return in.fail("saved with another layer range than this runtime's");
     if (cvec > 1) return in.fail("invalid cvec flag");
     s.cvec = cvec == 1;
+    // The same shape of guard the control vector's flag gets: a value outside the three states is refused rather
+    // than narrowed into one of them, because "cvec's flag but wrong" would silently mean "base model".
+    if (lora > (uint64_t) kLoraOn) return in.fail("invalid adapter state flag");
+    s.lora = (ConversationLora) lora;
     if (!get_checkpoint(in, s.live)) return false;
     uint64_t n = 0;
     // a checkpoint is at least 8 counts + used = 72 bytes; a K/V layer at least 7 + 5 = 96
@@ -801,7 +805,7 @@ bool has_stage_parts(const SavedConversation& s) {
     return false;
 }
 
-// header v1, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
+// header v2, little-endian: magic[8] version:u32 header_size:u32 model:u64 config:u64 payload:u64 reserved:u64[2]
 // header_hash:u64 (session_hash64 of bytes 0..55, seed 0)
 void header_bytes(uint8_t* h, const SessionFileIdentity& id, uint64_t payload) {
     std::memset(h, 0, kHeader);
@@ -894,6 +898,9 @@ uint64_t session_config_fingerprint(const SessionConfig& c) {
     b.f64("rope.beta_fast", c.rope.beta_fast);
     b.f64("rope.beta_slow", c.rope.beta_slow);
     b.u64("cvec", c.cvec);
+    // The loaded adapter's digest: a session computed by the adapted model means something else to a process that
+    // loaded another adapter (or none), and the cells carry no record of which model wrote them.
+    b.u64("lora", c.lora);
     b.u64("switches", c.switches.size());
     for (const auto& [name, value] : c.switches) b.i64("switch." + name, value);
     return b.digest();
@@ -1006,7 +1013,7 @@ uint64_t session_read_max_file_bytes(const SessionReadLimits& l) {
     uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
     for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
     cp = sat_add(cp, 8);
-    uint64_t n = kHeader + kTrailer + 18 * 8 + 3 * 8;             // geometry, layer range, cvec
+    uint64_t n = kHeader + kTrailer + 18 * 8 + 4 * 8;              // geometry, layer range, cvec, lora
     n = sat_add(n, cp);                                            // live
     n = sat_add(n, sat_add(8, sat_mul(l.max_checkpoints, cp)));    // checkpoints
     n = sat_add(n, 8);

@@ -75,6 +75,7 @@ SavedConversation sample() {
     for (size_t i = 0; i < s.geometry.size(); ++i) s.geometry[i] = int64_t(100 + i);
     s.layer_lo = 0; s.layer_hi = 48;
     s.cvec = false;
+    s.lora = kLoraOn;
     s.live = checkpoint(1000, 1);
     s.checkpoints.push_back(checkpoint(10, 2));
     s.checkpoints.push_back(checkpoint(500, 3));
@@ -93,9 +94,9 @@ SavedConversation sample() {
     return s;
 }
 
-// format v1 golden: the file the fixed sample() gives (size and session_hash64 of all bytes, seed 0)
-constexpr size_t kGoldenSize = 17878535;
-constexpr uint64_t kGoldenHash = 0x70f812b350360d09ull;
+// format v2 golden: the file the fixed sample() gives (size and session_hash64 of all bytes, seed 0)
+constexpr size_t kGoldenSize = 17878543;   // v1 + 8: v2 adds the image's adapter state, one 64-bit word
+constexpr uint64_t kGoldenHash = 0x36aec4fd9ba0a4c2ull;
 
 bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoint& b) {
     return a.ids == b.ids && a.imgs == b.imgs && a.gdn == b.gdn && a.ple == b.ple && a.tails == b.tails &&
@@ -104,6 +105,7 @@ bool same_checkpoint(const ConversationCheckpoint& a, const ConversationCheckpoi
 
 bool same(const SavedConversation& a, const SavedConversation& b) {
     if (a.geometry != b.geometry || a.layer_lo != b.layer_lo || a.layer_hi != b.layer_hi || a.cvec != b.cvec ||
+        a.lora != b.lora ||
         !same_checkpoint(a.live, b.live) || a.checkpoints.size() != b.checkpoints.size() || a.kv.size() != b.kv.size())
         return false;
     for (size_t i = 0; i < a.checkpoints.size(); ++i)
@@ -164,14 +166,14 @@ int main() {
     check(session_file_write(good.string(), original, id, written, error), "write succeeds");
     check(error.empty(), "write leaves no error");
 
-    // golden: format v1 is frozen. The fixed sample must give these exact bytes (little-endian header fields at
+    // golden: format v2 is frozen. The fixed sample must give these exact bytes (little-endian header fields at
     // fixed offsets, and a fixed hash of the whole file); a format change must bump the version and this test.
     {
         const std::vector<char> g = slurp(good);
         auto u32 = [&](size_t o) { uint32_t v = 0; for (int i = 3; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
         auto u64 = [&](size_t o) { uint64_t v = 0; for (int i = 7; i >= 0; --i) v = v << 8 | uint8_t(g[o + i]); return v; };
         check(g.size() >= 80 && std::memcmp(g.data(), "STRSESS\x01", 8) == 0, "golden: magic");
-        check(u32(8) == 1 && u32(12) == 64, "golden: version 1, header 64 bytes (little-endian)");
+        check(u32(8) == 2 && u32(12) == 64, "golden: version 2, header 64 bytes (little-endian)");
         check(u64(16) == id.model && u64(24) == id.config, "golden: fingerprints at offsets 16 and 24");
         check(u64(32) == g.size() - 64 - 16, "golden: payload length at offset 32");
         check(u64(40) == 0 && u64(48) == 0, "golden: reserved fields are zero");
@@ -241,10 +243,20 @@ int main() {
     // other model or other configuration
     check(rejects(good, {id.model ^ 1, id.config}, "model"), "different model fingerprint rejected");
     check(rejects(good, {id.model, id.config ^ 1}, "config"), "different configuration rejected");
-    // wrong version: header field patched and header hash recomputed so only the version differs
+    // an OLD file is refused by its version, not mis-parsed: v1's payload has no adapter state, so reading it as v2
+    // would take the first checkpoint's id count for the flag and every later field would land one word early.  The
+    // header is checked before the payload is read, so nothing is allocated from the old layout either.
     {
         auto d = image;
-        uint32_t v = 2; std::memcpy(d.data() + 8, &v, 4);
+        uint32_t v = 1; std::memcpy(d.data() + 8, &v, 4);
+        const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
+        const fs::path p = dir / "old.bin"; spit(p, d);
+        check(rejects(p, id, "version"), "an old (v1) file is refused, naming the version");
+    }
+    // an unknown (later) version too: header field patched and header hash recomputed so only the version differs
+    {
+        auto d = image;
+        uint32_t v = 3; std::memcpy(d.data() + 8, &v, 4);
         const uint64_t h = session_hash64(d.data(), 56, 0); std::memcpy(d.data() + 56, &h, 8);
         const fs::path p = dir / "ver.bin"; spit(p, d);
         check(rejects(p, id, "version"), "unknown version rejected");
@@ -252,14 +264,25 @@ int main() {
     // a corrupted element count with a recomputed payload hash must fail on bounds, not allocate
     {
         auto d = image;
-        // payload starts at 64: geometry 18*8, layer_lo, layer_hi, cvec = 21*8 bytes, then live.ids count
-        const size_t at = 64 + 21 * 8;
+        // payload starts at 64: geometry 18*8, layer_lo, layer_hi, cvec, lora = 22*8 bytes, then live.ids count
+        const size_t at = 64 + 22 * 8;
         uint64_t huge = 0x0fffffffffffffffull; std::memcpy(d.data() + at, &huge, 8);
         uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
         const uint64_t h = session_hash64(d.data() + 64, payload, 0);
         std::memcpy(d.data() + 64 + payload, &h, 8);
         const fs::path p = dir / "count.bin"; spit(p, d);
         check(rejects(p, id, "count"), "oversized count rejected before allocation");
+    }
+    // an adapter state outside 0..2 is refused by the same guard the control vector's flag gets, not narrowed into
+    // one of the three states ("cvec's flag but wrong" would silently mean "base model here")
+    {
+        auto d = image;
+        uint64_t bad = 3; std::memcpy(d.data() + 64 + 21 * 8, &bad, 8);
+        uint64_t payload = 0; std::memcpy(&payload, d.data() + 32, 8);
+        const uint64_t h = session_hash64(d.data() + 64, payload, 0);
+        std::memcpy(d.data() + 64 + payload, &h, 8);
+        const fs::path p = dir / "loraflag.bin"; spit(p, d);
+        check(rejects(p, id, "adapter state"), "an adapter state outside 0..2 is refused");
     }
     // missing file
     check(rejects(dir / "absent.bin", id), "missing file rejected");
@@ -382,6 +405,7 @@ int main() {
         check(differs([](SessionConfig& d) { d.rope.type = 2; }), "rope type enters the config");
         check(differs([](SessionConfig& d) { d.rope.beta_slow = 2; }), "rope beta enters the config");
         check(differs([](SessionConfig& d) { d.cvec = 7; }), "control vectors enter the config");
+        check(differs([](SessionConfig& d) { d.lora = 7; }), "the loaded adapter enters the config");
         check(differs([](SessionConfig& d) { d.switches[0].second = 1; }), "a switch value enters the config");
         check(differs([](SessionConfig& d) { d.switches.push_back({"X", 0}); }), "the switch list enters the config");
         // field boundaries: ("ab","c") and ("a","bc") hash differently
@@ -503,7 +527,7 @@ int main() {
         // a huge count in a state array with a recomputed hash: refused by the bound, nothing allocated
         auto d = image;
         // live: ids count (8) + 1000*4, imgs count (8) + 1*16, then the gdn byte count
-        const size_t at = 64 + 21 * 8 + 8 + 1000 * 4 + 8 + 16;
+        const size_t at = 64 + 22 * 8 + 8 + 1000 * 4 + 8 + 16;
         uint64_t was = 0; std::memcpy(&was, d.data() + at, 8);
         check(was == 4099, "limits: test offset finds the GDN count");
         uint64_t huge = 3ull << 30; std::memcpy(d.data() + at, &huge, 8);

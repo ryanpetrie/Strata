@@ -14,6 +14,28 @@
 
 namespace strata::core {
 
+/// Which LoRA adapter state a conversation's state was computed with: the third part of its cache key, beside the
+/// token prefix and the control vector's setting.
+///
+/// A TRI-STATE, NOT A BOOL, and the difference is the request this engine has to answer: "was an adapter loaded at
+/// all" (kLoraNone) is not the same question as "was this request's flag off" (kLoraOff).  With the flag off the delta
+/// kernel returns before writing a byte (`src/kernels/cuda/lora.cu`), so reusing a base-model image for an adapted
+/// request would be arithmetically harmless TODAY - and that is exactly the reuse that must not happen: the two
+/// populations answer different questions, an image's cells carry no record of which one produced them, and a later
+/// change to the kernel or to the request rules (a zero write, a different accumulation, a second adapter) would turn
+/// the reuse into a silently wrong answer with no cache miss to point at it.  Keeping them apart costs one miss when
+/// an adapter-equipped engine answers a chat turn a base engine had parked, and nothing else.
+enum ConversationLora : uint8_t {
+    kLoraNone = 0,  ///< no adapter resident
+    kLoraOff = 1,   ///< an adapter is resident; this request ran the base model
+    kLoraOn = 2,    ///< an adapter is resident and this request ran the adapted model
+};
+/// The key for one request: `resident` is whether an adapter is loaded (a start-up decision that does not change
+/// while the engine runs), `on` whether this request raised its flag.
+inline ConversationLora conversation_lora_key(bool resident, bool on) {
+    return !resident ? kLoraNone : on ? kLoraOn : kLoraOff;
+}
+
 struct ConversationImageKey {
     int64_t start = 0;
     uint64_t hash = 0;
@@ -164,6 +186,10 @@ struct SavedConversation {
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
     bool cvec = true;
+    // the adapter state the cells were computed with (`ConversationLora`): beside `cvec`, matched by `best`, carried
+    // into the session file, and restored into the live session's own key.  See the enum above for why it is not a
+    // bool.
+    ConversationLora lora = kLoraNone;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
 
@@ -248,13 +274,16 @@ public:
     }
 
     template<class Token>
-    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec,
+               ConversationLora lora) const {
         Match best;
         // Ties prefer the most recently parked branch. The caller prefers its
         // already-active state when that offers the same prefix length.
         for (size_t i = entries_.size(); i-- > 0;) {
             const auto& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            // Both side-weight keys: an image whose cells were computed with another control vector OR with another
+            // adapter state is not a match, however long its token prefix.
+            if (e.cvec != cvec || e.lora != lora) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > best.tokens) best = {i, n, live, serials_[i]};
@@ -372,7 +401,8 @@ public:
     // checkpoints, or whose deepest checkpoint the outgoing chain does not hold (another conversation that only
     // shares the system prompt's root with it), is kept.  Returns how many were dropped.
     size_t drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
-                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) {
+                           const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
+                           ConversationLora lora) {
         auto held = [&](const ConversationCheckpoint& c) {
             if (c.ids == ids && c.imgs == images) return true;
             for (const auto& k : checkpoints)
@@ -385,7 +415,7 @@ public:
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
-            if (e.cvec == cvec && deepest && !deepest->ids.empty() && held(*deepest) &&
+            if (e.cvec == cvec && e.lora == lora && deepest && !deepest->ids.empty() && held(*deepest) &&
                 !(guarded_ != 0 && serials_[i] == guarded_)) {
                 bytes_ -= e.bytes();
                 erase(i);
@@ -403,10 +433,11 @@ public:
     /// park now would only rewrite what a turn from now drops: the prefix such an entry holds is this conversation's
     /// prefix, and the conversation only appends, so the copy stays usable for the reuse it was made for.
     size_t parked_prefix_tokens(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& images,
-                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec) const {
+                                const std::vector<ConversationCheckpoint>& checkpoints, bool cvec,
+                                ConversationLora lora) const {
         size_t longest = 0;
         for (const auto& e : entries_) {
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec || e.lora != lora) continue;
             const ConversationCheckpoint* deepest = nullptr;
             for (const auto& c : e.checkpoints)
                 if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
@@ -422,7 +453,7 @@ public:
     bool put(SavedConversation&& image, size_t held = 0) {
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
-        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
+        drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec, image.lora);
         if (!make_room(n, held)) return false;
         entries_.push_back(std::move(image));
         serials_.push_back(next_serial_++);
