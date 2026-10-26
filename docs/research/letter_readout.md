@@ -1,9 +1,11 @@
 # The letter readout: the options as A, B, C ...
 
-**Status:** built and unit-tested, not yet measured. The 235-item OpenDecisions
-sample has not been run with the letter readout (the engine was busy with another
-measurement), so this document says what the readout is and what it has to be
-measured against; the numbers go here when the run is done.
+**Status:** built, unit-tested and measured. The 235-item OpenDecisions sample was
+run both ways on 2026-10-21, on a freshly restarted engine each time: the letter
+readout scored **82.7** Capability against the direct readout's **79.3** in the same
+session, was faster, and needs one engine request per question where the direct path
+needs 113 extra over the same items. The full comparison, its mechanism and its
+limits are in the companion doc's section 20.
 
 **Date:** 2026-10-21
 
@@ -55,7 +57,9 @@ The per-type temperature (the config's `"systemone": {"temperature": ...}`) scal
 the letter reading exactly as it scales the direct one - the same
 `normalize(closed ** (1/T))`, through the same `apply_temperature`. Without that the
 two arms would report different things, and the comparison between them would be a
-comparison of the temperatures.
+comparison of the temperatures. The measurement below was made with **no
+temperature in either arm**: the fitted constants are not being shipped (companion
+doc §19), so the comparison is at T = 1, against the readout that ships.
 
 ## The tokenization, measured
 
@@ -119,22 +123,45 @@ recorded here - so the direct arm is run again, next to the letter arm, before t
 two are compared (numbers from a long-running engine are invalid, companion doc
 §12.5).
 
-## What is not measured yet
+## The measurement (2026-10-21)
 
-Everything that needs the model:
+Both arms ran over the same 235 ids, in one session, on a freshly restarted engine
+each time (numbers from a long-running engine are invalid - the companion doc
+§12.5), with **no temperature in either arm**: the fitted temperatures are not being
+shipped (companion doc §19), so T = 1 compares the letter readout against the
+readout that ships.  The arms differ in one key of the launch config:
+`"systemone": {"readout": "letters"}`.
 
-- the Capability the official scorer reports for the letter arm;
-- the fast-path rate and the rate of answers the endpoint could not parse (a 502);
-- the latency per question (median and p95);
-- how often the model's top token at the answer position is a letter at all, and
-  whether the model prefers the first letter (the position bias every lettered
-  readout has).
+| | the direct readout | the letter readout | the stored baseline |
+|---|---:|---:|---:|
+| Capability | 79.3 | **82.7** | 79.8 |
+| Intelligence | 77.4 | **82.4** | 78.0 |
+| Calibration | 81.1 | **83.0** | 81.7 |
+| predicted | 235 of 235 | 235 of 235 | 235 of 235 |
+| fast path | 235 of 235 | 235 of 235 | 235 of 235 |
+| requests that failed | 0 | 0 | 0 |
+| latency median | 3951 ms | **3606 ms** | 3121 ms |
+| latency p95 | 7288 ms | **5427 ms** | 5682 ms |
+| extra engine requests per item | 113 over 235 items | **0** | - |
 
-Until those are measured, the letter readout is an option, not a result. The
-roadmap's rule applies: ship it only if it wins on at least two of {Capability,
-latency, simplicity} without losing the other.
+**The letter readout wins the official Capability by 3.4 points** against the arm
+measured in the same session, and it is faster and simpler.  **But it does not pick
+more items right**: 204 of the 235 against the direct readout's 206.  The win is in
+the shape of the distribution - the score questions' expected level sits closer to
+the gold level (the mean normalized distance 0.0908 against 0.1013) - and in the
+calibration.  The companion doc §20 has the whole comparison, the two numbers that
+go the other way (the distance to the true probabilities on the 13 calibration items,
+0.256 against 0.216, and the score questions' raw accuracy, 72.9% against 79.7%),
+and the limits.
 
-## The measurement (Phase B)
+**No position bias**: the letter readout picked the first letter on 25.3% of the 166
+choice and score items; an unbiased readout would pick it 24.5% of the time.
+
+The exit criterion (roadmap item 1.3) - ship it only if it wins on at least two of
+{Capability, latency, simplicity} without losing the other - **is met**: it wins
+Capability and simplicity, and the latency does not lose.
+
+## How to measure it again
 
 Both arms run over the same 235 ids, from the same build, on a freshly restarted
 engine (numbers from a long-running engine are invalid - the companion doc §12.5).
