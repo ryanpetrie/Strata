@@ -1,0 +1,798 @@
+{
+  "version": 2,
+  "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+  "fitted_on": "2026-10-22",
+  "objective": "brier",
+  "objective_text": "the mean multiclass Brier score of the distribution against the gold label",
+  "grid": {
+    "min": 0.5,
+    "max": 10.0,
+    "step": 0.01
+  },
+  "seed": 42,
+  "folds": 5,
+  "split_rule": "5-fold cross-validation, stratified by type: every type's items are sorted by id, shuffled with random.Random(seed) and dealt round-robin into the five folds; the temperature of a fold is fitted on the other four folds and applied to the fold's own items. A 70/30 split (the same seed, stratified by type the same way) is the second check.",
+  "temperature": {
+    "choice": 2.27,
+    "noul": 2.93,
+    "score": 3.29
+  },
+  "temperature_by_objective": {
+    "nll": {
+      "choice": 2.31,
+      "noul": 2.67,
+      "score": 3.36
+    },
+    "brier": {
+      "choice": 2.27,
+      "noul": 2.93,
+      "score": 3.29
+    },
+    "ece": {
+      "choice": 2.42,
+      "noul": 1.47,
+      "score": 3.02
+    },
+    "soft": {
+      "choice": 3.65,
+      "noul": 3.75,
+      "score": 3.73
+    }
+  },
+  "items_with_human_distribution": {
+    "choice": 250,
+    "noul": 250,
+    "score": 250
+  },
+  "source": {
+    "dataset": "Praveenrajus/jev-bench, the validation split, the 500-per-type pool of soft_label_pool.json (seed 20261021)",
+    "arm": "the serial first-token path, one question per request, the server at T = 1, a fresh engine (1500/1500, 0 failures, 6306 s)",
+    "note": "the pool is licence-clean and out of sample with respect to OpenDecisions and to the jev-bench test split; the constants are fitted on it and on nothing else",
+    "files": {
+      "items": {
+        "path": "<opencode temp>\\decision_policy_training\\items\\p1b_pool.jsonl",
+        "sha256": "eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7"
+      },
+      "runlog": {
+        "path": "<opencode temp>\\decision_policy_training\\run\\p1b_pool_T1.runlog.jsonl",
+        "sha256": "60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72"
+      },
+      "predictions": {
+        "path": "<opencode temp>\\decision_policy_training\\run\\p1b_pool_T1.jsonl",
+        "sha256": "7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589"
+      }
+    }
+  },
+  "validation": {
+    "out_of_fold": {
+      "nll": {
+        "ece_before": {
+          "choice": 0.27609775618160876,
+          "noul": 0.19005142829182378,
+          "score": 0.24672121650623288
+        },
+        "ece_after": {
+          "choice": 0.06299100119950038,
+          "noul": 0.1824742314874878,
+          "score": 0.06037117482289004
+        },
+        "calibration_before": {
+          "choice": 44.78044876367825,
+          "noul": 61.98971434163525,
+          "score": 65.6361634982476
+        },
+        "calibration_after": {
+          "choice": 87.40179976009992,
+          "noul": 63.50515370250245,
+          "score": 85.37844722081879
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.31,
+              "noul": 2.56,
+              "score": 3.29
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 1,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.28,
+              "noul": 2.69,
+              "score": 3.51
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 2,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.33,
+              "noul": 2.71,
+              "score": 3.4
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 3,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.33,
+              "noul": 2.7,
+              "score": 3.62
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 4,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.3,
+              "noul": 2.69,
+              "score": 3.01
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          }
+        ],
+        "scorer": {
+          "capability": 59.07791561070357,
+          "intelligence": 39.39403099360009,
+          "calibration": 78.76180022780704,
+          "competence_per_type": {
+            "choice": 54.31584497071532,
+            "noul": 46.39999999999999,
+            "score": 17.46624801008496
+          },
+          "calibration_per_type": {
+            "choice": 87.40179976009992,
+            "noul": 63.50515370250245,
+            "score": 85.37844722081879
+          },
+          "accuracy_per_type": {
+            "choice": 55.400000000000006,
+            "noul": 73.2,
+            "score": 47.0
+          },
+          "items": 1500,
+          "predicted": 1500,
+          "calibration_items_tvd": 0.4661689404828339,
+          "calibration_items": 750
+        }
+      },
+      "brier": {
+        "ece_before": {
+          "choice": 0.27609775618160876,
+          "noul": 0.19005142829182378,
+          "score": 0.24672121650623288
+        },
+        "ece_after": {
+          "choice": 0.06825155110585535,
+          "noul": 0.18432723982149363,
+          "score": 0.05391457077898876
+        },
+        "calibration_before": {
+          "choice": 44.78044876367825,
+          "noul": 61.98971434163525,
+          "score": 65.6361634982476
+        },
+        "calibration_after": {
+          "choice": 86.34968977882893,
+          "noul": 63.134552035701276,
+          "score": 86.02181327879455
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.24,
+              "noul": 2.74,
+              "score": 3.12
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 1,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.28,
+              "noul": 3.01,
+              "score": 3.4
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 2,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.3,
+              "noul": 2.97,
+              "score": 3.38
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 3,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.25,
+              "noul": 2.9,
+              "score": 3.61
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 4,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.26,
+              "noul": 3.05,
+              "score": 2.93
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          }
+        ],
+        "scorer": {
+          "capability": 58.98647521385551,
+          "intelligence": 39.47093206326945,
+          "calibration": 78.50201836444158,
+          "competence_per_type": {
+            "choice": 54.31584497071532,
+            "noul": 46.39999999999999,
+            "score": 17.696951219093048
+          },
+          "calibration_per_type": {
+            "choice": 86.34968977882893,
+            "noul": 63.134552035701276,
+            "score": 86.02181327879455
+          },
+          "accuracy_per_type": {
+            "choice": 55.400000000000006,
+            "noul": 73.2,
+            "score": 47.0
+          },
+          "items": 1500,
+          "predicted": 1500,
+          "calibration_items_tvd": 0.4664954335835078,
+          "calibration_items": 750
+        }
+      },
+      "ece": {
+        "ece_before": {
+          "choice": 0.27609775618160876,
+          "noul": 0.19005142829182378,
+          "score": 0.24672121650623288
+        },
+        "ece_after": {
+          "choice": 0.05676240597116114,
+          "noul": 0.17874314862722737,
+          "score": 0.055877000644227244
+        },
+        "calibration_before": {
+          "choice": 44.78044876367825,
+          "noul": 61.98971434163525,
+          "score": 65.6361634982476
+        },
+        "calibration_after": {
+          "choice": 88.64751880576777,
+          "noul": 64.25137027455452,
+          "score": 85.63628823839805
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.44,
+              "noul": 1.48,
+              "score": 3.11
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 1,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.43,
+              "noul": 1.9,
+              "score": 4.76
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 2,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.42,
+              "noul": 1.55,
+              "score": 4.76
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 3,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.45,
+              "noul": 1.43,
+              "score": 4.98
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 4,
+            "n": 300,
+            "temperatures": {
+              "choice": 2.41,
+              "noul": 1.59,
+              "score": 3.02
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          }
+        ],
+        "scorer": {
+          "capability": 59.04294606386832,
+          "intelligence": 38.57416635482987,
+          "calibration": 79.51172577290677,
+          "competence_per_type": {
+            "choice": 54.31584497071532,
+            "noul": 46.39999999999999,
+            "score": 15.006654093774296
+          },
+          "calibration_per_type": {
+            "choice": 88.64751880576777,
+            "noul": 64.25137027455452,
+            "score": 85.63628823839805
+          },
+          "accuracy_per_type": {
+            "choice": 55.400000000000006,
+            "noul": 73.2,
+            "score": 47.0
+          },
+          "items": 1500,
+          "predicted": 1500,
+          "calibration_items_tvd": 0.46940258419980874,
+          "calibration_items": 750
+        }
+      },
+      "soft": {
+        "ece_before": {
+          "choice": 0.27609775618160876,
+          "noul": 0.19005142829182378,
+          "score": 0.24672121650623288
+        },
+        "ece_after": {
+          "choice": 0.24053015162646943,
+          "noul": 0.19135810029855513,
+          "score": 0.06211505304266363
+        },
+        "calibration_before": {
+          "choice": 44.78044876367825,
+          "noul": 61.98971434163525,
+          "score": 65.6361634982476
+        },
+        "calibration_after": {
+          "choice": 51.89396967470612,
+          "noul": 61.72837994028897,
+          "score": 85.1977911031428
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 300,
+            "temperatures": {
+              "choice": 3.67,
+              "noul": 3.56,
+              "score": 3.75
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 1,
+            "n": 300,
+            "temperatures": {
+              "choice": 3.61,
+              "noul": 3.7,
+              "score": 3.75
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 2,
+            "n": 300,
+            "temperatures": {
+              "choice": 3.67,
+              "noul": 3.74,
+              "score": 3.83
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 3,
+            "n": 300,
+            "temperatures": {
+              "choice": 3.71,
+              "noul": 3.67,
+              "score": 3.82
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 4,
+            "n": 300,
+            "temperatures": {
+              "choice": 3.59,
+              "noul": 4.06,
+              "score": 3.48
+            },
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          }
+        ],
+        "scorer": {
+          "capability": 52.66389177197479,
+          "intelligence": 39.05440330457028,
+          "calibration": 66.27338023937929,
+          "competence_per_type": {
+            "choice": 54.31584497071532,
+            "noul": 46.39999999999999,
+            "score": 16.447364942995524
+          },
+          "calibration_per_type": {
+            "choice": 51.89396967470612,
+            "noul": 61.72837994028897,
+            "score": 85.1977911031428
+          },
+          "accuracy_per_type": {
+            "choice": 55.400000000000006,
+            "noul": 73.2,
+            "score": 47.0
+          },
+          "items": 1500,
+          "predicted": 1500,
+          "calibration_items_tvd": 0.4877624045051513,
+          "calibration_items": 750
+        }
+      }
+    },
+    "holdout_30": {
+      "ece_before": {
+        "choice": 0.27618654444889124,
+        "noul": 0.18367107650525147,
+        "score": 0.22683405226584297
+      },
+      "ece_after": {
+        "choice": 0.08844831952169245,
+        "noul": 0.20142238134844165,
+        "score": 0.12694384964806188
+      },
+      "temperatures": {
+        "choice": 2.28,
+        "noul": 3.0,
+        "score": 3.37
+      },
+      "calibration_before": {
+        "choice": 44.76269111022175,
+        "noul": 63.2657846989497,
+        "score": 68.88897640736974
+      },
+      "calibration_after": {
+        "choice": 82.31033609566151,
+        "noul": 59.71552373031167,
+        "score": 79.37894705978925
+      },
+      "train_items": {
+        "choice": 350,
+        "noul": 350,
+        "score": 350
+      },
+      "test_items": {
+        "choice": 150,
+        "noul": 150,
+        "score": 150
+      }
+    },
+    "bootstrap": {
+      "choice": {
+        "resamples": 1000,
+        "share_better": 1.0,
+        "difference_p05": 0.16988948912769863,
+        "difference_p95": 0.23126740677462215,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
+      },
+      "noul": {
+        "resamples": 1000,
+        "share_better": 0.604,
+        "difference_p05": -0.01841397458996319,
+        "difference_p95": 0.025046695469907287,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
+      },
+      "score": {
+        "resamples": 1000,
+        "share_better": 1.0,
+        "difference_p05": 0.14526918025045674,
+        "difference_p95": 0.214320845418643,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
+      }
+    },
+    "paired_bootstrap_out_of_fold": {
+      "resamples": 1000,
+      "capability": {
+        "mean": 8.84473394699141,
+        "p025": 7.142896678061049,
+        "p975": 10.555228214375113,
+        "share_better": 1.0
+      },
+      "intelligence": {
+        "mean": -2.5111064604945854,
+        "p025": -3.463350575414708,
+        "p975": -1.5213921179646448,
+        "share_better": 0.0
+      },
+      "calibration": {
+        "mean": 20.200574354477403,
+        "p025": 17.076190436553347,
+        "p975": 23.3142150660685,
+        "share_better": 1.0
+      }
+    },
+    "paired_control": {},
+    "single_scalar": {
+      "temperature": 2.47,
+      "out_of_fold": {
+        "ece_before": {
+          "choice": 0.27609775618160876,
+          "noul": 0.19005142829182378,
+          "score": 0.24672121650623288
+        },
+        "ece_after": {
+          "choice": 0.056489750417448796,
+          "noul": 0.18120625069472968,
+          "score": 0.07254824068604261
+        },
+        "calibration_before": {
+          "choice": 44.78044876367825,
+          "noul": 61.98971434163525,
+          "score": 65.6361634982476
+        },
+        "calibration_after": {
+          "choice": 88.70204991651023,
+          "noul": 63.75874986105406,
+          "score": 84.14196591223731
+        },
+        "folds": [
+          {
+            "fold": 0,
+            "n": 300,
+            "temperature": 2.41,
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 1,
+            "n": 300,
+            "temperature": 2.49,
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 2,
+            "n": 300,
+            "temperature": 2.5,
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 3,
+            "n": 300,
+            "temperature": 2.48,
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          },
+          {
+            "fold": 4,
+            "n": 300,
+            "temperature": 2.44,
+            "tiers": {
+              "choice/hard": 100,
+              "noul/hard": 100,
+              "score/hard": 100
+            },
+            "hard_choice_items": 100
+          }
+        ],
+        "scorer": {
+          "capability": 59.645460024883164,
+          "intelligence": 40.42333148649913,
+          "calibration": 78.8675885632672,
+          "competence_per_type": {
+            "choice": 54.31584497071532,
+            "noul": 46.39999999999999,
+            "score": 20.55414948878208
+          },
+          "calibration_per_type": {
+            "choice": 88.70204991651023,
+            "noul": 63.75874986105406,
+            "score": 84.14196591223731
+          },
+          "accuracy_per_type": {
+            "choice": 55.400000000000006,
+            "noul": 73.2,
+            "score": 47.0
+          },
+          "items": 1500,
+          "predicted": 1500,
+          "calibration_items_tvd": 0.46360858991541315,
+          "calibration_items": 750
+        }
+      }
+    },
+    "official_scorer_baseline": {
+      "capability": 49.72205091241773,
+      "intelligence": 41.975326290315095,
+      "calibration": 57.46877553452036,
+      "competence_per_type": {
+        "choice": 54.31584497071532,
+        "noul": 46.39999999999999,
+        "score": 25.21013390022998
+      },
+      "calibration_per_type": {
+        "choice": 44.78044876367825,
+        "noul": 61.98971434163525,
+        "score": 65.6361634982476
+      },
+      "accuracy_per_type": {
+        "choice": 55.400000000000006,
+        "noul": 73.2,
+        "score": 47.0
+      },
+      "items": 1500,
+      "predicted": 1500,
+      "calibration_items_tvd": 0.4731874315815086,
+      "calibration_items": 750
+    },
+    "official_scorer_in_sample_fitted": {
+      "capability": 58.97897218778704,
+      "intelligence": 39.53539278028258,
+      "calibration": 78.42255159529151,
+      "competence_per_type": {
+        "choice": 54.31584497071532,
+        "noul": 46.39999999999999,
+        "score": 17.89033337013244
+      },
+      "calibration_per_type": {
+        "choice": 86.39583753536614,
+        "noul": 62.469155255765685,
+        "score": 86.40266199474272
+      },
+      "accuracy_per_type": {
+        "choice": 55.400000000000006,
+        "noul": 73.2,
+        "score": 47.0
+      },
+      "items": 1500,
+      "predicted": 1500,
+      "calibration_items_tvd": 0.46619075878911204,
+      "calibration_items": 750
+    }
+  }
+}

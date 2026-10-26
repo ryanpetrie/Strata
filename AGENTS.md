@@ -78,6 +78,11 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
   `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
+- **Report to the maintainer plainly.** They are the product owner, not a specialist in this programme's
+  statistics or in the engine's internals, and a report they have to decode is a report that gets ignored. Define
+  each term the first time it appears (TVD, calibration, config, "location"), say what a result means for the
+  product before how it was obtained, prefer one worked example over a precise sentence, and over-explain rather
+  than assume. If a result needs two numbers to be honest, give both in words.
 
 ## Contributing a change or report
 

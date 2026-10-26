@@ -1,0 +1,141 @@
+{
+  "purpose": "The fitting pool for the per-type temperature (roadmap item 1.1b): 500 items of every question type, drawn from the jev-bench VALIDATION split, with the per-config counts and the seed fixed here so the run is reproducible. The data itself stays outside the repository.",
+  "notes": [
+    "The pool keeps only licences that oblige nothing beyond attribution: every config named here is Apache-2.0, MIT, CC0, CC BY, or free-for-any-purpose. The share-alike configs (boolq, arc_challenge) and the non-commercial ones (chaosnli) and the research-use ones (mnli, yelp5) and the undeclared ones (sst5, stsb, sms_spam, fever_evidence) are out, with the reason in the excluded block.",
+    "boolq was in the first version of this plan (80 noul items) and was swapped out for 80 more paws items. The swap was made before any compute: no run, no fit and no measurement used the boolq items, so nothing is contaminated by it.",
+    "The swap changed the noul's per-config counts (paws 90 -> 170, boolq 80 -> 0) and no other count: the type mix is still 500 choice, 500 noul, 500 score, the total is still 1500, and the human distribution is still on 250 items of every type. WHICH ITEMS those are is a different question - see the next note.",
+    "ONE GENERATOR FOR THE WHOLE PLAN, so changing a count moves the items drawn after it: the choice type is drawn first and its 500 items are untouched, the noul draws shift (boolq's 80 go out, 120 different noul items come in), and the score draws shift with them (68 of the 500 score items are different). Measured: 1232 of the 1500 ids are the same as in the first version of the plan, 268 are different. The pool is reproducible for a GIVEN plan; it is not a superset of an earlier one."
+  ],
+  "dataset": "Praveenrajus/jev-bench (HuggingFace)",
+  "split": "validation",
+  "seed": 20261021,
+  "tier": "hard",
+  "per_type_total": 500,
+  "pool": {
+    "choice": {
+      "go_emotions": 250,
+      "banking77": 80,
+      "ledgar": 80,
+      "massive": 50,
+      "clinc150": 40
+    },
+    "noul": {
+      "civil_comments": 250,
+      "paws": 170,
+      "strategyqa_closed": 50,
+      "strategyqa_grounded": 30
+    },
+    "score": {
+      "measuring_hate_speech": 250,
+      "helpsteer2_helpfulness": 125,
+      "helpsteer2_verbosity": 125
+    }
+  },
+  "licence": {
+    "go_emotions": {
+      "spdx": "apache-2.0",
+      "verdict": "usable",
+      "quote": "The GitHub repository which houses this dataset has an [Apache License 2.0](https://github.com/google-research/google-research/blob/master/LICENSE).",
+      "source": "https://huggingface.co/datasets/google-research-datasets/go_emotions/raw/main/README.md",
+      "owes": "the Apache notice with the copy; nothing else"
+    },
+    "banking77": {
+      "spdx": "mit",
+      "verdict": "usable",
+      "quote": "the card's front matter reads `license: mit`",
+      "source": "https://huggingface.co/datasets/mteb/banking77/raw/main/README.md",
+      "owes": "name the mirror (MIT) and the upstream (jev-bench records cc-by-4.0, PolyAI) in the model card"
+    },
+    "ledgar": {
+      "spdx": "cc-by-4.0",
+      "verdict": "usable with attribution",
+      "quote": "the card's front matter reads `license:` / `- cc-by-4.0`",
+      "source": "https://huggingface.co/datasets/coastalcph/lex_glue/raw/main/README.md",
+      "owes": "attribution"
+    },
+    "massive": {
+      "spdx": "apache-2.0",
+      "verdict": "usable",
+      "quote": "the card's front matter reads `license: apache-2.0`",
+      "source": "https://huggingface.co/datasets/mteb/amazon_massive_intent/raw/main/README.md",
+      "owes": "the Apache notice with the copy; name the upstream too (jev-bench records cc-by-4.0, Amazon)"
+    },
+    "clinc150": {
+      "spdx": "cc-by-3.0",
+      "verdict": "usable with attribution",
+      "quote": "the card's front matter reads `license:` / `- cc-by-3.0`",
+      "source": "https://huggingface.co/datasets/clinc/clinc_oos/raw/main/README.md",
+      "owes": "attribution"
+    },
+    "civil_comments": {
+      "spdx": "cc0-1.0",
+      "verdict": "usable",
+      "quote": "This dataset is released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).",
+      "source": "https://huggingface.co/datasets/google/civil_comments/raw/main/README.md",
+      "owes": "nothing",
+      "note": "PROVENANCE: the rows jev-bench ships as civil_comments train and validation are the upstream VALIDATION split, not the upstream train split (measured: all 8,492 distinct comment texts are in the upstream validation parquet, and none of the ids index the same comment there). The licence verdict is unchanged - validation is trainable under the record's rule and the licence is CC0 either way. CAVEAT: 71 of those 8,492 distinct comments are also in the upstream test split, the yardstick; measured on this pool: all 250 civil_comments items are in the upstream validation split, exactly 1 of them is among the 71, and the pool shares 0 texts with the jev-bench test sample (whose 100 civil_comments items are all from the upstream test split). The noul's target is the `toxicity` field, which is MEASURED to be the annotator share (every one of the 2,913 distinct values over the upstream train split is exactly k/n, 0 failures), not a continuous score."
+    },
+    "paws": {
+      "spdx": "other",
+      "verdict": "usable",
+      "quote": "The dataset may be freely used for any purpose, although acknowledgement of Google LLC (\"Google\") as the data source would be appreciated.",
+      "source": "https://huggingface.co/datasets/google-research-datasets/paws/raw/main/README.md",
+      "owes": "attribution appreciated, not required"
+    },
+    "boolq": {
+      "spdx": "cc-by-sa-3.0",
+      "verdict": "not in the pool",
+      "quote": "BoolQ is released under the [Creative Commons Share-Alike 3.0](https://creativecommons.org/licenses/by-sa/3.0/) license.",
+      "source": "https://huggingface.co/datasets/google/boolq/raw/main/README.md",
+      "owes": "share-alike",
+      "note": "it was in the first version of this plan (80 noul items) and was SWAPPED OUT for 80 more paws items, before any compute: the pool keeps only licences that oblige nothing beyond attribution, and this is the same share-alike category as arc_challenge, which the pool excludes. The swap is one line in the pool's counts (noul: paws 90 -> 170, boolq 80 -> 0) and it does not change the type mix or the number of items."
+    },
+    "strategyqa_closed": {
+      "spdx": "mit",
+      "verdict": "usable",
+      "quote": "the card's front matter reads `license: mit`",
+      "source": "https://huggingface.co/datasets/ChilleD/StrategyQA/raw/main/README.md",
+      "owes": "nothing"
+    },
+    "strategyqa_grounded": {
+      "spdx": "mit",
+      "verdict": "usable",
+      "quote": "the card's front matter reads `license: mit`",
+      "source": "https://huggingface.co/datasets/ChilleD/StrategyQA/raw/main/README.md",
+      "owes": "nothing"
+    },
+    "measuring_hate_speech": {
+      "spdx": "cc-by-4.0",
+      "verdict": "usable with attribution",
+      "quote": "the card's front matter reads `license:` / `- cc-by-4.0`",
+      "source": "https://huggingface.co/datasets/ucberkeley-dlab/measuring-hate-speech/raw/main/README.md",
+      "owes": "attribution"
+    },
+    "helpsteer2_helpfulness": {
+      "spdx": "cc-by-4.0",
+      "verdict": "usable with attribution",
+      "quote": "the card's front matter reads `license: cc-by-4.0`",
+      "source": "https://huggingface.co/datasets/nvidia/HelpSteer2/raw/main/README.md",
+      "owes": "attribution"
+    },
+    "helpsteer2_verbosity": {
+      "spdx": "cc-by-4.0",
+      "verdict": "usable with attribution",
+      "quote": "the card's front matter reads `license: cc-by-4.0`",
+      "source": "https://huggingface.co/datasets/nvidia/HelpSteer2/raw/main/README.md",
+      "owes": "attribution"
+    }
+  },
+  "excluded": {
+    "chaosnli": "CC BY-NC 4.0 (the upstream ChaosNLI README), and the hub mirror declares no licence at all: non-commercial, out.",
+    "mnli": "GLUE asserts no licence of its own and points at the original datasets' terms; jev-bench records it as research use: out.",
+    "yelp5": "the Yelp dataset agreement is a research licence: out.",
+    "sst5": "the hub card declares no licence and no licence section: out.",
+    "fever_evidence": "the card carries cc-by-sa-3.0 AND gpl-3.0, and which of them covers the rows is not verified: out.",
+    "stsb": "the hub mirror declares no licence; jev-bench records cc-by-sa-4.0 (STS Benchmark), not read from the STS source: out.",
+    "sms_spam": "the card declares `license: unknown`: out.",
+    "arc_challenge": "cc-by-sa-4.0 (share-alike): out.",
+    "boolq": "cc-by-sa-3.0 (share-alike): out. It was in the first version of this plan and was swapped out for 80 more paws items before any compute - the pool keeps only licences that oblige nothing beyond attribution. The verdict and the quote are in the licence block above.",
+    "mmlu": "MIT, so licence-clean, but the roadmap item fixes the per-config counts and the choice quota is already full. Available if the plan changes."
+  }
+}
