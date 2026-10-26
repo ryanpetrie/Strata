@@ -111,8 +111,11 @@ const Lora& lora();
 
 /// Uploads `a`'s tables, read from `dir` (the same directory `core::lora_load` validated).  Allocates one fp16
 /// buffer for the whole adapter plus the per-layer entry tables and the flag, on the CURRENT device.  Starts ON,
-/// like `cvec_upload`.  A new adapter replaces the old one on every device after a synchronize.  False with `err`
-/// naming what failed (an activation this build cannot serve, a name this build cannot place, an allocation).
+/// like `cvec_upload`; the engine turns it off again before its first capture (`--lora`'s path in generate.cpp).
+/// REFUSES a second adapter while one is resident: the adapter is a start-up decision whose kernel node is inside
+/// every graph captured after the upload, so replacing it would silently leave those graphs pointing at freed
+/// tables.  Changing adapters means restarting the engine.  False with `err` naming what failed (an adapter already
+/// resident, an activation this build cannot serve, a name this build cannot place, the allocation, the VRAM).
 bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string& err);
 
 /// A layer split: put the loaded adapter's tables on the CURRENT device too (`lora_apply_layer` uses the tables of
@@ -130,10 +133,13 @@ int lora_find(int64_t layer, const char* base);
 
 /// Layer `layer`'s delta on `T` tokens, one launch for every entry of the layer.  `io` is indexed by `act` (the
 /// activation, shared by the entries that read it); `outs` has one element per entry of the layer, in the adapter's
-/// order (`lora_find`).  Nothing is launched (and this returns true) for a layer the adapter does not touch, so the
-/// forward path may call it unconditionally.  False - and nothing is written - when an entry's activation was not
-/// passed, when one of its outputs is null, or when the tables are not on this device; a launch failure throws, like
-/// `cvec_apply`.
-bool lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const LoraOut* outs, void* stream);
+/// own order (`lora_find`).  Nothing is launched, and nothing is an error, for a layer the adapter does not touch -
+/// the forward path calls it unconditionally.
+///
+/// IT THROWS where `cvec_apply` throws, because every one of these is a programming error at the call site and a
+/// silent return would be a base-model answer wearing the adapter's name: an entry whose activation was not passed,
+/// an entry whose output is null, a stride too small for the entry's shape (`ld_x < n_in` or `ld_y < n_out`), the
+/// tables absent from the current device (a missing `lora_replicate`), or a launch failure.
+void lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const LoraOut* outs, void* stream);
 
 }  // namespace strata::kernels

@@ -4,7 +4,7 @@
 //       device before writing one of them (docs/research/phase2_engine_lora_plan.md 5.4, the mechanical form of
 //       "the chat path is byte-identical").
 //   (b) flag on: `core::lora_delta_f32` (double internally) on a fixed synthetic adapter and a ten-token input,
-//       for non-square shapes and all three activations, within an fp32 tolerance.
+//       for non-square shapes and all three activations, within a documented fp32 tolerance.
 //   (c) the flag moves on the device: off writes nothing, on writes again AND reproduces the first on-run bit
 //       for bit (the accumulation order does not wander between calls).
 //   (d) one call per layer applies every entry of that layer, and only that layer's entries.  The QSA layer is
@@ -12,7 +12,18 @@
 //       three different tensors (30, 10 and 10 wide here), and `attn_output` reads a fourth activation - four
 //       outputs, four buffers, one launch.  Two outputs have the SAME width on purpose: a kernel that mixed them
 //       up by width or position would still have to reproduce each tensor's own delta to pass.
-//   (e) a missing activation or a missing output returns false and writes nothing.
+//   (e) a missing activation, a missing output, a null array or a stride too small THROWS with the entry's name
+//       (the header's rule: a silent return would be a base-model answer wearing the adapter's name), and the
+//       throw happens before anything is written.
+//   (f) a layer the adapter does not touch, and a call with no adapter loaded, are silent no-ops.
+//   (g) THE NEGATIVE CONTROL: the same reference arithmetic with A read through the wrong contiguous axis must be
+//       far outside the tolerance.  Without it, "the kernel matches the reference" could be true of a fixture that
+//       cannot tell the right index order from the wrong one.
+//
+// The shapes are chosen so the kernel's loops actually iterate: `attn_qkv` has n_in 128 (four lane strides), rank
+// 64 (the full `mid[]` and eight warp strides over k) and n_out 600 (three thread strides); `ssm_out` has a second
+// n_in >= 96.  A smaller fixture - the one this test started with - runs each of those loops once, so a
+// lane-stride or warp-count regression ships green.
 //
 // The adapter is a real directory (`index.txt` + `lora.bin`) loaded by `lora_load`, because the kernel's
 // dimensions and the reference's both come from the loader's `LoraTarget`; a hand-built description would let
@@ -37,6 +48,7 @@
 #include <fstream>
 #include <map>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -48,10 +60,12 @@ namespace {
 
 int g_fail = 0;
 
-/// The tolerance for (b): the reference sums in double and the kernel in fp32 with fma over rank <= 10 terms
-/// of O(1) magnitude.  The measured worst error is printed beside each check; 2e-5 is two orders above it and
-/// well below the smallest delta the adapter produces here, so it can only pass on a correct kernel.
-constexpr double kTol = 2e-5;
+/// The tolerance for (b).  The reference sums in double; the kernel in fp32 with fma.  The small entries (rank <=
+/// 6) come out near 1e-7, but the rank-64 `attn_qkv` entry puts 128 products under a 64-term second sum, and its
+/// fp32 error is the largest the fixture measures - printed beside every check.  1e-4 is at least ten times that
+/// and still four orders below the smallest delta the adapter produces here, so it can only pass on a correct
+/// kernel.  (g) needs the same number: the control's difference is in the units, not the millionths.
+constexpr double kTol = 1e-4;
 
 void ck(cudaError_t e, const char* w) {
     if (e != cudaSuccess) {
@@ -89,15 +103,15 @@ bool contains(const std::string& hay, const std::string& needle) { return hay.fi
 /// layer, layer 3 the full-attention one, and every projection's in and out differ, so a transposed kernel or a
 /// swapped stride cannot pass by symmetry.  The widths are hand-checked:
 ///
-///   blk.0.attn_qkv.weight    {in n_embd 8,  out ssm_conv_channels 300}  (out > kThreads: the output loop strides)
-///   blk.0.ssm_out.weight     {in ssm_value_dim 10, out n_embd 8}
-///   blk.3.attn_q.weight      {in n_embd 8,  out 2*n_head*head_dim 30}
-///   blk.3.attn_k.weight      {in n_embd 8,  out n_head_kv*head_dim 10}
-///   blk.3.attn_v.weight      {in n_embd 8,  out n_head_kv*head_dim 10}  (k and v the same width, on purpose)
-///   blk.3.attn_output.weight {in n_head*head_dim 15, out n_embd 8}
+///   blk.0.attn_qkv.weight    {in n_embd 128, out ssm_conv_channels 600}   rank 64, 4 lane and 3 thread strides
+///   blk.0.ssm_out.weight     {in ssm_value_dim 100, out n_embd 128}
+///   blk.3.attn_q.weight      {in n_embd 128, out 2*n_head*head_dim 30}
+///   blk.3.attn_k.weight      {in n_embd 128, out n_head_kv*head_dim 10}
+///   blk.3.attn_v.weight      {in n_embd 128, out n_head_kv*head_dim 10}  (same width as k, on purpose)
+///   blk.3.attn_output.weight {in n_head*head_dim 15, out n_embd 128}
 core::ModelGeometry tiny_geometry() {
     core::ModelGeometry g;
-    g.n_embd = 8;
+    g.n_embd = 128;
     g.n_layers = 4;
     g.qsa_interval = 4;
     g.n_head = 3;
@@ -108,8 +122,8 @@ core::ModelGeometry tiny_geometry() {
     g.ssm_k_heads = 1;
     g.ssm_v_heads = 2;
     g.ssm_d_conv = 2;
-    g.ssm_conv_channels = 300;
-    g.ssm_value_dim = 10;
+    g.ssm_conv_channels = 600;
+    g.ssm_value_dim = 100;
     g.n_expert = 2;
     g.n_ff = 3;
     g.n_ff_shexp = 3;
@@ -210,13 +224,26 @@ int main() {
     // Layer 0 (GDN): two entries, two activations.  Layer 3 (QSA): four entries, three of them on the layer's
     // input and writing three different tensors - the q/k/v case, with k and v the same width.
     const std::vector<Spec> spec = {
-        {"blk.0.attn_qkv.weight", 10, 4.0, 8, 300},   // kLoraActInput, rank > kWarps and out > kThreads
-        {"blk.0.ssm_out.weight", 2, 3.0, 10, 8},      // kLoraActSsm
-        {"blk.3.attn_q.weight", 3, 2.0, 8, 30},       // kLoraActInput
-        {"blk.3.attn_k.weight", 2, 4.0, 8, 10},       // kLoraActInput, same width as v
-        {"blk.3.attn_v.weight", 4, 8.0, 8, 10},       // kLoraActInput, same width as k
-        {"blk.3.attn_output.weight", 5, 2.0, 15, 8},  // kLoraActAttn
+        {"blk.0.attn_qkv.weight", 64, 64.0, 128, 600},   // rank 64, n_in 128, n_out 600: every kernel loop iterates
+        {"blk.0.ssm_out.weight", 3, 6.0, 100, 128},      // kLoraActSsm, a second n_in >= 96
+        {"blk.3.attn_q.weight", 5, 10.0, 128, 30},       // kLoraActInput
+        {"blk.3.attn_k.weight", 2, 4.0, 128, 10},        // kLoraActInput, same width as v
+        {"blk.3.attn_v.weight", 4, 8.0, 128, 10},        // kLoraActInput, same width as k
+        {"blk.3.attn_output.weight", 6, 12.0, 15, 128},  // kLoraActAttn
     };
+
+    // ------------------------------------------------------------------ no adapter: nothing to check
+    {
+        // Before anything is uploaded: no adapter, so even null arrays are a silent no-op - the base path.  This
+        // pins the order of the checks in `lora_apply_layer` (adapter first, call-site errors after).
+        std::string why;
+        try {
+            k::lora_apply_layer(0, T, nullptr, nullptr, nullptr);
+        } catch (const std::exception& e) {
+            why = e.what();
+        }
+        check(why.empty(), "with no adapter loaded, a call is a silent no-op");
+    }
 
     // ------------------------------------------------------------------ the adapter, through the real loader
     std::printf("fixture\n");
@@ -234,9 +261,26 @@ int main() {
     bool shapes_ok = true;
     for (const Spec& s : spec) {
         const core::LoraTarget* t = adapter.find(s.base);
-        shapes_ok = shapes_ok && t != nullptr && t->in == s.in && t->out == s.out;
+        shapes_ok = shapes_ok && t != nullptr && t->in == s.in && t->out == s.out && t->rank == s.rank;
     }
-    check(shapes_ok, "every target's in/out is the layout table's, in GGUF order");
+    check(shapes_ok, "every target's in/out/rank is the layout table's and the index's");
+
+    // A target the device table cannot serve is refused at upload.  This must run BEFORE the fixture adapter is
+    // uploaded: once one is resident, every later upload is refused for that reason first (checked at the end).
+    {
+        TempDir d2;
+        const std::vector<Spec> shexp = {{"blk.0.ffn_gate_shexp.weight", 2, 2.0, 128, 3}};
+        const Adapter ad = make_adapter(shexp, rng);
+        write_adapter(d2.path, ad.rows, ad.blob);
+        core::LoraAdapter a2;
+        const bool loads = core::lora_load(d2.str(), g, a2, err);
+        std::string up_err;
+        const bool uploaded = k::lora_upload(a2, d2.str(), up_err);
+        check(loads && !uploaded && contains(up_err, "ffn_gate_shexp") && contains(up_err, "step 2.4"),
+              "a shared-expert target is refused by name: " + up_err);
+        check(!k::lora().loaded(), "a refused upload leaves nothing resident");
+    }
+
     if (!k::lora_upload(adapter, dir.str(), err)) {
         std::fprintf(stderr, "lora_upload: %s\n", err.c_str());
         return 2;
@@ -273,10 +317,16 @@ int main() {
 
     // The activation widths, taken from the adapter so a fixture change cannot silently desynchronize the
     // kernel's n_in from the buffer the test passes.
+    const core::LoraTarget* t_big = adapter.find("blk.0.attn_qkv.weight");
     const int64_t W_in = adapter.find("blk.0.attn_qkv.weight")->in;
     const int64_t W_attn = adapter.find("blk.3.attn_output.weight")->in;
     const int64_t W_ssm = adapter.find("blk.0.ssm_out.weight")->in;
     const int64_t LD_IN = W_in + 1, LD_ATTN = W_attn + 1, LD_SSM = W_ssm + 1;
+    check(t_big->rank == 64 && W_in == 128 && t_big->out == 600,
+          "the fixture reaches the kernel's loops: rank 64 (the whole mid[], 8 warp strides), n_in 128 "
+          "(4 lane strides), n_out 600 (3 thread strides)");
+    check(adapter.find("blk.0.ssm_out.weight")->in == W_ssm && W_ssm >= 96,
+          "a second entry has n_in >= 96");
     check(adapter.find("blk.3.attn_q.weight")->in == W_in && adapter.find("blk.3.attn_k.weight")->in == W_in &&
               adapter.find("blk.3.attn_v.weight")->in == W_in,
           "every input-read projection of both layers has the same input width");
@@ -321,7 +371,7 @@ int main() {
         std::vector<k::LoraOut> o(names.size());
         for (const char* n : names) {
             const int idx = k::lora_find(layer, n);
-            if (idx < 0) continue;   // the checks above already report it; leave a null output so apply refuses
+            if (idx < 0) continue;   // the checks above already report it; leave a null output so apply throws
             const Buf& b = ybuf.at(n);
             o[(size_t) idx] = k::LoraOut{b.dev, b.ld};
         }
@@ -348,11 +398,26 @@ int main() {
     auto download = [&] {
         for (auto& kv : ybuf) kv.second.host = down(kv.second.dev, kv.second.host.size());
     };
+    // The pre-call bytes of section (b), and what every later case restores the destinations to.
+    std::map<std::string, std::vector<float>> before;
+    auto restore = [&] {
+        for (auto& kv : ybuf) {
+            kv.second.host = before.at(kv.first);
+            up(kv.second.dev, kv.second.host);
+        }
+    };
+    auto apply_raw = [&](int64_t layer, const k::LoraIo* io, const k::LoraOut* outs) -> std::string {
+        try {
+            k::lora_apply_layer(layer, T, io, outs, nullptr);
+        } catch (const std::exception& e) {
+            return e.what();
+        }
+        ck(cudaDeviceSynchronize(), "apply");
+        return std::string();
+    };
     auto apply = [&](int64_t layer, const std::array<k::LoraIo, k::kLoraActCount>& io,
                      const std::vector<k::LoraOut>& outs) {
-        const bool ok = k::lora_apply_layer(layer, T, io.data(), outs.data(), nullptr);
-        ck(cudaDeviceSynchronize(), "apply");
-        return ok;
+        return apply_raw(layer, io.data(), outs.data());
     };
 
     // the same act mapping the upload applies, so the reference is fed the buffer that entry reads
@@ -369,10 +434,9 @@ int main() {
     fill(/*base_values=*/false);
     std::map<std::string, std::vector<float>> pre;
     for (const auto& kv : ybuf) pre.emplace(kv.first, kv.second.host);
-    check(apply(0, io0, outs0), "layer 0 launches with the flag off");
-    check(apply(3, io3, outs3), "layer 3 launches with the flag off");
-    check(k::lora_apply_layer(1, T, io0.data(), outs0.data(), nullptr),
-          "a layer the adapter does not touch returns true");
+    check(apply(0, io0, outs0).empty(), "layer 0 launches with the flag off");
+    check(apply(3, io3, outs3).empty(), "layer 3 launches with the flag off");
+    check(apply(1, io0, outs0).empty(), "a layer the adapter does not touch returns quietly");
     ck(cudaDeviceSynchronize(), "untouched layer");
     download();
     {
@@ -388,10 +452,9 @@ int main() {
     k::lora_set_enabled(true);
     check(k::lora_enabled(), "lora_set_enabled(true) arms the device flag");
     fill(/*base_values=*/true);
-    std::map<std::string, std::vector<float>> before;
     for (const auto& kv : ybuf) before.emplace(kv.first, kv.second.host);
-    check(apply(0, io0, outs0), "one call applies layer 0's two entries");
-    check(apply(3, io3, outs3), "one call applies layer 3's four entries (q, k, v and attn_output)");
+    check(apply(0, io0, outs0).empty(), "one call applies layer 0's two entries");
+    check(apply(3, io3, outs3).empty(), "one call applies layer 3's four entries (q, k, v and attn_output)");
     download();
     std::map<std::string, Metrics> on_metrics;
     for (const auto& kv : ybuf) {
@@ -455,14 +518,60 @@ int main() {
               "q, k and v wrote three different results into three different buffers (k and v same width)");
     }
 
+    // ------------------------------------------------------------------ (g) the negative control
+    // The checks above compare the kernel with `core::lora_delta_f32`, and they only mean something if that
+    // comparison CAN fail.  This control runs the reference's own arithmetic over the file's bytes with A read
+    // through the other contiguous axis - the orientation mistake `lora_pack.hpp` warns about (the measured
+    // failure was a delta of the right magnitude and uncorrelated with the right answer) - and requires the result
+    // to be far outside the tolerance.  If this ever came within tolerance, the fixture's A would be degenerate
+    // (symmetric, near-zero, or not what the file holds) and every "matches" above would be blind to an indexing
+    // or orientation error.  A failure of this control is a statement about the TEST, not about the kernel.
+    std::printf("the negative control\n");
+    {
+        const core::LoraTarget* t = adapter.find("blk.0.attn_qkv.weight");
+        std::vector<uint16_t> abits, bbits;
+        if (!core::lora_read_f16(dir.str(), t->a, abits, err) || !core::lora_read_f16(dir.str(), t->b, bbits, err)) {
+            std::fprintf(stderr, "lora_read_f16: %s\n", err.c_str());
+            return 2;
+        }
+        std::vector<float> xr((size_t) t->in);
+        std::copy(hxin.begin(), hxin.begin() + t->in, xr.begin());
+        // A read as if `in` were the contiguous axis: element (k, j) from bits[j + in*k], where the file holds it
+        // at k + rank*j.  B stays correct, so the difference is A's orientation alone.
+        std::vector<double> mid((size_t) t->rank, 0.0);
+        for (int64_t k = 0; k < t->rank; ++k) {
+            double s = 0.0;
+            for (int64_t j = 0; j < t->in; ++j)
+                s += (double) k::f32_from_f16(abits[(size_t) (j + t->in * k)]) * (double) xr[(size_t) j];
+            mid[(size_t) k] = s;
+        }
+        std::vector<double> wrong((size_t) t->out, 0.0);
+        for (int64_t i = 0; i < t->out; ++i) {
+            double s = 0.0;
+            for (int64_t k = 0; k < t->rank; ++k)
+                s += (double) k::f32_from_f16(bbits[(size_t) (i + t->out * k)]) * mid[(size_t) k];
+            wrong[(size_t) i] = t->scale() * s;
+        }
+        std::vector<float> want((size_t) t->out, 0.0f);
+        if (!core::lora_delta_f32(dir.str(), *t, xr.data(), want.data(), err)) {
+            std::fprintf(stderr, "lora_delta_f32: %s\n", err.c_str());
+            return 2;
+        }
+        double diff = 0.0, mag = 0.0;
+        for (int64_t i = 0; i < t->out; ++i) {
+            diff = std::fmax(diff, std::fabs(wrong[(size_t) i] - (double) want[(size_t) i]));
+            mag = std::fmax(mag, std::fabs((double) want[(size_t) i]));
+        }
+        std::printf("    transposed A: max |wrong - reference| %.3g (reference delta %.3g, tolerance %.0e)\n", diff,
+                    mag, kTol);
+        check(diff > 100.0 * kTol, "the negative control is far outside the tolerance: the comparison can fail");
+    }
+
     // ------------------------------------------------------------------ (c) the flag moves on the device
     std::printf("the flag\n");
     k::lora_set_enabled(false);
     check(!k::lora_enabled(), "off again");
-    for (auto& kv : ybuf) {   // the very same bytes as the on-run started from
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
+    restore();
     apply(3, io3, outs3);
     download();
     {
@@ -474,10 +583,7 @@ int main() {
     }
     k::lora_set_enabled(true);
     check(k::lora_enabled(), "on again");
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
+    restore();
     apply(3, io3, outs3);
     download();
     {
@@ -492,11 +598,8 @@ int main() {
 
     // ------------------------------------------------------------------ (d) one call, every entry of the layer
     std::printf("one call per layer\n");
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
-    check(apply(3, io3, outs3), "layer 3's call returns true");
+    restore();
+    check(apply(3, io3, outs3).empty(), "layer 3's call returns quietly");
     download();
     {
         bool layer3_ok = true, layer0_untouched = true;
@@ -511,11 +614,8 @@ int main() {
         check(layer3_ok, "one call applied ALL FOUR of layer 3's entries, in one launch");
         check(layer0_untouched, "and it wrote nothing in layer 0's tensors");
     }
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
-    check(apply(0, io0, outs0), "layer 0's call returns true");
+    restore();
+    check(apply(0, io0, outs0).empty(), "layer 0's call returns quietly");
     download();
     {
         bool layer0_ok = true, layer3_untouched = true;
@@ -531,115 +631,98 @@ int main() {
         check(layer3_untouched, "and it wrote nothing in layer 3's tensors");
     }
 
-    // ------------------------------------------------------------------ (e) a missing activation or output
-    std::printf("a missing activation or output\n");
-    auto missing_x = io3;
-    missing_x[k::kLoraActAttn].x = nullptr;   // attn_output's activation was not passed
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
+    // ------------------------------------------------------------------ (e) call-site errors throw
+    std::printf("call-site errors throw\n");
+    // `expect_throw`: restores every destination, calls, requires a throw whose message names what is wrong, and
+    // requires that nothing was written.  A silent return is exactly the failure this test exists to catch.
+    auto expect_throw = [&](const char* what, std::vector<std::string> fragments, auto&& call) {
+        restore();
+        const std::string why = call();
+        bool ok = !why.empty();
+        for (const std::string& f : fragments) ok = ok && contains(why, f);
+        check(ok, std::string(what) + ": " + (why.empty() ? "NO THROW" : why));
+        download();
+        bool same = true;
+        for (const auto& kv : ybuf)
+            same = same && std::memcmp(kv.second.host.data(), before.at(kv.first).data(),
+                                       kv.second.host.size() * sizeof(float)) == 0;
+        check(same, std::string(what) + ": and it wrote nothing");
+    };
+    {
+        auto missing_x = io3;
+        missing_x[k::kLoraActAttn].x = nullptr;
+        expect_throw("an entry whose activation was not passed",
+                     {"blk.3.attn_output.weight", "activation", "null"},
+                     [&] { return apply(3, missing_x, outs3); });
     }
-    check(!apply(3, missing_x, outs3), "an entry whose activation was not passed returns false");
+    {
+        auto missing_y = outs3;
+        missing_y[(size_t) (i_o >= 0 ? i_o : 0)].y = nullptr;
+        expect_throw("an entry whose output is null", {"blk.3.attn_output.weight", "output is null"},
+                     [&] { return apply(3, io3, missing_y); });
+    }
+    expect_throw("a null activation array", {"activation array is null"},
+                 [&] { return apply_raw(3, nullptr, outs3.data()); });
+    expect_throw("a null output array", {"output array is null"},
+                 [&] { return apply_raw(3, io3.data(), nullptr); });
+    {
+        auto bad = io3;
+        bad[k::kLoraActInput].ld_x = W_in - 1;
+        expect_throw("an activation stride too small", {"row stride", std::to_string(W_in - 1), std::to_string(W_in)},
+                     [&] { return apply(3, bad, outs3); });
+    }
+    {
+        // the same comparison catches a non-positive stride, which is the other half of the header's rule
+        auto bad = io3;
+        bad[k::kLoraActInput].ld_x = 0;
+        expect_throw("a zero activation stride", {"row stride 0", std::to_string(W_in)},
+                     [&] { return apply(3, bad, outs3); });
+    }
+    {
+        auto bad = outs3;
+        bad[(size_t) (i_q >= 0 ? i_q : 0)].ld_y = 29;
+        expect_throw("an output stride too small", {"output's row stride", "29", "30"},
+                     [&] { return apply(3, io3, bad); });
+    }
+    restore();
+    check(apply(99, io3, outs3).empty(), "a layer past the table is still a silent no-op");
     download();
     {
         bool same = true;
         for (const auto& kv : ybuf)
             same = same && std::memcmp(kv.second.host.data(), before.at(kv.first).data(),
                                        kv.second.host.size() * sizeof(float)) == 0;
-        check(same, "and it wrote nothing - not even the entries whose activation WAS passed");
+        check(same, "and it wrote nothing");
     }
-    auto missing_y = outs3;
-    missing_y[(size_t) (i_o >= 0 ? i_o : 0)].y = nullptr;   // attn_output's destination was not passed
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
-    check(!apply(3, io3, missing_y), "an entry whose output was not passed returns false");
-    download();
-    {
-        bool same = true;
-        for (const auto& kv : ybuf)
-            same = same && std::memcmp(kv.second.host.data(), before.at(kv.first).data(),
-                                       kv.second.host.size() * sizeof(float)) == 0;
-        check(same, "and it wrote nothing either");
-    }
-    check(!k::lora_apply_layer(3, T, io3.data(), nullptr, nullptr) &&
-              !k::lora_apply_layer(3, T, nullptr, outs3.data(), nullptr),
-          "a null output array and a null activation array are both refused");
 
     // ------------------------------------------------------------------ the upload's refusal
     std::printf("refusals\n");
     {
-        // the shared expert: the loader accepts it, the device table does not serve it yet (step 2.4)
-        TempDir d2;
-        const std::vector<Spec> shexp = {{"blk.0.ffn_gate_shexp.weight", 2, 2.0, 8, 3}};
-        const Adapter ad = make_adapter(shexp, rng);
-        write_adapter(d2.path, ad.rows, ad.blob);
-        core::LoraAdapter a2;
-        const bool loads = core::lora_load(d2.str(), g, a2, err);
+        // a second adapter while one is resident: one per process, because its kernel node is in every graph
+        TempDir d4;
+        const std::vector<Spec> second = {{"blk.1.attn_qkv.weight", 2, 2.0, 128, 600}};
+        const Adapter ad = make_adapter(second, rng);
+        write_adapter(d4.path, ad.rows, ad.blob);
+        core::LoraAdapter a4;
+        const bool loads = core::lora_load(d4.str(), g, a4, err);
         std::string up_err;
-        const bool uploaded = k::lora_upload(a2, d2.str(), up_err);
-        check(loads && !uploaded && contains(up_err, "ffn_gate_shexp") && contains(up_err, "step 2.4"),
-              "a shared-expert target is refused by name: " + up_err);
-        check(k::lora().loaded(), "a refused upload leaves the loaded adapter in place");
-    }
-    // and the adapter that survived the refusal is still the one on the device, bit for bit
-    for (auto& kv : ybuf) {
-        kv.second.host = before.at(kv.first);
-        up(kv.second.dev, kv.second.host);
-    }
-    check(apply(3, io3, outs3), "the original adapter still applies after the refusal");
-    download();
-    {
+        const bool uploaded = k::lora_upload(a4, d4.str(), up_err);
+        check(loads && !uploaded && contains(up_err, "already resident") && contains(up_err, "restart the engine"),
+              "a second adapter is refused while one is resident: " + up_err);
+        check(k::lora().loaded() && k::lora().n_entries == (int64_t) spec.size() && k::lora().covers(0) &&
+                  k::lora().covers(3) && k::lora_find(3, "attn_q.weight") == i_q &&
+                  k::lora_find(1, "attn_qkv.weight") == -1,
+              "the resident adapter is unchanged (entries, layers and lora_find)");
+        restore();
+        check(apply(3, io3, outs3).empty(), "and it still applies");
+        download();
         bool same = true;
         for (const auto& kv : ybuf) {
             if (kv.first.rfind("blk.3.", 0) != 0) continue;
             same = same && std::memcmp(kv.second.host.data(), on_result.at(kv.first).data(),
                                        kv.second.host.size() * sizeof(float)) == 0;
         }
-        check(same, "and its arithmetic is unchanged");
-    }
-
-    // ------------------------------------------------------------------ replacing the adapter
-    std::printf("replacing the adapter\n");
-    {
-        TempDir d4;
-        const std::vector<Spec> one = {{"blk.1.attn_qkv.weight", 2, 2.0, 8, 300}};
-        const Adapter ad = make_adapter(one, rng);
-        write_adapter(d4.path, ad.rows, ad.blob);
-        core::LoraAdapter a4;
-        std::string e4;
-        const bool replaced = core::lora_load(d4.str(), g, a4, e4) && k::lora_upload(a4, d4.str(), e4);
-        check(replaced, "a second adapter replaces the first: " + e4);
-        check(k::lora().n_entries == 1 && k::lora().covers(1) && !k::lora().covers(0),
-              "the table is the new adapter's (layer 1 only)");
-        check(k::lora_find(1, "attn_qkv.weight") == 0 && k::lora_find(0, "attn_qkv.weight") == -1,
-              "lora_find follows the replacement");
-        check(k::lora_enabled(), "and the replacement starts ON");
-        // one application against the reference, so the reallocated table is a working one
-        Buf& b = ybuf.at("blk.0.attn_qkv.weight");   // same shape as layer 1's qkv (8 -> 300)
-        for (int64_t tok = 0; tok < T; ++tok) {
-            for (int64_t i = 0; i < b.out; ++i) b.host[(size_t) (tok * b.ld + i)] = ud(rng);
-            for (int64_t i = b.out; i < b.ld; ++i) b.host[(size_t) (tok * b.ld + i)] = 1234.5f;
-        }
-        up(b.dev, b.host);
-        const std::vector<float> pre4 = b.host;
-        const auto io1 = io_for(true, false, false);
-        const std::vector<k::LoraOut> outs1 = {k::LoraOut{b.dev, b.ld}};
-        check(apply(1, io1, outs1), "layer 1 launches with the replacement");
-        download();
-        const core::LoraTarget* t = a4.find("blk.1.attn_qkv.weight");
-        double worst = 0.0;
-        for (int64_t tok = 0; tok < T; ++tok) {
-            std::vector<float> xr((size_t) t->in);
-            std::copy(hxin.begin() + tok * LD_IN, hxin.begin() + tok * LD_IN + t->in, xr.begin());
-            std::vector<float> want(pre4.begin() + tok * b.ld, pre4.begin() + tok * b.ld + b.out);
-            core::lora_delta_f32(d4.str(), *t, xr.data(), want.data(), e4);
-            for (int64_t i = 0; i < b.out; ++i)
-                worst = std::fmax(worst, std::fabs((double) b.host[(size_t) (tok * b.ld + i)] - want[(size_t) i]));
-        }
-        std::printf("    blk.1.attn_qkv.weight (replacement) max |err| %.3g\n", worst);
-        check(worst < kTol, "the replacement's delta matches the reference");
+        check(same, "with the same arithmetic as before the refusal (bit for bit)");
     }
 
     // ------------------------------------------------------------------ the VRAM arithmetic (pure, no GPU)
