@@ -19,9 +19,9 @@ from serve import systemone as sysone  # noqa: E402
 
 
 def item(iid: str, human_yes: float, state: str = "STATE", true: str = "outage",
-         false: str = "chit-chat") -> dict:
+         false: str = "chit-chat", expected: str | None = None) -> dict:
     return {"id": iid, "state": state, "config": "civil_comments", "tier": "hard",
-            "expected": "yes" if human_yes >= 0.5 else "no",
+            "expected": expected if expected is not None else ("yes" if human_yes >= 0.5 else "no"),
             "target_probs": {"yes": human_yes, "no": 1.0 - human_yes},
             "question": {"type": "noul", "instructions": "Is it x?",
                          "criteria": {"true": true, "false": false}}}
@@ -77,6 +77,49 @@ class Readouts(unittest.TestCase):
         self.assertEqual(P.auc([0.9, 0.1], [1, 0]), 1.0)
         self.assertEqual(P.auc([0.1, 0.9], [1, 0]), 0.0)
         self.assertEqual(P.auc([0.5, 0.5], [1, 0]), 0.5)
+
+    def test_the_ece(self):
+        # the scorer's own rule: 10 equal-width bins, and the error inside a bin.
+        # a perfect forecast: the ECE is 0.  a forecast of 0.55 against an outcome
+        # of 1 in the same bin: the ECE is 0.45.
+        self.assertAlmostEqual(P.ece([(1.0, 1.0), (0.0, 0.0)]), 0.0, places=12)
+        self.assertAlmostEqual(P.ece([(0.55, 1.0), (0.55, 1.0)]), 0.45, places=12)
+        # two outcomes in the same bin that average out are not an error
+        self.assertAlmostEqual(P.ece([(0.5, 1.0), (0.5, 0.0)]), 0.0, places=12)
+
+    def test_half_b_is_the_base_rates_own_check(self):
+        """Half B (the hard label only) has no distribution, so the readout there is
+        the accuracy and the ECE - and nothing may ask for a TVD."""
+        items = [item("a", 0.0, expected="no"), item("b", 0.0, expected="yes")]
+        items[0].pop("target_probs")
+        items[1].pop("target_probs")
+        base = preds(items, [0.6, 0.4])      # both wrong
+        arm = preds(items, [0.4, 0.6])       # both right
+        m = P.compare(items, base, arm)
+        self.assertNotIn("auc_base", m)
+        self.assertNotIn("tvd_base", m)
+        self.assertEqual(m["n_B"], 2)
+        self.assertEqual(m["acc_base"], 0.0)
+        self.assertEqual(m["acc_swap"], 1.0)
+        self.assertEqual(m["acc_items_lost"], -2)     # in items: 0 correct before, 2 after
+        self.assertIn("base rate's own check", P.verdict(m))
+
+    def test_both_halves_at_once(self):
+        """The mixed case: the A fields on the items with a distribution, the B fields
+        on the rest, and the flip rate over both."""
+        a = item("a", 0.0)
+        b = item("b", 0.0, expected="no")
+        b.pop("target_probs")
+        items = [a, b]
+        base = preds(items, [0.6, 0.4])
+        arm = preds(items, [0.4, 0.6])
+        m = P.compare(items, base, arm)
+        self.assertIn("auc_base", m)
+        self.assertIn("acc_base", m)
+        self.assertEqual(m["n_A"], 1)
+        self.assertEqual(m["n_B"], 1)
+        self.assertAlmostEqual(m["swap_gap"], 0.0, places=12)
+        self.assertEqual(m["flips"], 2)
 
     def test_nothing_changes(self):
         items = [item("a", 0.0), item("b", 0.5), item("c", 0.25)]
