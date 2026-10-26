@@ -159,6 +159,79 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(with_soft, 2)
 
 
+# ------------------------------------------------------------------ the pool plan
+
+def _plan_pool(per_config: int = 5) -> list[dict]:
+    """A pool with a config on every item, so the plan has something to draw from."""
+    pool = []
+    makers = (("c", choice_row, "choice"), ("s", score_row, "score"), ("n", noul_row, "noul"))
+    for i in range(per_config * 2):
+        for config, maker, qtype in makers:
+            item = sl.to_item(maker(), "hard")
+            item["id"] = "%s/%d" % (config, i)
+            item["config"] = config
+            pool.append(item)
+    return pool
+
+
+class PlanTests(unittest.TestCase):
+    def _plan(self, **over) -> dict:
+        plan = {"seed": 7, "pool": {"choice": {"c": 3}, "noul": {"n": 2}, "score": {"s": 4}}}
+        plan.update(over)
+        return plan
+
+    def test_the_counts_are_the_plan_s(self):
+        pool = _plan_pool()
+        picked = sl.plan_sample(pool, self._plan())
+        counts = sl.plan_counts(picked)
+        self.assertEqual(counts, {"choice": {"c": 3}, "noul": {"n": 2}, "score": {"s": 4}})
+
+    def test_it_is_deterministic(self):
+        pool = _plan_pool()
+        first = [it["id"] for it in sl.plan_sample(pool, self._plan())]
+        second = [it["id"] for it in sl.plan_sample(pool, self._plan())]
+        self.assertEqual(first, second)
+
+    def test_a_different_seed_gives_a_different_pool(self):
+        pool = _plan_pool()
+        first = [it["id"] for it in sl.plan_sample(pool, self._plan(seed=7))]
+        second = [it["id"] for it in sl.plan_sample(pool, self._plan(seed=8))]
+        self.assertNotEqual(first, second)
+
+    def test_the_order_of_the_pool_does_not_matter(self):
+        pool = _plan_pool()
+        first = [it["id"] for it in sl.plan_sample(pool, self._plan())]
+        second = [it["id"] for it in sl.plan_sample(list(reversed(pool)), self._plan())]
+        self.assertEqual(first, second)
+
+    def test_a_config_the_data_does_not_have_is_an_error(self):
+        pool = _plan_pool()
+        with self.assertRaises(SystemExit):
+            sl.plan_sample(pool, self._plan(pool={"choice": {"c": 3, "zz": 1}, "noul": {"n": 2},
+                                                      "score": {"s": 4}}))
+
+    def test_a_count_the_split_cannot_fill_is_an_error(self):
+        pool = _plan_pool(per_config=2)
+        with self.assertRaises(SystemExit):
+            sl.plan_sample(pool, self._plan(pool={"choice": {"c": 99}, "noul": {"n": 2},
+                                                      "score": {"s": 4}}))
+
+    def test_the_shipped_plan_is_a_pool_of_five_hundred_a_type(self):
+        plan = json.loads(sl.DEFAULT_PLAN.read_text(encoding="utf-8"))
+        for qtype, counts in plan["pool"].items():
+            self.assertEqual(sum(counts.values()), 500, qtype)
+            self.assertIn(qtype, ("choice", "noul", "score"))
+        # every config the plan names has a licence verdict
+        for qtype, counts in plan["pool"].items():
+            for config in counts:
+                self.assertIn(config, plan["licence"], config)
+                self.assertTrue(plan["licence"][config]["quote"], config)
+                self.assertTrue(plan["licence"][config]["source"], config)
+        # the pool's types are the three the endpoint has
+        self.assertEqual(sorted(plan["pool"]), ["choice", "noul", "score"])
+        self.assertIsInstance(plan["seed"], int)
+
+
 class NullPredictionTests(unittest.TestCase):
     def test_uniform_over_the_labels(self):
         item = sl.to_item(score_row(None), "hard")
