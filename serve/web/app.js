@@ -73,9 +73,9 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (e) => {
 
 let tab = "chat";
 function showTab(name) {
-  tab = ["chat", "images", "monitor", "about"].includes(name) ? name : "chat";
+  tab = ["chat", "images", "monitor", "decide", "about"].includes(name) ? name : "chat";
   for (const b of document.querySelectorAll(".st-tab")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
-  for (const v of ["chat", "images", "monitor", "about"]) $(`view-${v}`).hidden = v !== tab;
+  for (const v of ["chat", "images", "monitor", "decide", "about"]) $(`view-${v}`).hidden = v !== tab;
   if (tab === "images") $("img-prompt").focus();
   if (location.hash.slice(1) !== tab) history.replaceState(null, "", tab === "chat" ? location.pathname : `#${tab}`);
   if (tab === "chat") $("input").focus();
@@ -114,7 +114,10 @@ async function loadHealth() {
                                           : "Attach a text file (or drop it here)";
     $("chat-empty-sub").textContent = `${health.model} runs on this PC. Nothing leaves it.`;
     $("tab-btn-images").hidden = !health.image_generation;
+    // the Decide tab: the decision endpoint (POST /v1/systemone) is off by default
+    $("tab-btn-decide").hidden = !health.decisions;
     if (location.hash === "#images" && health.image_generation) showTab("images");
+    if (location.hash === "#decide" && health.decisions) showTab("decide");
   } catch (e) {
     setTimeout(loadHealth, 2000);
   }
