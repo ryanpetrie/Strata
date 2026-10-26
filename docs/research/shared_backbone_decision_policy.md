@@ -548,6 +548,11 @@ and the "Calibration is structurally capped" note below are historical: the endp
 now reports the model's own probability, so the calibration is no longer capped by
 design.
 
+**2026-10-21: the WHOLE set has now been run, cleanly, for the first time - see**  The number is **79.8**, the same as the 235-item stratified sample's, and
+all 2,352 items were answered on the fast path with no failures.  The rows below
+stay as they are: they are the decode-only baseline the §10 work is measured
+against, and the first-token and trie-walk rows are in §10.8.
+
 jgeuter/OpenDecisions v1.0.1 (CC-BY-SA-4.0): 2,352 JevBench-format decisions
 (state + typed question + labels + expected; choice 1178, noul 586, score 588).
 Its task format maps 1:1 onto the endpoint, including the type names. Data quirk:
@@ -1573,3 +1578,162 @@ it merges the usage.
   engine work, so the totals count it (`totals.decisions` counts them apart).
   A server with the endpoint on therefore reports more requests than one with
   it off - which is what happened.
+
+---
+
+## 16. The whole OpenDecisions set, run cleanly (2026-10-21)
+
+§9 and §10.8 measured the **235-item stratified sample**.  This is the whole set:
+**all 2,352 items**, one attempt each, the official scorer on the full
+`opendecisions.jsonl`.
+
+**2,352 of 2,352 answered. 0 failures. Every item on the fast path.**  One engine,
+no restarts, 1 h 57 m of engine time (median 3.93 s an item, p95 6.42 s, mean
+4.03 s).  The engine was restarted once during the run, by the operator, for
+unrelated reasons; the harness resumed from where it was and nothing was re-asked
+(it skips the ids already in the output file).
+
+| | Capability | Intelligence | Calibration | predicted | fast path |
+|---|---:|---:|---:|---:|---:|
+| **the whole set (2,352 items)** | **79.8** | **71.1** | **88.6** | 2352/2352 | 2352 items |
+| the 235-item stratified sample (§10.8) | 79.8 | 76.3 | 81.9 | 235/235 | 235 items |
+
+| type | n | accuracy | competence | calibration |
+|---|---:|---:|---:|---:|
+| choice | 1,178 | 86.0% | 81.6 | 87.4 |
+| noul | 586 | 87.7% | 73.0 | 85.5 |
+| score | 588 | 76.4% | 58.6 | 92.8 |
+
+**The two populations agree exactly.**  A random 10% and the whole set, measured
+separately, give the same Capability to the decimal (79.8).  That is the strongest
+consistency check available here, and it is the first clean full-set measurement
+this work has.
+
+**The distance to the known true probabilities** on the 129 items that carry them:
+mean TVD **0.241**, against 0.224 on the sample.  The model tracks known
+probabilities consistently across the whole set, not only on the sample.
+
+**The shape of the result.**  Two things stand out, and they are opposites:
+
+* the **`score`** type is where the accuracy is thinnest (76.4%, competence 58.6)
+  and where the **calibration is best** (92.8) - when the model is wrong about an
+  ordered level, it tends to know it is unsure.  This is the type the trie walk
+  exists for (§10.7: the score levels are long strings that collide on their first
+  token), and the walk is what keeps them on the fast path rather than dropping
+  them to a decode.
+* the **`noul`** type is the most accurate (87.7%) and the least well calibrated
+  (85.5) - it answers "no" with more confidence than it has earned.
+
+### 16.1 The run's shape, and what the older numbers meant
+
+The run went in blocks of 400, and the score fell as the harder families arrived:
+93.2 (the easy `llm_router` family alone) → 85.2 → 83.2 → 79.8 → 79.3 → **79.8**.
+Every block had **zero** failures.  The dip is the population changing, not the
+endpoint degrading.
+
+**What this replaces.**  The 2026-10-20 handoff's full-set run (327 items) failed
+43% of its items and was declared invalid, and every long measurement was treated
+as suspect because of it.  The cause was the server's misattribution of the engine's
+answer, now fixed (§13).  This run is the replacement: the whole set, no failures,
+no restarts, and the same number as the sample.
+
+### 16.2 What it does not say
+
+* It does not say the endpoint is good at these questions.  Capability 79.8 on a
+  benchmark whose own no-training baseline is 58.9 and whose trained 4B systems
+  sit at 67-77 is a middle result; §9 has the context.
+* It does not measure the **real-trajectory** case (§10.13), which is still last in
+  the user's priority order, nor the policy-head route (§2.5, §2.6).
+* It says nothing about the **multi-question** path's speed, which is measured in
+  §11.5, and nothing about the **coherence** of the distributions, which is §17's
+  subject (the rewrites suite) and the jev-bench human-uncertainty result (§14).
+
+---
+
+## 17. The coherence of the distributions (2026-10-21)
+
+§14 asks whether the endpoint's confidence is calibrated to human uncertainty.  The
+other half of the question is **coherence**: asked the same thing two ways, does the
+model give the same answer?  JevBench's rewrite suite asks it directly.  A case is
+one state and a batch of typed questions, and each of its 41 relations rewrites the
+QUESTIONS - never the state - and checks one law of probability over the two answer
+distributions.
+
+**THE METRIC IS NOT IN THE DATASET** - it is in the published package
+(`pip install jevbench`, Apache-2.0), so the harness re-implements the laws and
+names the official file and class beside each one, and it runs from a checkout with
+nothing installed.  The laws, the tolerance, the binary score, the graded score and
+the coverage rule were checked against the published source
+(`jevbench/score.py`, `jevbench/relations/{mea,rep,log}.py`).
+
+**THE RUN.**  12 cases, 41 relations, 492 tests, 643 requests, one question per
+request, one attempt each.  **634 answered, 4 failed** (0.6%).  488 tests judged,
+4 unjudged.  **All 41 relations scored at 100% coverage** - the failures did not
+silently remove a relation, which was the thing to check.
+
+| | score | graded | 95% CI |
+|---|---:|---:|---|
+| **overall** | **0.658** | **0.923** | [0.599, 0.717] / [0.908, 0.935] |
+| REWORD (14 relations) | 0.771 | 0.918 | |
+| COMBINATION (22 relations) | 0.788 | 0.957 | |
+| **NEGATION (5 relations)** | **0.417** | 0.893 | |
+
+### 17.1 What it says: coherent under rewording, incoherent under negation
+
+**Perfect (1.000)**: `instruction_paraphrase`, `cross_lingual`, `clone_symmetry`,
+`noul_as_choice`, and the whole LOG.bounds family - `frechet_and_upper`,
+`inclusion_exclusion`, `entailment_strength`, `quantifier_monotonicity`,
+`count_upper`, `count_lower`, `nary_and_upper`, `nary_and_lower`, `nary_or_upper`.
+So the endpoint's probabilities survive a paraphrase, a translation, a renaming, an
+option permutation, and the logical-composition rewrites: the same distribution
+comes back.
+
+**Broken**: `choice_complement` **0.083**, `score_cumulative` **0.000**,
+`compound_negation` 0.167, `score_complement` 0.333, `de_morgan` 0.333.
+
+The mechanism, from the harness's own arithmetic.  The official `ChoiceComplement`
+is *"P(answer is not o), asked as a Noul, equals 1 - P(o) from the Choice"*; the
+model does not carry its distribution across the reformulation.  Measured, on
+`customer_support-037`:
+
+| | |
+|---|---|
+| the base choice, P(high) | **0.001** |
+| the "is this NOT high?" probe | **0.097** |
+| the law wants | 0.999 |
+
+The two answers contradict each other.  `score_cumulative` is the same shape: the
+"is it level k or higher?" probe disagrees with the upper tail of the model's own
+score distribution (gaps of 0.13 to 0.51 against the 0.05 tolerance).
+
+**This is a finding about the model, not about the endpoint.**  The endpoint
+faithfully reports what the model says each time; it cannot make a model consistent.
+It is the same shape as §14's finding: asked one way or another, the model's
+confidence is less well anchored than its accuracy.
+
+Also weak: the **binding** group, where a question's key conflicts with its own
+instruction or description (`key_instruction_conflict` 0.500,
+`name_description_conflict` 0.500, `description_swap` 0.333).  That is the model
+following the key rather than the prose, which is worth knowing for a consumer that
+keys its questions by name.
+
+### 17.2 The four failures, and what they say about the contract
+
+All four are the same thing, and it is a **contract** question rather than a model
+question.  The options are named `option_1` ... `option_4` with a description
+attached, and the model answered with the **description**:
+
+```
+/v1/systemone: question "plan_tier" takes one of ['option_1', 'option_2', 'option_3',
+'option_4'], got 'The paid pro plan'
+```
+
+The strict parse correctly refuses it - a made-up answer is worse than a missing
+one - so it is a 502 rather than a wrong answer.  But this is the **same shape the
+endpoint already solved for score levels**: §6.0's `{id: description}` form exists
+because "the model was measured answering the short id unprompted against
+full-string criteria, so exact reproduction of ~100-character strings is the wrong
+demand".  A choice option that is a generic name with a description is that same
+situation, and the endpoint has no answer for it.  Mapping a text that matches
+exactly one option's description back to that option would turn four 502s into
+answers; it is a small, separable change and it is not made here.
