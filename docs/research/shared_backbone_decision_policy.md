@@ -1911,12 +1911,12 @@ table, is in `tools/decision_policy/temperature_report.md`.
 
 ### 18.4 The validation: the fit never sees the item it is scored on
 
-The ECEs are the scorer's own (its `ece` function, on the same pairs it uses: the
-top-label ECE on the **hard tier only** for choice - 53 of the 107 choice items - the
-ECE of P(yes) for noul, the top-level ECE for score).  Out-of-fold over the five
-folds, and a 70/30 split as the second check:
+The table below holds the **raw top-level ECEs** (the scorer's own `ece` function, on
+the same pairs it uses: the top-label ECE on the **hard tier only** for choice - 53 of
+the 107 choice items - the ECE of P(yes) for noul, the top-level ECE for score).
+Out-of-fold over the five folds, and a 70/30 split as the second check:
 
-| type | ECE at T = 1 | ECE, the fitted constants (in-sample) | ECE, out-of-fold (5 folds) | ECE, 70/30 held out |
+| type | the raw top-level ECE at T = 1 | the raw top-level ECE, the fitted constants (in-sample) | the raw top-level ECE, out-of-fold (5 folds) | the raw top-level ECE, 70/30 held out |
 |---|---:|---:|---:|---:|
 | choice | 0.1313 | 0.1128 | **0.1224** | **0.0374** (from 0.1696) |
 | noul | 0.0756 | 0.0656 | 0.0786 | **0.1721** (from 0.1791) |
@@ -1926,6 +1926,28 @@ folds, and a 70/30 split as the second check:
 is the honest one; the fifth is the 70/30 held-out slice, which is thin - 32 choice
 items of which about 15 are hard, 21 noul, 18 score - so its ECEs are much larger than
 the full sample's for that reason alone.)
+
+**These are not the scorer's calibration component, and for the score type they are
+only half of it.**  The scorer's per-type calibration is `100 (1 - ECE / 0.5)` for the
+choice and the noul questions, and for the **score** questions the **mean** of
+`100 (1 - top-level ECE / 0.5)` and `100 (1 - mean nRPS)` (`score.py:162`).  So for
+choice and noul the raw ECE above, scaled, IS the component; for score it is the ECE
+half, and the other half is the normalized ranked probability score.
+
+**The scorer's own per-type calibration component** (0-100, higher is better), computed
+with the scorer's `calibration` function on the same distributions:
+
+| type | at T = 1 | out-of-fold (5 folds) | 70/30 held out |
+|---|---:|---:|---:|
+| choice | 73.7 | **75.5** | **92.5** (from 66.1) |
+| noul | 84.9 | 84.3 | **65.6** (from 64.2) |
+| score | 86.3 | **90.8** | **86.9** (from 79.2) |
+
+(the out-of-fold column is every item scaled by the temperature of the fold it was
+**not** in; the 70/30 column is the held-out slice, fitted on its own train part.
+The component is the number the exit criterion is read from, and it agrees with the
+raw ECE on the sign for all three types: the choice and the score improve, the noul
+is a wash out-of-fold and improves on the 70/30 slice.)
 
 The official scorer, on the out-of-fold predictions (every item scaled by the
 temperature of the fold it was **not** in):
@@ -2084,16 +2106,19 @@ the endpoint is used for uncertainty rather than for a pick.
   model's own probability of this answer" must read it as "the forced-choice
   probability, scaled".  §18.2 has the arithmetic.
 - **The exit criterion is NOT met for all three types, on the 5-fold out-of-fold
-  measure.**  The held-out ECE is lower for the choice (0.1313 -> 0.1224) and the
-  score (0.1082 -> 0.0649) questions, and for the noul questions it is a wash:
-  0.0756 -> 0.0786 out-of-fold, inside the noise.  The noul's ECE curve is jagged
-  and shallow around T = 1 (0.0756 at T = 1, 0.0656 at its in-sample minimum) and its
-  minimum does not survive the cross-validation.  **The other held-out measure does
-  show the noul improving** - the 70/30 split gives 0.1791 -> 0.1721 - so the
-  criterion's outcome depends on which held-out measure is meant; the 5-fold
-  out-of-fold is the one quoted here, and the 70/30 slice is thin (21 noul items).
-  The other half of the criterion, "no regression in Intelligence", **is** met:
-  78.0 -> 79.4 out-of-fold.
+  measure.**  On the scorer's own per-type calibration component - the number the
+  criterion is about; for the choice and the noul questions that ECE scaled, for the
+  score questions the mean of the top-level ECE and (1 - nRPS) - the held-out value is
+  better for the choice (73.7 -> 75.5) and the score (86.3 -> 90.8) and a wash for the
+  noul (84.9 -> 84.3), which is what the raw top-level ECE says as well (0.1313 ->
+  0.1224, 0.1082 -> 0.0649, and 0.0756 -> 0.0786 for the noul, inside the noise).  The
+  noul's ECE curve is jagged and shallow around T = 1 (0.0756 at T = 1, 0.0656 at its
+  in-sample minimum) and its minimum does not survive the cross-validation.  **The
+  other held-out measure does show the noul improving** - the 70/30 split gives
+  0.1791 -> 0.1721, and its component 64.2 -> 65.6 - so the criterion's outcome
+  depends on which held-out measure is meant; the 5-fold out-of-fold is the one quoted
+  here, and the 70/30 slice is thin (21 noul items).  The other half of the criterion,
+  "no regression in Intelligence", **is** met: 78.0 -> 79.4 out-of-fold.
 - **The size of the effect is not established.**  The paired item bootstrap puts an
   interval on it and the interval is wide (the Capability's [-1.10, +3.79] on the
   paired control, [-1.01, +4.41] out-of-fold).  The direction is right; the
