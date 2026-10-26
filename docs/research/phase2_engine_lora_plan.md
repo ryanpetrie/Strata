@@ -7,12 +7,18 @@ Companions: the measured record
 figures, the concurrency fix in §13) and the literature framing
 [decision_policy_literature_and_gaps.md §3.B](decision_policy_literature_and_gaps.md).
 
-**What is measured and what is not.** Everything engine-side in this document is **unconfirmed static
-analysis**: the code was read, nothing was built, no model was loaded, no engine was run (the GPU is
-held by the running server; only one instance may run). The numbers this plan quotes about the engine's
-own behaviour come from the companion doc and from `strata-unsloth-ud-iq4_xs.log` on this machine, and
-are marked where they appear. The adapter-size arithmetic in §3 is arithmetic on the model's own
-geometry (`include/strata/core/geometry.hpp`), not a measurement of an adapter that does not exist yet.
+**What is measured and what is not.** Everything engine-side in this document, as it was written on
+2026-10-21, is **unconfirmed static analysis**: the code was read, nothing had been built, no model had been
+loaded, no engine had been run (the GPU is held by the running server; only one instance may run). The numbers
+this plan quotes about the engine's own behavior come from the companion doc and from
+`strata-unsloth-ud-iq4_xs.log` on this machine, and are marked where they appear. The adapter-size arithmetic in
+§3 is arithmetic on the model's own geometry (`include/strata/core/geometry.hpp`), not a measurement of an
+adapter that does not exist yet.
+
+**Status, 2026-10-23.** Step 2 has landed and was built and measured on this machine (§4 step 2); steps 3 and 4
+(the forward-path hooks) and step 6 (the cache key) have not, so this document is still a plan. The results below
+carry their own split of measured, not run and static analysis; the paragraphs written on 2026-10-21 keep the
+reading they had then, and the corrections the build forced are marked where they belong.
 
 ---
 
@@ -21,7 +27,7 @@ geometry (`include/strata/core/geometry.hpp`), not a measurement of an adapter t
 | Question | Answer |
 |---|---|
 | Where does the adapter live? | In the engine process, beside the base weights, in device memory, uploaded at start-up from a new `--lora <dir>` flag. The same pattern the engine already uses for the control vector (`--control-vector-scaled`, `src/program/generate.cpp:1837-1918`) and the MTP draft layer (`--mtp`, 835 MiB of VRAM per this machine's log, `strata-unsloth-ud-iq4_xs.log:13`). |
-| How is it turned on for one request? | A `lora=<id>` key on the request line, in the same `key=value` slot the sampling keys use (`src/program/generate.cpp:12001-12041`). Only `LOGITS` requests carry it; `GEN` never can. |
+| How is it turned on for one request? | A `lora=1` key on the request line, in the same `key=value` slot the sampling keys use (`src/program/generate.cpp:12001-12041`). There is one adapter, so the value is `0` or `1`, not an id. Only `LOGITS` requests carry it; `GEN` never can. |
 | Which path does it touch? | Three forward paths, all of them: the prompt read (`src/prefill/prefill.cpp`), the decode/verify window (`src/core/verify.cpp`), and the plain single-token path (`src/core/session.cpp:804`). The answer position's logits are produced by the **verify** path, not the prefill path (§1.4), so the verify path is the one that cannot be skipped. |
 | How is the base path protected? | The adapter's delta is a separate low-rank add, gated by a **device-side flag** the way the control vector's is (`include/strata/kernels/cvec.hpp:28`, `src/kernels/cuda/cvec.cu:137-150`). With the flag off the kernel writes nothing at all, so the base output bytes are untouched. The flag is only ever set on a `LOGITS` request. |
 | What about the conversation cache? | The adapter state joins the cache key exactly the way the control vector's does (`include/strata/core/conversation_cache.hpp:251-257`, `src/program/generate.cpp:12353`, `12592-12597`). A request whose adapter state differs from the live session's drops the live state and the checkpoints instead of resuming them. |
@@ -52,7 +58,7 @@ geometry (`include/strata/core/geometry.hpp`), not a measurement of an adapter t
 |---|---|
 | GDN layer (36 of them): the fused QKV projection `attn_qkv.weight {N, 10240}`, the gate `attn_gate.weight {N, 6144}`, and the output projection `ssm_out.weight {6144, N}`. | `src/core/layer.cpp:251` (`gdn_layer`), the QKV GEMV at `:276` |
 | Full-attention layer (12 of them): `attn_q.weight {N, 12288}` (query **and** output gate), `attn_k.weight {N, 512}`, `attn_v.weight {N, 512}`, `attn_output.weight {6144, N}`. | `src/core/layer.cpp:1130` (`qsa_layer`), the Q GEMV at `:1240`, the output projection at `:1303-1307` |
-| The router: `ffn_gate_inp.weight {N, 512}` (BF16), then softmax over all experts, top-k, renormalise. | `src/core/layer.cpp:405` (`moe_route`), the BF16 projection at `:417` |
+| The router: `ffn_gate_inp.weight {N, 512}` (BF16), then softmax over all experts, top-k, renormalize. | `src/core/layer.cpp:405` (`moe_route`), the BF16 projection at `:417` |
 | The shared expert (always on): `ffn_gate_shexp`, `ffn_up_shexp`, `ffn_down_shexp`, plus the scalar gate `ffn_gate_inp_shexp.weight`. | `src/core/layer.cpp:468` (`moe_shared`) |
 | The routed experts: gathered and applied through the expert cache. | `src/core/layer.cpp:556` (`moe_layer`), `src/core/expert_source.cpp`, `src/core/expert_cache.cpp`, `src/kernels/cuda/s2_expert_grouped.cu`, `src/kernels/cuda/native_mmvq.cu` |
 | The whole layer, both kinds, plus the MoE: `block_layer`, `block_layer_pre`, `block_layer_post`. | `src/core/layer.cpp:1633`, `:1459`, `:1608` |
@@ -249,15 +255,18 @@ LOGITS 1024 32 lora=1 11,22,33
 
 **The server side:**
 
-* The engine's `INFO` line gains `lora=<dir>` (or `lora=none`), so the server knows an adapter is
-  resident (`serve/server.py:1036-1039` parses `INFO` into `self.info`).
+* The engine's `INFO` line gains `lora=`, **one token** (built in step 2): `none`, or `24t/12l/11436032B`
+  (entries, layers, bytes) - not the directory sketched here on 2026-10-21. `serve/server.py:1036-1039` parses
+  `INFO` by splitting on whitespace, so a value with a space would truncate and leave its words in `self.info` as
+  keys of their own, and an adapter's directory can contain a space: the summary is a count, not a path. `none` is
+  a truthy string in Python, so step 7 must read it as "no adapter" rather than as a digest.
 * The launch config gains a key under `systemone`: `"systemone": {"enabled": true, "lora": true}`
   (the config is read at `serve/server.py:8670-8686`; the flags are declared at `:3530-3532`).
 * A `/v1/systemone` request may carry an optional `"lora": true|false` of its own; absent, the
   config's setting decides. This is what lets the exit-criterion test (§5.1) ask the **same**
   server for the decision with and without the adapter, in one run, with one model in memory.
 * `Engine.logits` (`serve/server.py:2144`) takes an `adapter` argument and writes the key when it is
-  set. The adapter id is threaded through `_logits_row` (`:4483`) and `_systemone_trie` (`:4510`) so
+  set. The switch is threaded through `_logits_row` (`:4483`) and `_systemone_trie` (`:4510`) so
   **the trie walk's extra rows carry the same adapter** - they are the same question's work and
   share the engine turn (`:4642-4669`).
 
@@ -280,6 +289,17 @@ carried in the index).
 | Prefill (`src/prefill/prefill.cpp`) | After the `native_proj` / `bf16_proj` call for the targeted tensor, add `s * B @ (A @ x)` into the same float output buffer. The activation is `m.mixed_h` (the layer's half-read activation) or the projection's own input (`m.attn_h`, `m.y_h`, `m.sh_h`). |
 | Verify (`src/core/verify.cpp`) | After the projection's branch joins, add the delta into the same float output buffer (`qkv + tb*C`, `qfull_ + ...`, `Kc`, `Vc`, `bo`, ...). |
 | Single token (`src/core/layer.cpp`) | After the `gemv_quantized` / `s_gemv_q8k_split` call, into `out` / `b.q_full` / `b.attn32`. |
+
+**Corrected when step 2 was built (2026-10-23): one input per activation, one output per entry.** The shape
+above reads as one low-rank add per projection, with one activation in and one output out. That cannot serve a
+q/k/v adapter, and the kernel that landed takes **one input pointer per activation** and **one output pointer per
+entry** instead. The reason is geometry: a QSA layer's `attn_q`, `attn_k` and `attn_v` all read the layer's input,
+but they write three tensors of different widths - 12288, 1024 and 1024 on the UD-IQ4_XS pack - so a single output
+per activation would let the second entry overwrite the first entry's tensor and still produce plausible numbers:
+the silently wrong model this item exists to avoid. There are also **three** activations, not one, because a layer
+does not have one input: `attn_output` reads the attention output after the heads are combined, and `ssm_out`
+reads the SSM's `y`. `act` is chosen by the entry, so a call site cannot hand `attn_output`'s delta the layer's
+input by mistake.
 
 **The activation the LoRA reads.** The base path quantizes the activation to Q8_0 or Q8_K (the
 per-tensor contract in `include/strata/core/weights.hpp:80-86`); the LoRA's `A` is not a quantized
@@ -319,7 +339,7 @@ state joins it:
 * `ConversationCache::best`, `drop_superseded` and `parked_prefix_tokens` take it (`:251`, `:374`,
   `:405`).
 * `ConversationView` gains it (`include/strata/core/conversation_snapshot.hpp:85`).
-* The live session's `cvec_cached` becomes a pair (adapter id + control-vector state), and the
+* The live session's `cvec_cached` becomes a pair (adapter digest + control-vector state), and the
   "the live state was read with something else" branch (`src/program/generate.cpp:12592-12596`)
   drops the live state and the checkpoints instead of resuming them - **exactly** what it already
   does when the control vector's state changes.
@@ -410,7 +430,7 @@ The adapter's size is `(rank x in + out x rank)` parameters per targeted project
 
 The headroom: the minimum free VRAM during the 235-item run was **1082 MiB** and **1206 MiB at
 load** (companion doc §10.8, measured), against the engine's **1024 MiB** warning threshold on
-Windows (`src/program/generate.cpp:1412` `kVramSafeMib` = 1024 under `_WIN32`, 512 elsewhere; warned
+Windows (`src/program/generate.cpp:1422` `kVramSafeMib` = 1024 under `_WIN32`, 512 elsewhere; warned
 at `:11687-11694`). So the headroom above the threshold is **58 MiB during a run** and **182 MiB at
 load**. A later run measured 1061 MiB (37 MiB); the figure moves with the run, and the conclusion
 does not.
@@ -564,7 +584,7 @@ of each request is already logged (`src/program/generate.cpp:11680-11696`), and
 * **what it does not do**: it does not convert a full-model adapter yet. The converter maps the QSA projections
   and the shared expert, and **refuses every other module by name**, because the 36 GDN layers' Hugging Face
   module names are still open question 1 of §7 (the training recipe decides whether "attention-only" is 12 layers
-  or 48). The refusal is the planned behaviour, not a gap in the loader: a guessed name would be a silently wrong
+  or 48). The refusal is the planned behavior, not a gap in the loader: a guessed name would be a silently wrong
   adapter, which is the one failure this format cannot detect downstream.
 
 **Files:** `tools/lora_pack.py` (the converter), `include/strata/core/lora_pack.hpp` + `src/core/lora_pack.cpp`
@@ -591,20 +611,119 @@ the message. No GPU, no model - it runs in the ordinary test suite (`python -m p
 
 ### Step 2 - The device tables, the flag, and the delta kernel (CUDA + HIP)
 
-**Files:** `include/strata/kernels/lora.hpp` (new), `src/kernels/cuda/lora.cu` (new),
-`CMakeLists.txt:366-413` (add the source), `src/kernels/lora_parity.cpp` (new).
+**Status: DONE (2026-10-23), in three commits.** `644ab493` - the device tables, the flag and the delta kernel.
+`b26fe147` - `--lora`, the upload before graph capture, and `INFO lora=`. `c6b71fd6` - the `lora=` request key,
+`want_lora` and its refusal. The engine's request plumbing, which this plan put in step 5, landed with them (see
+step 5's status): the kernel cannot be tested without the flag, and the flag cannot be tested without the key.
 
-**Work.** The upload (fp16 -> the device), the per-request flag (a device `int`, a host mirror, a
-synchronizing setter), and the delta kernel: for one layer's set of targeted projections, compute
-`A @ x` for each, then `B @ t` for each, and add `s *` the result into the base output.
+**What it does.**
 
-**Risk.** The flag's semantics: it must be read on the device, so the kernel is graph-safe (the
-control vector's is: `include/strata/kernels/cvec.hpp:27-28`, `src/kernels/cuda/cvec.cu:137-150`).
+* The adapter's fp16 A/B tables in **one device allocation**, `A | a 256-byte boundary | B`, sized from the index,
+  with upload, free, replace and per-device replicate. The base weights are never written.
+* A device `int` on every device that holds the adapter, a host mirror, and `lora_set_enabled(bool)`, which
+  synchronizes when the value changes - the control vector's pattern (`include/strata/kernels/cvec.hpp:25-63`),
+  so the flag is read on the device and the kernel is graph-safe.
+* **One launch per layer**, covering every entry of that layer: 48 launches per token at most, not the 156
+  separate projections §2.4 warned about. The sums run in a fixed order (j by lane, a 32-lane tree, k serial), so
+  a second run of the same request is bit-identical.
+* The upload's VRAM refusal (below), whose arithmetic is host-only so it can be tested without a card.
+* `strata generate --lora DIR`, with the load, the digest and the upload placed after the control vector and
+  **strictly before `SessionState ss;`**, so every graph captured from there on already contains the kernel's
+  node; the flag is turned **off** once after a successful upload, so a plain CLI run starts from the base model.
+* `INFO ... lora=`, one token: `none`, or `24t/12l/11436032B` (entries, layers, bytes).
+* `lora=1` on a `LOGITS` line, with the refusals of §2.3 (a line that is not LOGITS, no adapter resident, a value
+  other than `0`/`1`, and the key given twice), and `lora_set_enabled(want_lora)` unconditional on every request
+  beside the vector's line - that is the line that turns the adapter back off after a decision.
 
-**Test.** `src/kernels/lora_parity.cpp`, mirroring `src/kernels/cvec_parity.cpp`:
-with the flag **off**, the output buffer is **bit-identical** to the input (the kernel writes
-nothing); with the flag on, the result matches a host reference to fp32 tolerance; the flag change
-is synchronized across devices.
+**What it does not do.**
+
+* **No forward path calls `lora_apply_layer`.** The hooks are steps 3 and 4 (the commits labeled C5 and C6).
+  Until they land, `lora=1` raises the flag and the delta kernel is never launched, so the adapted model and the
+  base model answer identically. That is why the exit criterion (§5) cannot be run yet and step 8 stays open.
+* **The conversation cache and the session file do not key on the adapter** (step 6, the commit labeled C7).
+  `SessionConfig::lora` records the digest beside `cvec`'s; nothing reads it, and it is in neither the fingerprint
+  nor the file.
+* No multi-adapter registry; no `--batch` (`--lora` with `--batch` exits 2 at start-up); no shared expert (refused
+  at upload, below).
+
+**Two refusals at upload, each named in its message.**
+
+1. **A target whose activation this build cannot serve.** Today that is the shared expert (`ffn_gate_shexp`,
+   `ffn_up_shexp`, `ffn_down_shexp`): the kernel knows three activations - the layer's input, the attention output
+   and the SSM's output - and none of them is the shared expert's intermediate, so a `ffn_*_shexp` target cannot
+   be computed by it. The refusal names the tensor.
+
+   **The consequence for 2.3's training recipe, stated plainly: an adapter that targets `mlp.*` - PEFT's name for
+   the shared expert - is refused in full.** Not one layer of it is served: the engine starts without an adapter
+   and says `lora=none`, and a request that asks for the adapter is refused rather than answered from the base
+   weights. Attention-only is therefore **12 of 48 layers** (the QSA layers 3, 7, ..., 47). The GDN projections
+   `attn_qkv`, `attn_gate` and `ssm_out` **are** served, so a recipe that trains them too reaches **24 of 48** -
+   and that is a decision 2.3's recipe has to make before it trains, not after. Arithmetic on §3.3's own table:
+   a rank-16 adapter over all 24 served layers is 46.2 MB, more than the 37 MiB of headroom the 1061 MiB run
+   leaves, so the wider recipe needs a lower rank or more free VRAM. Neither was measured; the two sizes are.
+2. **The adapter does not fit.** The step-2 checklist assumed the loader checked free VRAM; it does not -
+   `core::lora_load` checks shapes, ranks and rows and never calls a memory query. So the check is in the upload:
+   the tables (rounded **up** to whole MiB) plus the engine's reserve, against the free VRAM `cudaMemGetInfo`
+   reports (rounded **down**), with both numbers and the way out in the message. Against the spike's measured
+   **1061 MiB free**, rank 16 (11.4 MB) and rank 32 (22.8 MB) fit and rank 64 (45.6 MB) does not.
+
+**Metal.** §4.9 said `--lora` is an unknown argument there. **That was wrong**: the parser is shared, so `--lora` is
+accepted; `metal/src/engine/missing.cpp` stubs the device side, and the flag prints "no LoRA on Metal: the delta
+kernel is CUDA/HIP only" and serves the base model. §4.9 carries the correction and the build's status.
+
+**Measured, passed** (RTX 4090, arch 89, Ninja, MSVC 14.51; the live server was resident throughout):
+
+* the engine **builds and links** in a fresh build directory;
+* `lora_parity`: **65 checks, 0 failures**. Flag off: every destination byte-identical to its pre-call bytes
+  (`memcmp`, T x stride). Flag on: max |err| **1.19e-07** against the double reference (`attn_output` 5.96e-08),
+  tolerance 2e-5, all three activations, strides respected and padding cells untouched. On -> off -> on:
+  bit-for-bit the first on-run. A missing activation or output returns false and writes nothing; a refused upload
+  leaves the loaded adapter in place; a second upload replaces it;
+* `cvec_parity`: **10 checks, 0 failures** - the neighbor the kernel was copied from still passes;
+* `lora_pack_test`: **47 checks, 0 failures**, GPU-free and host-only - the loader's checks plus nine cases for the
+  new request rules;
+* `strata.exe --help` names `--lora`;
+* `--lora ... --batch 2` exits 2 with "--lora cannot be combined with --batch (per-slot adapter state is not
+  built)";
+* `tools/test_lora_pack.py`: **20 tests OK**; the decision-policy suite: **153 tests OK**.
+
+**Not run, kept apart from the list above.**
+
+* the **HIP build** (no ROCm on this machine). `lora.cu` uses only what `cvec.cu` already compiles as HIP, which
+  is static analysis, not a build;
+* the **Metal build** (no Mac, no Metal toolchain here);
+* **an engine run with a real pack and a real adapter** - the `INFO ... lora=24t/12l/...` line and the refusal of
+  a bad directory. That needs the model loaded and is step 8's exit-criterion run;
+* the **full serve suite**: it needs the engine stopped, and the owner asked for the live server to stay up;
+* the **real-VRAM refusal path**: this card had GBs free. The decision function is tested; the `cudaMemGetInfo`
+  call and the refusal's interaction with a real upload are not.
+
+**Corrections this step forces on the plan and on its own build list.**
+
+* **The loader does not check VRAM** (the refusal's arithmetic is in the upload, not in `core::lora_load`), as
+  stated under the second refusal above.
+* **The step-2 checklist's line numbers.** They were right for this plan's §§2.3 and 2.4 and wrong for `struct
+  Options`: the checklist gave 412, with the fields after it at 415, and the three `#include` lines these commits
+  add above the struct put them at 415 and 418 in the tree that landed.
+* **`INFO lora=` is one token, not the adapter's directory** (§2.3, corrected above).
+
+**Two limits to carry.**
+
+* **The reserve constant is duplicated.** `kVramSafeMib` is 1024 on Windows and 512 elsewhere, at
+  `src/program/generate.cpp:1422` in this tree, and it has internal linkage, so `src/kernels/` cannot link to it.
+  The adapter's copy is `kLoraVramReserveMib` in `src/kernels/cuda/lora_vram.cuh`, and that is the only reason
+  the copy exists. They are the same reserve: a change to one has to be made to the other, and no test can see the
+  other copy.
+* **`INFO lora=none` is a truthy string in Python.** Step 7 must read `none` as "no adapter" rather than as a
+  digest, or it will ask the engine for an adapter that is not there - which the engine refuses rather than
+  answering from the base weights. A loud failure instead of a silent wrong answer, but a failure.
+
+**Files:** `include/strata/kernels/lora.hpp` (the device description and the launch API),
+`src/kernels/cuda/lora.cu` (the upload, the flag, the kernel), `src/kernels/cuda/lora_vram.cuh` (the VRAM
+refusal's arithmetic), `src/kernels/lora_parity.cpp` (the parity test), `include/strata/core/lora_request.hpp`
+(the request rules as pure functions), `CMakeLists.txt`, `src/program/generate.cpp`, `src/core/lora_pack_test.cpp`
+(the request-rule cases), `include/strata/core/conversation_file.hpp` (`SessionConfig::lora`), `metal/CMakeLists.txt`
+and `metal/src/engine/missing.cpp` (the stubs).
 
 ### Step 3 - The hook in the verify path (the highest-risk step)
 
@@ -640,6 +759,14 @@ answer position and base-model everywhere else - exactly the inconsistency §1.4
 **Test.** The same parity target, extended to the prefill's GEMM shape (T tokens at once).
 
 ### Step 5 - The engine's request plumbing
+
+**Status: DONE (2026-10-23), built with step 2** (the flag and the `INFO` field in commit `b26fe147`, the key and
+its refusals in `c6b71fd6`): `--lora`, the `lora=` key, the flag set on every request, the `INFO` field, the
+absent-adapter refusal, and the start-up refusal of `--lora` with `--batch` (exit 2) that §2.5 asked for. What
+differs from the test this section named: the refusals are pure functions in `include/strata/core/lora_request.hpp`,
+pinned by `src/core/lora_pack_test.cpp` with no GPU, no model and no engine, rather than by the line-protocol test -
+a refusal that needs an engine to exercise is a refusal nobody re-checks. The batch slots' own state is step 6's
+business, not this step's.
 
 **Files:** `src/program/generate.cpp`: the flag parser (`:2576-2606`), the usage text (`:932-936`),
 the key parser (`:12001-12041`), the `want_lora` computation next to `want_cvec` (`:12194`), the
@@ -685,7 +812,7 @@ must not match).
 (`:8670-8686`), the flags (`:3530-3532`), the `INFO` parsing (`:1036`).
 
 **Work.** The `systemone.lora` config key; the optional per-request `"lora"` field; the `lora=` key
-on the `LOGITS` line; the adapter id threaded through the trie walk.
+on the `LOGITS` line; the adapter switch threaded through the trie walk.
 
 **Risk.** Low, but the wire format is a known trap: the ids must come last, and the key must come
 before them (`src/program/generate.cpp:12008-12009`). The roadmap's own history has this exact
@@ -695,7 +822,7 @@ decode path.
 
 **Test.** `serve/test_logits_first_token.py::EngineWireFormat` (`:651-696`) gains a case that pins
 the line with and without the adapter, on both sides (the server's writer and the engine's parser
-grammar). The mock engine (`serve/server.py:317-369`) is extended to record the adapter id it was
+grammar). The mock engine (`serve/server.py:317-369`) is extended to record the adapter switch it was
 asked for.
 
 ### Step 8 - The exit criterion and the VRAM re-measurement
@@ -710,13 +837,23 @@ The repo's rule is "build every backend a file touches (CUDA, HIP, SYCL)". The L
 
 **SYCL and Metal are separate source trees** (`sycl/src/...`, `metal/src/engine/...`; the SYCL build
 is a separate CMake project, `CMakeLists.txt:14-20`, `sycl/CMakeLists.txt`), and this plan does not
-touch them. The consequence is that **`--lora` does not exist in the SYCL and Metal builds** and
-those engines refuse it as an unknown argument (the CUDA/HIP parser's rule:
-`src/program/generate.cpp:2661-2667` - *"An unknown flag is an ERROR and not a warning"*). That is
-the honest position for a first implementation: the feature is CUDA/HIP-only, and the other backends
-are unchanged (their default paths are byte-identical, which is what the rule is about). Porting it
-to SYCL and Metal is a follow-up, and it should be scoped as its own item rather than smuggled into
-2.2.
+touch the kernels in them.
+
+**Corrected (2026-10-23): Metal is not untouched, and `--lora` is not an unknown argument there.** The argument
+parser is shared - the Metal build compiles this same `src/program/generate.cpp` - so the claim this section made
+on 2026-10-21 was wrong, and without a change the Metal binary would have stopped linking. What landed instead:
+`src/core/lora_pack.cpp` (portable: stdio, the layout table, no CUDA) joins the Metal host sources, so an invalid
+adapter is refused there with the loader's own message, and `metal/src/engine/missing.cpp` stubs the device side
+beside the control vector's. `--lora` on Metal therefore prints "no LoRA on Metal: the delta kernel is CUDA/HIP
+only" and serves the base model - the same outcome as an adapter refused on CUDA: a start-up message, never a
+silent wrong answer. **The Metal build was not run** (no Mac, no Metal toolchain here); the symbols, their
+signatures and the mangled-name match were checked by reading, which is static analysis, not a build.
+
+**SYCL is untouched, and `--lora` there is an unknown argument**, refused by that tree's own parser rule
+(`sycl/src/program/generate.cpp:2050-2054` - *"An unknown flag is an ERROR and not a warning"*; the CUDA/HIP copy
+of the rule is `src/program/generate.cpp:2673-2677`). The feature is CUDA/HIP-only in what it computes, and the
+other backends' default paths are unchanged, which is what the rule is about. Porting the kernel to SYCL is a
+follow-up, and it should be scoped as its own item rather than smuggled into 2.2.
 
 ### 4.10 What 2.2 does **not** do
 
@@ -756,7 +893,7 @@ engine over its real pipe), plus its report in `tools/decision_policy/` in the c
 | A2 | the chat turn's **text** is byte-identical (the same assertion on the decoded bytes) | the same thing at the API level, where a consumer sees it |
 | A3 | the decision's distribution **with** the adapter differs from the **without**-adapter distribution in run B | the adapter is actually applied - otherwise the feature is a no-op that passes A1 |
 | A4 | the decision's distribution **without** the adapter in run B is identical to run A's - compared on the engine's raw `L`/`Z` rows (the ground truth) or, if the API is the only view, as exact equality of the returned numbers | the adapter's *presence* does not perturb the base path |
-| A5 | the free VRAM at the start of every request stays **above 1024 MiB** (the engine's own warning threshold, `src/program/generate.cpp:1412`) | the roadmap's VRAM criterion (companion doc §10.8) |
+| A5 | the free VRAM at the start of every request stays **above 1024 MiB** (the engine's own warning threshold, `src/program/generate.cpp:1422`) | the roadmap's VRAM criterion (companion doc §10.8) |
 
 A3 must be a **statistical** difference, not a bit difference: the adapter's effect on one
 distribution is small by construction. The right test is that the top-1 token's probability moves
@@ -792,6 +929,27 @@ path and not on the chat path.
 `src/kernels/lora_parity.cpp` (step 2): with the flag off, the delta kernel leaves the output
 buffer **bit-identical**. That is the mechanical form of "the GEN path is byte-identical with and
 without an adapter loaded", and it runs in the ordinary test suite.
+
+**Built and measured (2026-10-23, RTX 4090, the live server resident): 65 checks, 0 failures.** Flag off: every
+destination byte-identical to its pre-call bytes (`memcmp`, T x stride). Flag on: max |err| 1.19e-07 against the
+double reference, tolerance 2e-5. On -> off -> on is bit-for-bit the first on-run. What it does **not** establish:
+that any forward path calls the kernel - steps 3 and 4 do that - so it cannot stand in for A1.
+
+### 5.5 What still stands between step 2 and this criterion
+
+Three things, in the order they have to happen:
+
+1. **Step 6 (C7), the cache key, before or with step 3 (C5).** The conversation cache and the live session are not
+   keyed on the adapter. That is inert while nothing calls the kernel. Once C5 calls it, a `LOGITS ... lora=1`
+   request writes adapted cells into the live session and into every checkpoint, and the next chat turn restores
+   them with the flag off: the base model reads state the adapted model produced, which is a silently wrong answer
+   and not a cache miss. C7 therefore cannot wait until after step 4.
+2. **Steps 3 and 4 (C5, C6), the hooks.** Without them `lora=1` raises a flag and nothing reads it, which is why
+   A3 (the adapter is actually applied) cannot pass yet. A1 and A2 would pass trivially today, and §5.3 is the
+   reason that is not a result.
+3. **Step 7 (C8), the server.** `INFO ... lora=` is one token - `none`, or `24t/12l/...` - and `none` is a truthy
+   string in Python, so the server must read it as "no adapter" rather than as a digest. Until then no request can
+   ask for the adapter through the API at all.
 
 ---
 

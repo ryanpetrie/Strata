@@ -140,7 +140,7 @@ endpoint that says so.
 **The noul is a bias, confirmed on a second population.** The soft arm — the only
 objective fitted against the human distribution — moves the noul's TVD by
 **0.0025** while moving the choice's by 0.056 and the score's by 0.032. A
-temperature cannot move a distribution's centre, and the noul's centre is wrong.
+temperature cannot move a distribution's center, and the noul's center is wrong.
 It goes to item 1.4.
 
 - **Effort:** 1–2 days, mostly compute — but it is **four** runs, not one: the
@@ -162,7 +162,7 @@ It goes to item 1.4.
   paws 170 / strategyqa_closed 50 / strategyqa_grounded 30; score
   measuring_hate_speech 250 / helpsteer2_helpfulness 125 /
   helpsteer2_verbosity 125. 750 of them carry a human distribution. The pool keeps
-  **only licences that oblige nothing beyond attribution** — boolq (CC BY-SA 3.0)
+  **only licenses that oblige nothing beyond attribution** — boolq (CC BY-SA 3.0)
   was swapped out for 80 more paws items **before any compute**, so the pool holds
   no share-alike source at all.
 - **Work:** fit on the validation pool. The **soft-label objective is the primary
@@ -186,7 +186,7 @@ It goes to item 1.4.
 - **The noul is expected to fail this test and its failure does not block the
   choice and score constants.** 1.2 measured the noul's error to be a **bias** —
   93% of its TVD is a signed offset, the mean P(yes) is 0.446 against the
-  humans' 0.089 — and no scalar can move a distribution's centre. A noul that
+  humans' 0.089 — and no scalar can move a distribution's center. A noul that
   does not clearly improve stays at T = 1 and goes to item 1.4.
 - **Exit criterion:** the out-of-sample constants are measured on the 235-item
   sample **and** on the jev-bench test sample, and the shipped constants are the
@@ -308,8 +308,8 @@ step on the closed distribution, `p'_l = normalize(p_l**(1/T) · exp(b·s_l))`, 
 `s_l` the type's own axis: for the noul, 0/1 for no/yes (so `b` is a shift in
 log-odds — a scale *and* a shift); for the score, the level's index (a tilt along
 the ordinal axis); for the **choice, there is no second parameter** — a shift that
-is the same for every option is cancelled by the normaliser, so its map is the
-scale-only temperature again. Fitted on the licence-clean pool against the **human
+is the same for every option is canceled by the normalizer, so its map is the
+scale-only temperature again. Fitted on the license-clean pool against the **human
 distribution** (the same `soft` objective as 1.1b), leak-free 5-fold CV, seed 42:
 noul **T 2.63, b −2.29** (pool mean P(yes) 0.4142 → 0.1080, against the humans'
 0.1096); score T 3.73, b −0.54; choice T 3.65 (which is 1.1b's soft temperature
@@ -330,9 +330,9 @@ exactly, as it must be).
 - **The score's "location error" is per config, not per type** — the brief's premise
   was wrong: at T = 1 `helpsteer2_helpfulness` sits 0.39 levels *below* the gold and
   `helpsteer2_verbosity` 0.51 *above* it, so the aggregate +0.14 is two opposite
-  errors cancelling; and the raw level index is not commensurable across K (a tilt
+  errors canceling; and the raw level index is not commensurable across K (a tilt
   fitted on a 3-level config moves a 5-level question three times as far). A
-  corrected map — a location on the normalised position `k/(K−1)`, per config — is
+  corrected map — a location on the normalized position `k/(K−1)`, per config — is
   **not run** (see 1.4b).
 - **Beside 1.5**: `criteria-first` cuts the same half-A bias 0.3047 → 0.2268 with no
   235 cost; the affine shift cuts it to ~0.00 and costs the 235 21 points. **The
@@ -344,18 +344,18 @@ exactly, as it must be).
   the human labels is a **bias** — the model over-predicts "yes" on 95 of the 100
   items, mean signed difference +0.357 on a mean absolute 0.384 — and 93% of that
   TVD is the bias, not the scale. A temperature divides the logits; it cannot move
-  a distribution's centre. **An affine calibration can**: `p ∝ softmax(z/T + b)`,
+  a distribution's center. **An affine calibration can**: `p ∝ softmax(z/T + b)`,
   a scale and a shift per question type.
 - **Depends on:** 1.1 (the knob and the fit tooling exist), and a fitting set with
   human distributions — the jev-bench validation pool from 1.1b.
 - **What the plan asked:** extend the fit to two parameters per type, fit on the
   pool, and evaluate paired on **both** the OpenDecisions 235 and the jev-bench test
-  sample (`retemperature.py` generalises to an affine map); the exit criterion was
+  sample (`retemperature.py` generalizes to an affine map); the exit criterion was
   the noul's TVD falling out-of-sample with nothing else regressing. *The result is
   the status above: the first half passes, the second fails, and the reason is a
   sign reversal between the two populations.*
 
-### 1.4b The score's location, per config, on the normalised level (added 2026-10-22)
+### 1.4b The score's location, per config, on the normalized level (added 2026-10-22)
 
 **Status: DONE (2026-10-22). One arm works and comes with its mechanism; the other closes.**  Recorded in
 companion doc **26.2** (the rule was 26.1, committed before the run); the tool is
@@ -370,7 +370,7 @@ companion doc **26.2** (the rule was 26.1, committed before the run); the tool i
   |level error| 0.431 against 0.648) while helpfulness gains 0.062 levels with an interval through zero and
   folds scattered 3.5 to 5.3. This line closes for those configs until a 5-level **human** distribution
   exists.
-- **The unit was not the mechanism.**  Inside one config the normalised axis and the raw level index are the
+- **The unit was not the mechanism.**  Inside one config the normalized axis and the raw level index are the
   same one-parameter family (26.1 said so before the run); what 1.4 got wrong was sharing one `b` across
   K = 3, 4 and 5, not the index.
 - **The 235 is reported, not judged**: 59 score items at T = 1, mean |level error| 0.306, accuracy 0.780; no
@@ -380,7 +380,7 @@ companion doc **26.2** (the rule was 26.1, committed before the run); the tool i
   and the arms exist); a GPU run only if the fitted map is then measured live.
 - **Why:** 1.4 showed the score's error is opposite in sign between its 5-level
   configs at T = 1, and that the level index is the wrong unit across K. The map to
-  try is a location on the normalised position `k/(K−1)`, fitted **per config**,
+  try is a location on the normalized position `k/(K−1)`, fitted **per config**,
   with its own pre-registration (the 1.1b/1.5 rule).
 - **Exit criterion:** the score's TVD falls out-of-sample on the pool **and** the
   235's score competence does not fall; if the per-config map does not transfer
@@ -411,7 +411,7 @@ companion doc **26.2** (the rule was 26.1, committed before the run); the tool i
 decision).** Per-workload calibration - the endpoint told which kind of task it serves and
 carrying a fitted correction for that workload - is the only version of this work that
 could ship a constant, and it needs **people's answer distributions per workload**. The
-machine has one score config and the noul; producing the rest is a labelling project, not a
+machine has one score config and the noul; producing the rest is a labeling project, not a
 code one. It is in **Maybe / someday** below, and nothing is built for it until that
 question is answered.
 
@@ -435,7 +435,7 @@ question is answered.
   of 235** — so the best of ten wins by selection alone unless the effect is
   measured paired. So: a **pre-registered, paired ablation** with a design set and
   yardsticks, the same discipline as 1.1b:
-  1. **Design set:** the licence-clean pool (item 1.1b's 500 a type, 250 of them
+  1. **Design set:** the license-clean pool (item 1.1b's 500 a type, 250 of them
      with a human distribution). Variants are chosen there.
   2. **Yardsticks:** the OpenDecisions 235 and the jev-bench test sample. A
      variant is only *measured* there after it has been chosen, and the margin is
@@ -509,7 +509,7 @@ guards for a candidate. The record is companion doc §28.
 **The score's arms ran (2026-10-23): none ships, and the score is the opposite of the noul.**
 The base arm is 0.33 levels above the humans (0.932 against 0.600) with a TVD of 0.4437, and
 the mean-level prior is **worse** than the model here (0.595 against 0.548), so 1.4b's
-verbosity finding does not generalise. S1 `direction` lowers the level by 0.042 and S2
+verbosity finding does not generalize. S1 `direction` lowers the level by 0.042 and S2
 `wording` raises it by 0.031 - the same lever in two forms, moving the scale's prior in
 opposite directions - and both raise the TVD (+0.0119, +0.0092). S3 `levels-first`, the exact
 move that cut the noul's bias by 0.078 (N4), is the batch's big loser: the level moves **away**
@@ -557,7 +557,7 @@ Three further checks, all offline from the stored runs:
 
 | the check | base | N4 |
 |---|---|---|
-| pooled over every human-labelled noul item (350, two populations): ECE | **0.3362** on the soft T = 1 arm (0.3349 on the stored direct run) | **0.2726** (`-0.0677 [-0.0875, -0.0464]`) |
+| pooled over every human-labeled noul item (350, two populations): ECE | **0.3362** on the soft T = 1 arm (0.3349 on the stored direct run) | **0.2726** (`-0.0677 [-0.0875, -0.0464]`) |
 | the same, AUC (ranking) | 0.7921 | 0.7928 (`+0.0016 [−0.0337, +0.0364]`) |
 | the 235's own noul items (69, decision-style): ECE | 0.0878-0.1042 | **0.0737**; bias −0.064 → **−0.036** |
 | broad or outliers? (250 items) | — | **178 improved, 72 worsened** |
@@ -635,7 +635,7 @@ re-read it every turn, while a 5,000-token **decision** would still park and sti
 evict.
 
 **The fix: a `park=0` request key (option b2).** The server tells the engine not
-to park a one-shot conversation; the engine honours it for a conversation read
+to park a one-shot conversation; the engine honors it for a conversation read
 from scratch, so the **trie walk keeps its checkpoint and session reuse** (96% of
 walk steps reuse the session; only 3.7% follow a restore, so `ckpt=0` — option b1 —
 is rejected: it would make every walk step re-read the full prompt, tens of seconds
@@ -792,7 +792,44 @@ cannot drift between the converter and the reader. The format document's orienta
 its `lora_b` convention are corrected (plan 2.1). **What it does not do:** convert a full-model
 adapter - the converter maps the QSA projections and the shared expert and refuses every other
 module **by name**, because the 36 GDN layers' Hugging Face module names are still open question 1
-of the plan's 7. That is the planned behaviour: a guessed name is a silently wrong adapter.
+of the plan's 7. That is the planned behavior: a guessed name is a silently wrong adapter.
+
+**Step 2 is DONE (2026-10-23), in three commits, and it settles 2.3's recipe.** What landed: the adapter's device
+tables in one allocation, the per-request flag, one delta kernel per layer, the `--lora <dir>` start-up path with
+the upload before graph capture, `INFO ... lora=` (one token: `none`, or `24t/12l/11436032B`), and the `lora=1`
+request key with its refusals. The engine's request plumbing, which the plan put in its step 5, landed with them.
+Measured on the RTX 4090 (CUDA, arch 89, Ninja, MSVC 14.51, the live server resident): the engine builds and
+links; `lora_parity` 65 checks, 0 failures (flag off = bit-identical to the pre-call bytes; flag on = max |err|
+1.19e-07 against the double reference); `cvec_parity` 10/0; `lora_pack_test` 47 checks, 0 failures;
+`strata.exe --help` names `--lora`; `--lora` with `--batch 2` exits 2; `tools/test_lora_pack.py` 20 tests and the
+decision-policy suite 153 tests pass. **Not run:** the HIP build (no ROCm), the Metal build (no Mac), an engine
+run with a real pack and adapter (that is step 8), the full serve suite (it needs the engine stopped, and the live
+server stays up), and the real-VRAM refusal (this card had GBs free - the decision function is tested, the
+`cudaMemGetInfo` call is not).
+
+**No forward path applies the adapter yet** - those are steps 3 and 4 (the commits labeled C5 and C6) - so
+`lora=1` raises a flag that nothing reads: the adapted model and the base model answer identically until they
+land. The chat turn being byte-identical is therefore by construction today, not yet a measurement.
+
+**The constraint to carry: C7's cache key must land before or with C5. This is not a detail.** The conversation
+cache and the live session are not keyed on the adapter, and while no hook calls the kernel that is inert. Once
+C5 (step 3) calls it, a `LOGITS ... lora=1` request writes adapted cells into the live session and into every
+checkpoint, and the next chat turn restores them with the flag off - the base model reading state the adapted
+model produced, which is a silently wrong answer rather than a cache miss. So step 6 (C7) lands before or with
+step 3 (C5); it cannot be left until after step 4.
+
+**What the engine refuses, and why it matters downstream.** At upload: a target whose activation the build cannot
+serve - today the shared expert, PEFT's `mlp.*` - and an adapter that does not fit under the engine's reserve
+(both numbers in the message). Against the spike's measured 1061 MiB free, rank 16 (11.4 MB) and rank 32
+(22.8 MB) fit and rank 64 (45.6 MB) does not. The first refusal decides 2.3's recipe; see 2.3 below.
+
+**The plan's §4.9 was wrong about Metal** and is corrected there: `--lora` is not an unknown argument on the
+Metal build, because the parser is shared. `metal/src/engine/missing.cpp` stubs the device side, so the flag
+prints "no LoRA on Metal: the delta kernel is CUDA/HIP only" and serves the base model. The Metal build was not
+run. SYCL is untouched and still refuses the flag as unknown.
+
+**What is left of 2.2:** steps 3 and 4 (C5, C6), step 6 (C7), then step 7 (the server) and step 8 (the
+exit-criterion run). Step 5's request plumbing is in the three commits above.
 
 Renegotiate **only the logits-row framing** with the maintainer, not the item.
 
@@ -816,6 +853,18 @@ Renegotiate **only the logits-row framing** with the maintainer, not the item.
 arms, the data, the recipe, the margins and the stop rules, all fixed before any adapter
 exists). The summary below is the item; that document is the rule.
 
+**The engine decides the recipe (2026-10-23).** Step 2 of 2.2 refuses, at upload, an adapter whose targets the
+engine cannot serve, and the shared expert is one of them: **an adapter that targets `mlp.*` - PEFT's name for the
+shared expert - is refused in full.** Not one layer of it is served: the engine starts on the base model and says
+`lora=none`. So "attention-only" here is **12 of 48 layers** (the QSA layers 3, 7, ..., 47), and the GDN
+projections `attn_qkv`, `attn_gate` and `ssm_out` are the only way past that - a recipe that trains them too
+reaches **24 of 48**. Two things follow. First, the pre-registration (QSA projections, rank 16) is already the
+recipe the engine serves, so the recipe itself needs no change; what needs changing is its **reason** for leaving
+the shared expert out - it is refused whatever its size, not merely too large at this rank. Second, the 24-layer
+recipe is not available yet: the converter still refuses the GDN modules by name, because their Hugging Face names
+are open question 1 of the plan's §7. Settle that before widening the recipe, and check the size first - all 24
+layers at rank 16 is 46.2 MB (plan §3.3), more than the 37 MiB of headroom the 1061 MiB run leaves.
+
 - **Effort:** 1–2 weeks of compute + tuning.
 - **Depends on:** 2.1, 2.2.
 - **Work:** for each decision example, run Qwen with thinking on → capture the
@@ -830,7 +879,7 @@ exists). The summary below is the item; that document is the rule.
 ### 2.3b Supervised arm: train against HUMAN soft labels (added 2026-10-21)
 
 **Pre-registered with 2.3 (2026-10-23): `docs/research/phase2_training_arms.md` §2, §4-§6**
-- the 24,000 human-labelled train rows, the shared recipe, the shuffled-target control, and
+- the 24,000 human-labeled train rows, the shared recipe, the shuffled-target control, and
 the rule that 2.3b must beat 2.3 by the type's margin or the data-dependent adapter is not
 worth shipping.
 
@@ -847,7 +896,7 @@ worth shipping.
   `google/civil_comments` (CC0-1.0, `toxicity` = the annotator share, measured: every
   value is exactly k/n) and `ZefanCai/Open-Jev-v1.1`, whose human-annotated rows
   (82,045, WANLI, CC BY 4.0) are **one-hot** — shapes and hard labels, not
-  uncertainty, so they do not serve this item's purpose. The licences and the
+  uncertainty, so they do not serve this item's purpose. The licenses and the
   exclusions are in `docs/research/decision_policy_training_data.md`; the
   converter is `tools/decision_policy/soft_labels.py`. **Excluded:** chaosnli
   (non-commercial), mnli and yelp5 (research use), sst5 (unspecified),
@@ -889,7 +938,7 @@ Self-distillation (2.3) already supplies training signal without external data;
 this phase adds *your own workflow's* right answer.
 
 **Amended 2026-10-21.** Human uncertainty is no longer only reachable through
-this phase: 2.3b has a public, licence-clean source of it (the jev-bench train
+this phase: 2.3b has a public, license-clean source of it (the jev-bench train
 splits). 3.1 still comes last, for a different reason than "there is no data":
 it answers a different question. 2.3b asks *are the probabilities honest against
 humans*; 3.1 asks *does the policy suit the people who use Strata*. The first is
@@ -977,7 +1026,7 @@ have unclear ROI. Revisit when Phases 1–3 are measured.
   **people's answer distributions per workload**, and this machine has one score config
   (`measuring_hate_speech`, 3 levels) and the noul. It also needs a product answer - who
   assigns the workload tag, and whether the caller can be trusted to declare it - before
-  any code is written. Revisit when a labelled workload or two exists, or when the
+  any code is written. Revisit when a labeled workload or two exists, or when the
   endpoint has real traffic whose workload can be inferred.
 
 ---
@@ -998,9 +1047,9 @@ have unclear ROI. Revisit when Phases 1–3 are measured.
    (companion doc §14: 43.9% agreement with human consensus). Report honestly.
 5. **MoE training complexity.** Attention-only LoRA (2.3) avoids this; expert
    selection (2.5) does not. Stay on attention-only unless measured need.
-6. **Data licences (new, 2026-10-21).** Training data is not a free choice, and
+6. **Data licenses (new, 2026-10-21).** Training data is not a free choice, and
    one dataset's own manifest is wrong. `docs/research/decision_policy_training_data.md`
-   has the record, every licence quoted from its source. The short form:
+   has the record, every license quoted from its source. The short form:
    **OpenDecisions is validation-only** ("Please do not use for training") and
    stays that way; jev-bench's **train** splits are usable config by config, but
    `chaosnli` is **non-commercial** (CC BY-NC 4.0 — jev-bench's manifest records
@@ -1106,7 +1155,7 @@ So three things are true and they are all unwelcome:
    ships" and why that is a finding rather than a failure.
 2. **The noul's error is a bias, not a scale.** It over-predicts "yes" on 95 of
    100 items, and the soft objective moves its TVD by 0.0025 while moving the
-   choice's by 0.056. A temperature cannot move a distribution's centre; that is
+   choice's by 0.056. A temperature cannot move a distribution's center; that is
    item 1.4's job (an affine scale and shift). The prompt experiment (1.5) found
    that the **order** levers (N1, N2) only shift the prior and fail the base-rate
    guard, while **N4 `criteria-first`** — recasting the definition as the thing the
