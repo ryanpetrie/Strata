@@ -3,7 +3,7 @@
 **Status:** the design is written, **the mechanism is built** (2026-10-21), and
 **the probe and four of the five noul arms have been measured** (2026-10-22);
 `answer-order` (N2) is **incomplete** and is not part of the comparison. The
-record of the runs is in the companion doc **§20**; this document holds the design,
+record of the runs is in the companion doc **§23**; this document holds the design,
 the variants and the pre-registered rule, and §9 holds the results in one table.
 Every number below is either **measured** (and says where) or **static analysis**
 (and says so).
@@ -965,9 +965,9 @@ Four things, and one of them is a defect the implementation found.
    arms were started; four completed** - `answer-order` was cut off by the engine
    hand-back after 13 of 500 items (the restarted attempt re-answered the first 9
    before the server was stopped) and is not part of the comparison. The arm list,
-   the numbers and the rule are in the companion doc §20 and §9 below. A first
+   the numbers and the rule are in the companion doc §23 and §9 below. A first
    reading of the probe, committed as `909d77d4`, called the axis dead; the
-   companion doc §20.3 records the correction, made before N1 and N2 were run.
+   companion doc §23.3 records the correction, made before N1 and N2 were run.
 
 ---
 
@@ -1321,7 +1321,7 @@ base-rate guard, and without them the discipline is a formality.
 ## 8. The limits
 
 - **The noul is measured; the choice and the score are not.** The probe and the
-  five noul arms were run on 2026-10-22 (companion doc §20, and §9 below). The
+  five noul arms were run on 2026-10-22 (companion doc §23, and §9 below). The
   choice's and the score's arms (C1-C4, S1-S4) are implemented and tested but not
   run: §6 says each needs its own pre-registration first.
 - **Every mechanism claim in §2 and §3 is static analysis.** The hypotheses are
@@ -1351,7 +1351,7 @@ base-rate guard, and without them the discipline is a formality.
 The probe and the noul arms were run on the licence-clean pool, each completed arm
 on a freshly restarted engine, 500 of 500 items answered, 0 failures, 100% on the
 fast path. The record, the commands and the per-arm detail are in the companion
-doc **§20**.
+doc **§23**.
 
 **The probe (P1).** Half A, 250 items: the base arm's mean P(yes) 0.4142, the
 probe's 0.3930; the swap gap **+0.0212** (per-item SD 0.0743, so 4.5 SE from
