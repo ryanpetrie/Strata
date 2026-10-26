@@ -39,6 +39,14 @@ names and the model answers with the option's own tokens.  The letter readout
 one token, no collision, so no trie walk.  Both have the same shape, so the caller
 does not have to know which one it has; the config's "systemone": {"readout": ...}
 says which one the server uses.
+
+THE PROMPT VARIANTS.  The question's own lines can be rendered in a few
+alternative ways, one per question type (PROMPT_VARIANTS).  The default, "base",
+is today's text byte for byte, and the config's "systemone": {"prompt": {...}}
+picks the others.  A variant changes exactly one thing, so an effect is
+attributable; docs/research/prompt_variants.md has the list, the measurement
+design and the pre-registered rule.  The variants reach the direct readout only:
+the letter path has its own lines (serve/systemone_letters.py).
 """
 from __future__ import annotations
 
@@ -66,6 +74,28 @@ TYPES = ("noul", "choice", "score")
 # that case.  The letter path reads the letters, which cannot collide
 # (serve/systemone_letters.py).
 TRIE = True
+
+# THE PROMPT VARIANTS, per question type.  "base" is today's text, byte for byte: the
+# default path must not change, and the config's "systemone": {"prompt": {...}} picks
+# the others (serve/server.py's systemone_prompt_variants reads it, and an unknown name
+# is a startup error, not a silent default).
+#
+# The noul's variants, one axis each (docs/research/prompt_variants.md §3.1):
+#   criteria-order  the two sides of the criteria line are presented in the other order
+#   answer-order    the answer line names "no" before "yes"
+#   rule-form       the criteria read as a rule ("answer yes if the state is ...")
+#   criteria-first  the criteria line comes before the question's header
+#   decision-rule   the template states when to answer yes
+#   swap            the PROBE: criteria-order and answer-order together.  It measures
+#                   the order component of the noul's bias and is NOT a shipping
+#                   candidate; it is here because the measurement needs it.
+# The choice's (C1-C4) and the score's (S1-S4) are listed in §3.2 and §3.3.
+PROMPT_VARIANTS = {
+    "noul": ("base", "criteria-order", "answer-order", "rule-form", "criteria-first",
+             "decision-rule", "swap"),
+    "choice": ("base", "options-order", "evidence", "one-best", "options-first"),
+    "score": ("base", "direction", "wording", "levels-first", "full-scale"),
+}
 
 SYSTEM = """You are a classification module. Read the state, then answer every question on its own line as `name: answer`, with no other text.
 Copy each question name exactly. Do not repeat the question, the type, or the instructions.
@@ -239,37 +269,120 @@ def score_descs(q: dict) -> dict:
     return q["criteria"]["descriptions"] or {}
 
 
-def question_lines(name: str, q: dict) -> list[str]:
-    """One question's lines: header, criteria, and the `name:` answer prefix."""
-    lines = [f'[{name} | {q["type"]}] {q["instructions"]}']
-    crit, qtype = q["criteria"], q["type"]
-    if qtype == "noul":
-        if crit:
-            lines.append('  yes means "%s" ; no means "%s"'
-                         % (crit.get("true", "yes"), crit.get("false", "no")))
-            lines.append("  answer yes or no")
-        else:
-            lines.append("  answer yes or no")
-    elif qtype == "choice":
-        lines.append("  answer with exactly one of these option names")
-        for opt, desc in crit.items():
-            lines.append(f'  - {opt}' + (f' ("{desc}")' if desc else ""))
+def _noul_lines(crit: dict, variant: str) -> tuple[list[str], list[str]]:
+    """The noul's own lines: (the ones in front of the header, the ones after it).
+
+    The base variant returns an empty front and today's two lines, so the rendered
+    prompt is byte-identical to the one before the variants existed.
+
+    A noul with no criteria prints only the answer line, so the variants that
+    rewrite or move the criteria line (criteria-order, rule-form, criteria-first)
+    have nothing to change there; the ones that touch the answer line (answer-order,
+    decision-rule, swap) still apply.
+    """
+    true_txt = crit.get("true", "yes")
+    false_txt = crit.get("false", "no")
+    if variant in ("criteria-order", "swap"):
+        criteria = '  no means "%s" ; yes means "%s"' % (false_txt, true_txt)
+    elif variant == "rule-form":
+        criteria = ('  answer yes if the state is "%s"; answer no if the state is "%s"'
+                    % (true_txt, false_txt))
     else:
-        lines.append("  answer with exactly one of these level names, lowest first")
-        descs = score_descs(q)
-        for level in score_names(q):
-            lines.append(f'  - {level}' + (f' ("{descs[level]}")' if descs.get(level) else ""))
-    lines.append(f'  start your answer line with exactly "{name}:"')
-    return lines
+        criteria = '  yes means "%s" ; no means "%s"' % (true_txt, false_txt)
+    answer = "  answer no or yes" if variant in ("answer-order", "swap") else "  answer yes or no"
+    # The decision rule is added to EVERY noul, criteria or not: it is the rule, and
+    # the design (prompt_variants.md §3.6) applies it to the whole design set, so the
+    # half of it without criteria is exercised too.  The wording names the ANSWER and
+    # not the criterion: the pre-registered text ("...satisfies the "yes" criterion")
+    # pointed at a quoted criterion that a noul without criteria does not have, so it
+    # was reworded before any arm was scored (the change is written down in the
+    # design's §4.6).  The axis is unchanged: the template states when to answer yes.
+    rule = None
+    if variant == "decision-rule":
+        rule = "  answer yes only when the state supports the yes answer; otherwise answer no"
+    if not crit:
+        # no criteria: the criteria line does not exist, so the variants that rewrite
+        # it (criteria-order, rule-form) and the one that moves it (criteria-first)
+        # have nothing to change.
+        return [], ([rule] if rule else []) + [answer]
+    if rule:
+        return [], [criteria, rule, answer]
+    if variant == "criteria-first":
+        return [criteria], [answer]
+    return [], [criteria, answer]
 
 
-def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
+def _choice_lines(crit: dict, variant: str) -> tuple[list[str], list[str]]:
+    """The choice's own lines: (the ones in front of the header, the ones after it)."""
+    if variant == "one-best":
+        intro = "  answer with exactly one of these option names, the one the state best supports"
+    else:
+        intro = "  answer with exactly one of these option names"
+    options = [f'  - {opt}' + (f' ("{desc}")' if desc else "") for opt, desc in crit.items()]
+    if variant == "options-order":
+        options = list(reversed(options))
+    if variant == "evidence":
+        return [], [intro,
+                    "  pick the option the state best supports; if none fits, pick the closest"] + options
+    if variant == "options-first":
+        return options, [intro]
+    return [], [intro] + options
+
+
+def _score_lines(q: dict, variant: str) -> tuple[list[str], list[str]]:
+    """The score's own lines: (the ones in front of the header, the ones after it)."""
+    descs = score_descs(q)
+    levels = [f'  - {level}' + (f' ("{descs[level]}")' if descs.get(level) else "")
+              for level in score_names(q)]
+    if variant == "direction":
+        intro = "  answer with exactly one of these level names, highest first"
+        levels = list(reversed(levels))
+    elif variant == "wording":
+        intro = "  answer with exactly one of these level names"
+    else:
+        intro = "  answer with exactly one of these level names, lowest first"
+    if variant == "full-scale":
+        return [], [intro,
+                    "  answer with exactly one of these level names; the state may support any of them, "
+                    "not only the ends"] + levels
+    if variant == "levels-first":
+        return levels, [intro]
+    return [], [intro] + levels
+
+
+def question_lines(name: str, q: dict, variant: str = "base") -> list[str]:
+    """One question's lines: header, criteria, and the `name:` answer prefix.
+
+    `variant` picks one of PROMPT_VARIANTS[q["type"]]; "base" is today's text, byte
+    for byte.  An unknown variant is an error, not a silent default: a typo must not
+    quietly change the prompt the model reads.
+    """
+    qtype = q["type"]
+    known = PROMPT_VARIANTS.get(qtype, ())
+    if variant not in known:
+        raise ValueError(f"unknown {qtype} prompt variant {variant!r}: use one of "
+                         + ", ".join(repr(v) for v in known))
+    if qtype == "noul":
+        lead, body = _noul_lines(q["criteria"], variant)
+    elif qtype == "choice":
+        lead, body = _choice_lines(q["criteria"], variant)
+    else:
+        lead, body = _score_lines(q, variant)
+    return (lead + [f'[{name} | {qtype}] {q["instructions"]}'] + body
+            + [f'  start your answer line with exactly "{name}:"'])
+
+
+def render_prompt(state_text: str, questions: list[tuple[str, dict]],
+                  variants: dict[str, str] | None = None) -> str:
     """One prompt for the whole request: the state once, then every question. One
     model call answers all questions, so the prefill (and its cache) is shared.
 
     This is the SHARED path - the config's `"systemone": {"multi": "shared"}`. The
     default path answers one question per prompt (render_answer_prompt), so every
     answer carries the model's own probability.
+
+    `variants` maps a question TYPE to a variant name (PROMPT_VARIANTS); a type that
+    is not in it is rendered on "base", which is today's text.
 
     The question lines deliberately hold no colons: the reply's `name: answer` lines
     are the only colon shape in the prompt, so the model cannot echo a header into
@@ -279,13 +392,14 @@ def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
              "\nQuestions:"]
     for name, q in questions:
-        parts.extend(question_lines(name, q))
+        variant = (variants or {}).get(q["type"], "base")
+        parts.extend(question_lines(name, q, variant))
     parts.append("\nValid line starts: " + ", ".join(n for n, _ in questions)
                 + ". Reply with exactly one line per question and nothing else.")
     return "\n".join(parts)
 
 
-def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
+def render_answer_prompt(state_text: str, name: str, q: dict, variant: str = "base") -> str:
     """A single-question prompt. The answer line's prefix ("name: ") is NOT here: it
     prefills the ASSISTANT's turn (server.py's `force`), so the next token the model
     writes is the answer itself. Written in the user turn it would be text the model
@@ -294,12 +408,15 @@ def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
 
     One question per prompt: a request with several questions runs this once per
     question and merges the answers, so the model's next token is the answer of the
-    question at hand."""
+    question at hand.
+
+    `variant` is one of PROMPT_VARIANTS[q["type"]]; "base" is today's text, byte for
+    byte."""
     parts = ["State:\n" + state_text + "\n",
              "\nAnswer the question on its own line as `name: answer`, and nothing else. "
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
              "\nQuestions:"]
-    parts.extend(question_lines(name, q))
+    parts.extend(question_lines(name, q, variant))
     return "\n".join(parts)
 
 

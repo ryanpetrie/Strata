@@ -396,6 +396,7 @@ The server listens on `http://127.0.0.1:8080` (`--port` in setup, or edit the ru
 | OpenAI Chat Completions (stream and non-stream, tools) | `POST /v1/chat/completions` |
 | Anthropic Messages (stream and non-stream, tools) | `POST /v1/messages` |
 | OpenAI Responses (stream and non-stream, tools; stateless, [below](#the-responses-api-and-codex-cli)) | `POST /v1/responses` |
+| Decision request (`noul` / `choice` / `score`; off by default, [SYSTEMONE.md](SYSTEMONE.md)) | `POST /v1/systemone` |
 | Model list and health | `GET /v1/models`, `GET /models`, `GET /health` |
 | Model properties | `GET /props` (also accepts `?model=<loaded-model-id>`) |
 | What the model is doing now | `GET /status`, `GET /slots` (busy or idle, with `n_prompt_tokens`; one entry per slot with `--batch`) |
@@ -625,6 +626,7 @@ system prompt with a billing header that changes on every request; the server pi
 | `--conversation-cache-min-tokens N` | Park only conversations of at least N tokens, so short side requests do not evict a long conversation. Default `0` (park all). |
 | `--conversation-cache-park-gain N` (opt-in) | Park a conversation again only after it advanced N tokens past the copy it would replace. |
 | `--conversation-cache-min-free-mib N` | RAM floor, default 2560. Parking and session files are skipped when less than the snapshot plus the floor is available. |
+| `park=0` (per engine request, opt-in) | A conversation a one-shot request read from scratch is not parked, so short side requests (the [decision endpoint](SYSTEMONE.md)) do not evict a long chat; a restored conversation still parks as before. Absent, everything parks as before. |
 | `--memory-limit-mib N` (or `STRATA_MEMORY_LIMIT_MIB`) | Total RAM this engine's container may use, for when a container cannot see its own limit. Config `args`: `"--memory-limit-mib", "102400"`. `0` = none. |
 
 The RAM figure the floor is checked against is the smallest of `MemAvailable`, the room under each cgroup limit visible to
