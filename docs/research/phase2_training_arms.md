@@ -70,9 +70,9 @@ it, not only against the base.
 | **total** | | **24,000** | **24,000** | |
 
 The counts are the manifest's (`manifest.json`, 22 files, 32,328 rows, 44,966,196 bytes);
-the soft-label share is 100% for these three. **The train split is the only split a
-training run may read** (record §7); the validation split is the pool that evaluates it, and
-the test split is the yardstick, never trained on.
+the soft-label share is 100% for these three. **The train split is the only split a training
+run may train on** (record §7); the validation split is what selection reads, and the test
+split is the yardstick, never trained on.
 
 **What is excluded, and why** (record §5 and §7): `chaosnli` (non-commercial),
 `mnli`, `yelp5`, `sst5` (unusable or unspecified licences), `fever_evidence`, `sms_spam`
@@ -83,8 +83,9 @@ share-alike (record §5.2).
 
 **The states for 2.3.** The same 24,000 rows, unordered - the arm needs the state and the
 question, not the label. If the first adapter underfits, the **second** pass may add
-`ZefanCai/Open-Jev-v1.1`'s 147,139 train rows as **shapes only** (its generated content is
-CC0; its WANLI rows keep CC BY 4.0 attribution), never its targets. That is a second
+`ZefanCai/Open-Jev-v1.1`'s 145,639 usable train rows (147,139 less the 1,500
+`customer-control` rows) as **shapes only** (its generated content is CC0; its WANLI rows
+keep CC BY 4.0 attribution), never its targets. That is a second
 decision, written here so it is not invented later.
 
 ### 2.2 What the adapter is trained on at the answer position
@@ -101,10 +102,10 @@ different experiment.
 ### 2.3 The split, and what the model is selected on
 
 * **Train:** the train split, 24,000 rows (§2.1).
-* **Develop (choose the checkpoint, the rank, the epoch):** the licence-clean pool's
-  **validation** split - 750 human-labelled items (250 a type), the same pool 1.4b and 1.5
-  used, disjoint from the train split by split. It is also the set the rule's (a) is
-  measured on.
+* **Develop (choose the checkpoint, the rank, the epoch):** the 750 human-labelled items of
+  the licence-clean pool's **validation** split (1,500 items; 250 a type), the same pool
+  1.4b and 1.5 used, disjoint from the train split by split. It is also the set the rule's
+  (a) is measured on.
 * **Yardsticks (after the checkpoint is chosen):** the jev-bench **test** sample and the
   235. Same order as every other item in this programme: choose on the develop set, confirm
   on the yardsticks, never the other way round.
@@ -131,10 +132,10 @@ pilot puts it under 20 hours, and 3,000 if it does not. The pilot is not optiona
 capture whose size was guessed is a run that either wastes a day or underfits.
 
 **What could make the pilot fail** (any of these stops 2.3, not the whole plan):
-the thinking-on pass exceeds the model's context on the long states (`HelpSteer2`'s and
-`ledgar`'s are the longest); the answer-position row cannot be read with thinking on
-without changing the endpoint's code path; or the per-row cost puts even 3,000 rows
-beyond a week.
+the thinking-on pass exceeds the model's context on the long states (`civil_comments`'
+long comments are the longest training rows); the answer-position row cannot be read with
+thinking on without changing the endpoint's code path; or the per-row cost puts even 3,000
+rows beyond a week.
 
 **The capture is one engine run, not one per arm**, and it is stored as
 `{id, state, question, target}` rows outside the repository. A capture is reusable by any
@@ -144,12 +145,12 @@ later adapter, which is why it is worth doing once and keeping.
 
 ## 4. The adapter and the recipe
 
-Chosen by `phase2_engine_lora_plan.md` §3.5 and its VRAM finding, not re-opened here:
+Chosen by `phase2_engine_lora_plan.md` §3.3 and its VRAM finding, not re-opened here:
 
-* **Attention-only LoRA**, rank **16**, on the QSA projections and the shared expert -
-  the modules the step-1 converter maps. **Routed-expert adaptation is out** at this rank
-  (~7.55 GB against ~58 MiB of headroom over the 1024 MiB threshold); it is roadmap 2.4's
-  escalation, only if 2.3 plateaus.
+* **Attention-only LoRA**, rank **16**, on the QSA projections (the modules the step-1
+  converter maps); the shared expert's 60.9 MB does not fit at rank 16. **Routed-expert
+  adaptation is out** at this rank (~7.55 GB against ~58 MiB of headroom over the 1024 MiB
+  threshold); it is roadmap 2.5's escalation, only if 2.3 plateaus.
 * **The same recipe for all three adapters** (2.3, 2.3b, the shuffled control): the same
   optimizer, learning rate, batch size, steps, seed and rank. The **only** difference is the
   target tensor. A different recipe for the winner is a second experiment.
@@ -159,7 +160,7 @@ Chosen by `phase2_engine_lora_plan.md` §3.5 and its VRAM finding, not re-opened
   whole point is the distribution.
 * **Steps and epochs:** fixed by the develop set, with the base control trained for the
   same number of steps. The training set is small (24,000 rows) and the adapter is small;
-  the epoch count is expected to be 1-3, and the pilot's curve decides it.
+  the epoch count is expected to be 1-3, and the develop set's curve decides it.
 * **The control** is **not** a formality. A LoRA changes the logits before it learns
   anything; the shuffled-target adapter measures that shift. **If the control moves the
   develop set's TVD by more than half of an arm's gain, the arm's gain is not attributable**
@@ -194,7 +195,7 @@ run-to-run noise of each type (the per-item SD of the change in P(answer) betwee
 noul **0.0337**, choice **0.0348**, score **0.0255**, `prompt_variants.md` §5.2), turned
 into a minimum detectable effect at the develop set's n = 250 by the same arithmetic as §27
 (2.802 x SE, and 3.08 x SE after the Bonferroni correction over the two arms):
-**0.0068 for the noul and the choice, 0.0050 for the score.**
+**0.0066 for the noul, 0.0068 for the choice, 0.0050 for the score.**
 
 > **(a) The develop set, per type.** The mean TVD to the human distribution falls by more
 > than the type's margin (above). For the noul, the mean signed difference also moves toward
@@ -230,7 +231,7 @@ into a minimum detectable effect at the develop set's n = 250 by the same arithm
 > margin. If it does not, **the answer is that the teacher's distribution is enough on this
 > model and the data-dependent adapter is not worth shipping** (2.3b's own exit criterion,
 > roadmap §2.3b). If neither arm clears (a)-(c), the finding is that a LoRA at this scale
-> does not move the readout, and the programme stops Phase 2 rather than spending 2.4's
+> does not move the readout, and the programme stops Phase 2 rather than spending 2.5's
 > VRAM on an escalation with no measured cause.
 
 **If the develop set and a yardstick disagree, the arm does not ship**; it is recorded as
@@ -265,12 +266,12 @@ byte-identical with the adapter loaded, the decision path using it, the VRAM mea
   licence record's; the margins are the measured engine noise, not an adapter's.
 * **The 24,000 rows are three configs of one dataset.** A noul adapter trained on
   `civil_comments` may overfit to toxicity; the develop set's 250 noul items are the same
-  population, so the 235 (12 configs, rule (e)) is the guard that matters. The same holds
-  for the choice (`go_emotions`' 28 emotions) and the score (`measuring_hate_speech`'s 3
+  population, so the 235 (11 families, rule (e)) is the guard that matters. The same holds
+  for the choice (`go_emotions`' 27 emotions plus neutral (28 classes)) and the score (`measuring_hate_speech`'s 3
   levels). **A 5-level human distribution does not exist on this machine** (1.4b), so 2.3b
   has no target for the score's 5-level configs; its 250-item develop slice is 3-level.
 * **The adapter cannot carry a target it was not trained on.** For the 235's routing
-  questions (12 configs, none in the training set) the adapter is a shift with no fitted
+  questions (11 families, none in the training set) the adapter is a shift with no fitted
   meaning; that is what rule (e) is for.
 * **The teacher is the same model.** 2.3 inherits the teacher's bias by construction; its
   value is the reasoning it internalises, not a correction.
