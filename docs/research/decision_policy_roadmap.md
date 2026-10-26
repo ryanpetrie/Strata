@@ -457,6 +457,17 @@ the probe **P1** `swap`), and the mechanism (`"systemone": {"prompt": {type:
 name}}`, absent = byte-identical, 14 variants implemented with a byte-identity
 test and one test per variant).
 
+**The choice's and the score's arms: pre-registered 2026-10-22, before any arm ran**
+(companion doc §27). Same discipline as the noul's, with each type's own measured failure:
+the choice's metric is the mean TVD to the human distribution on the pool's 250
+`go_emotions` items, guarded by the accuracy on its 250 hard-label items (77-151 options)
+and by the 235 and jev-bench yardsticks; the score's is the **mean signed level difference**
+on the 250 `measuring_hate_speech` items and the mean absolute level error **per
+5-level config** on the 250 `helpsteer2` items (gold only - no human distribution exists
+for a 5-level config), with the mean-level prior reported beside it. The margins come from
+each type's measured run-to-run SD (choice 0.0348, score 0.0255): 0.0074 and 0.0060 on the
+primary metrics after the Bonferroni correction for four variants.
+
 **What the design measured, and it changes the item's shape.** The per-item SD of
 the change in P(answer) between two runs of the same code is **0.0337** on the
 noul, so at 250 items the **minimum detectable effect on the mean TVD is 0.006**

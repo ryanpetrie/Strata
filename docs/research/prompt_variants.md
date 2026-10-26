@@ -1270,7 +1270,8 @@ it invalidates.
 > ships or a result worth recording, and each gets its own pre-registration
 > before its run - the same structure, with the metrics that fit its own
 > measured failure (the choice's is a shape error, §3.2; the score's is a
-> location error, §2.5).
+> location error, §2.5). **Written 2026-10-22, before any arm ran: companion doc
+> §27.**
 
 ---
 
