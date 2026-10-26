@@ -10,9 +10,13 @@
 //     model does not have, a QSA projection on a GDN layer, a routed-expert tensor (with both of its sizes), a
 //     rank above the engine's maximum, a missing half of a pair, a stale blob, overlapping rows, and a pack's
 //     index given as an adapter's;
-//   * the digest: stable across reads, changed by one byte of weight or one digit of alpha.
+//   * the digest: stable across reads, changed by one byte of weight or one digit of alpha;
+//   * the `lora=` request key's rule (step 2, C4): allowed on a LOGITS line only with an adapter resident, refused
+//     on any other line, refused on a LOGITS line when no adapter is loaded, off when absent, and its value is
+//     exactly 0 or 1 given once (a bare `lora=`, `lora=yes` and a repeated key are refused).
 #include "strata/core/lora_pack.hpp"
 
+#include "strata/core/lora_request.hpp"
 #include "strata/kernels/f16_bits.hpp"
 
 #include <chrono>
@@ -345,6 +349,40 @@ int main() {
         const std::string err = refusal(g, rows, golden_blob());
         check(contains(err, "1-dimensional") && contains(err, "projection"),
               "a 1-D tensor is refused as not a projection: " + err);
+    }
+
+    // ------------------------------------------------------------------ the `lora=` request key (step 2, C4)
+    {
+        // `lora=` is a decision request's key.  On a LOGITS line, with an adapter resident, the adapted model
+        // answers; on a GEN/GENI/BGEN line (`req_logits_k == 0`, and BGEN is rewritten into `GEN 1` before the keys
+        // are read) it is REFUSED with the rule named, because a silent fallback would leave a caller believing its
+        // chat turn carried the adapter.  On an engine with NO adapter (no --lora, or one refused at start-up) a
+        // LOGITS line is refused as well: the base weights would answer the decision and report no error.
+        const std::string gen = lora_request_problem(/*asked=*/true, /*req_logits_k=*/0, /*loaded=*/true);
+        check(!gen.empty() && contains(gen, "LOGITS"),
+              "lora=1 on a line that is not LOGITS is refused, naming the rule: " + gen);
+        check(lora_request_problem(true, 8, true).empty(), "lora=1 on a LOGITS line with an adapter loaded is allowed");
+        const std::string absent = lora_request_problem(true, 8, /*loaded=*/false);
+        check(!absent.empty() && contains(absent, "adapter") && contains(absent, "--lora"),
+              "lora=1 with no adapter resident is refused, naming the adapter: " + absent);
+        // The line is checked before the adapter: this caller's mistake is the key, not the engine's start-up.
+        check(contains(lora_request_problem(true, 0, false), "LOGITS"),
+              "a chat line with no adapter still gets the LOGITS message, not the adapter's");
+        check(lora_request_problem(false, 0, false).empty() && lora_request_problem(false, 8, false).empty(),
+              "an absent lora= is allowed on both kinds of line (it means the base model)");
+
+        // The KEY's own value and its repetition.  `std::atoi` would read every bad value below as 0, i.e. as the
+        // base model, with nothing said - and this key selects which model answers.
+        const std::string bare = lora_key_problem(/*asked=*/true, /*repeated=*/false, "");
+        check(!bare.empty() && contains(bare, "0 or 1"), "a bare lora= is refused, naming what is accepted: " + bare);
+        const std::string yes = lora_key_problem(true, false, "yes");
+        check(contains(yes, "'yes'") && contains(yes, "0 or 1"), "lora=yes is refused, naming the value: " + yes);
+        const std::string twice = lora_key_problem(true, /*repeated=*/true, "1");
+        check(!twice.empty() && contains(twice, "twice"),
+              "a repeated lora= is refused even with a valid value: " + twice);
+        check(lora_key_problem(true, false, "0").empty() && lora_key_problem(true, false, "1").empty(),
+              "lora=0 and lora=1 are the only accepted values");
+        check(lora_key_problem(false, false, "").empty(), "an absent lora= is not the key check's business");
     }
 
     std::printf("\n%s\n", g_fail == 0 ? "all checks passed" : "FAILED");
