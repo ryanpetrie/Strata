@@ -8,6 +8,20 @@ the variants and the pre-registered rule, and §9 holds the results in one table
 Every number below is either **measured** (and says where) or **static analysis**
 (and says so).
 
+**Enabled on this machine (2026-10-22, the user's decision).** The shipping config
+now asks for N4 on the noul:
+
+```json
+"systemone": {"enabled": true, "diagnostics": true, "prompt": {"noul": "criteria-first"}}
+```
+
+It was enabled after the reproducibility run (`n4_repro_100.md`: mean TVD 0.3036 →
+0.2416, paired −0.0620 [−0.0827, −0.0423], the ranking unchanged, 7 of 8 moved
+answers toward the gold) and the code's default stays `base` for every other
+install. A live probe after the restart answered a noul question with
+`noul: 0.999` and `model_picked: true`; the endpoint's `/v1/status` reports
+`prompt: {noul: criteria-first, choice: base, score: base}`.
+
 This is the plan for roadmap item 1.5
 ([decision_policy_roadmap.md](decision_policy_roadmap.md) §1.5). It is a plan, not
 a result. It says what the prompt looks like today, what could be changed in it,

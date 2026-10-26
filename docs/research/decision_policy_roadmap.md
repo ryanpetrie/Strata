@@ -425,7 +425,12 @@ exactly, as it must be).
   clears the pre-declared margin on both yardsticks, and only if it improves
   discrimination or calibration **without** hurting the other.
 
-**Status: designed and implemented (2026-10-21/22); the probe and the arms have run.** The design and the pre-registered rule are in
+**Status: designed and implemented (2026-10-21/22); the probe and the arms have run,
+and N4 is ENABLED in this machine's live config (2026-10-22, the user's decision).**
+The live config now carries `"systemone": {"enabled": true, "diagnostics": true, "prompt": {"noul": "criteria-first"}}`;
+the code's default stays `base`, so every other install keeps today's text byte for byte. A live probe after the
+restart answered a noul question with `noul: 0.999`, `model_picked: true`, and `/v1/status` reports
+`prompt: {noul: criteria-first, choice: base, score: base}`. The design and the pre-registered rule are in
 `docs/research/prompt_variants.md`: the rendered prompts (byte-verified against
 the renderer), the variant table (**N1** criteria order, **N2** answer order,
 **N3** rule form, **N4** criteria first, **N5** an explicit decision rule, plus
