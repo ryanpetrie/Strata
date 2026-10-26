@@ -5170,6 +5170,11 @@ class Service:
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/systemone"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
+            # the decision endpoint: is it on, does it report the alternative reading,
+            # and does a request with several questions share one prompt
+            "systemone": {"enabled": bool(self.systemone_enabled),
+                           "diagnostics": bool(self.systemone_diagnostics),
+                           "multi": self.systemone_multi},
             "activity": {"requests": totals["requests"] + running,
                          "in_flight": running + int(s.get("queued") or 0),
                          "last_request_at": int(last_at) if last_at else None},
@@ -7091,6 +7096,9 @@ def make_handler(svc: Service):
                 self._json(200, {"status": "ok", "max_context": svc.reported_ctx(), "model": svc.model,
                                  "images": svc.vision is not None, "api_key": bool(svc.api_key),
                                  "image_generation": svc.images is not None,
+                                 # the decision endpoint (POST /v1/systemone): the web app's
+                                 # Decide tab is hidden when it is off
+                                 "decisions": svc.systemone_enabled,
                                  "loaded": svc.loaded(), "service": "strata"})
             elif path.startswith("/v1/images/files/"):
                 # response_format url: the name (32 random hex digits) is the access, as an OpenAI image URL is
