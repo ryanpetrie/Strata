@@ -34,7 +34,7 @@ Use the guide for your GPU and operating system. Model and feature support can d
 - [Docker](DOCKER.md)
 - [Contribution rules](../CONTRIBUTING.md)
 - [Community benchmarks](COMMUNITY_BENCHMARKS.md) and the [standard benchmark protocol](BENCHMARK_PROTOCOL.md)
-- [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md) and [Terminal reference](TERMINAL.md)
+- [How the engine works](HOW_IT_WORKS.md), [technical reference](DETAILS.md), [decision endpoint](SYSTEMONE.md) and [Terminal reference](TERMINAL.md)
 - [App development](../apps/host/README.md) and [packaging](../packaging/README.md)
 
 ## AI tools and media

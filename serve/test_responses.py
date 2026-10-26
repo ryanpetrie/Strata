@@ -273,22 +273,34 @@ class CodexCompaction(unittest.TestCase):
 
 class NoLeakedSampler(unittest.TestCase):
     """Test isolation: a stopped server stops its hardware sampler.  Every Service these tests started used to leave one
-    running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings."""
+    running (21 after this file), polling NVML and psutil every second, which skewed serve/test_parallel's timings.
+
+    The property is about THIS server's sampler, so the test names that thread and follows it.  Counting every
+    "(_loop)" thread in the process is a different measurement, and it is not stable: an earlier test's sampler can
+    still be shutting down when this one starts, so it is counted in `before` and gone one line later - the count
+    then asserts 2 and reads 1 while the sampler under test does exactly what it was asked (`Telemetry.close` only
+    sets the stop event; the thread lives until its next wake, up to a second).  A full-file run failed that way
+    while the test passed alone."""
+
+    @staticmethod
+    def _samplers():
+        import threading
+        return {t.ident for t in threading.enumerate() if t.name.endswith("(_loop)")}
 
     def test_server_close_ends_the_sampler(self):
-        import threading
         import time
         tok = ByteTokenizer()
-        before = sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)"))
+        before = self._samplers()
         httpd = serve(Service(MockEngine(tok, ANSWER, max_context=16384), tok, TEMPLATE), port=0)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before + 1)
+        started = self._samplers() - before
+        self.assertEqual(len(started), 1, "serving a Service starts exactly one hardware sampler")
         httpd.shutdown()
         httpd.server_close()
         for _ in range(50):
-            if sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")) == before:
+            if not started & self._samplers():
                 break
             time.sleep(0.1)
-        self.assertEqual(sum(1 for t in threading.enumerate() if t.name.endswith("(_loop)")), before)
+        self.assertEqual(started & self._samplers(), set(), "a stopped server stops its sampler")
 
 
 # ------------------------------------------------------------------------------------------------ over HTTP
