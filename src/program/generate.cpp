@@ -4012,7 +4012,7 @@ int main(int argc, char** argv) {
             // One token and no spaces: serve/server.py tokenizes INFO on whitespace, so a value with spaces would
             // truncate at the first one and leave its words in `self.info` as keys of their own.
             lora_summary = std::to_string((long long) resident.n_entries) + "t/" +
-                           std::to_string((long long) resident.n_layers) + "l/" +
+                           std::to_string((long long) resident.n_blocks) + "l/" +
                            std::to_string((unsigned long long) resident.bytes) + "B";
             // START FROM THE BASE MODEL, ALWAYS.  `lora_upload` leaves the flag ON (the cvec upload's convention), and
             // the only other `lora_set_enabled` in the engine is the serve request loop's, which a plain CLI run never
