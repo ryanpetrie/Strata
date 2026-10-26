@@ -787,6 +787,10 @@ Renegotiate **only the logits-row framing** with the maintainer, not the item.
 
 ### 2.3 Self-distillation training run (literature doc §3.C)
 
+**Pre-registration written 2026-10-23: `docs/research/phase2_training_arms.md`** (the two
+arms, the data, the recipe, the margins and the stop rules, all fixed before any adapter
+exists). The summary below is the item; that document is the rule.
+
 - **Effort:** 1–2 weeks of compute + tuning.
 - **Depends on:** 2.1, 2.2.
 - **Work:** for each decision example, run Qwen with thinking on → capture the
@@ -799,6 +803,11 @@ Renegotiate **only the logits-row framing** with the maintainer, not the item.
   backbone — treat as an upper bound, not a promise).
 
 ### 2.3b Supervised arm: train against HUMAN soft labels (added 2026-10-21)
+
+**Pre-registered with 2.3 (2026-10-23): `docs/research/phase2_training_arms.md` §2, §4-§6**
+- the 24,000 human-labelled train rows, the shared recipe, the shuffled-target control, and
+the rule that 2.3b must beat 2.3 by the type's margin or the data-dependent adapter is not
+worth shipping.
 
 - **Effort:** 1–2 weeks of compute + tuning (the training itself is 2.3's job; this
   is the data arm).
