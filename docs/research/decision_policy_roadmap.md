@@ -590,7 +590,7 @@ slot count — not VRAM — is the binding constraint, and the "4 slots ≈ 484 
 the 1,024 MiB threshold" note under "Maybe / someday" should be re-checked for that
 framing.
 
-**Status: MEASURED (2026-10-22) and the fix works.** Built (CUDA; the first build was
+**Status: LIVE (2026-10-22). MEASURED and the fix works.** Built (CUDA; the first build was
 `CMAKE_CUDA_ARCHITECTURES=75` and its sm_75 SASS **died on the 4090** with
 `dequant launch: unspecified launch failure` — rebuilt for **89**), and measured with
 three runs an arm, a fresh engine each, alternating:
@@ -625,12 +625,18 @@ could not have parked at all; (ii) the 20 decisions were 1,815-1,881 tokens, not
 under 500, because the shipping `--conversation-cache-min-tokens 1024` already skips
 short decisions, so the parked traffic at the shipping setting is the over-1k kind.
 
-**Order of work:** (1) the plan (done); (2) the config stopgap, which needs one
-restart to take effect and is the user's call; (3) the `park=0` key (done, CUDA
-built; **HIP not built** — no ROCm on this machine); (4) the server sends it, behind
-`STRATA_DECISION_PARK` (done); (5) the measurement (done, above); (6) **not done:**
-make it the default, and set the minimum-length threshold back to 0. That needs the
-engine rebuilt from the cache branch and the user's OK.
+**Order of work:** (1) the plan (done); (2) the config stopgap, which needed one restart
+to take effect and was the user's call (now removed, below); (3) the `park=0` key (done,
+CUDA built; **HIP not built** — no ROCm on this machine); (4) the server sends it (done);
+(5) the measurement (done, above); (6) **DONE (2026-10-22):** the key is the server's
+default, the minimum-length threshold is back to **0**, and `engine\strata.exe` is rebuilt
+from the merged source for sm_89. The verification run — the shipping config, a fresh
+engine, `STRATA_DECISION_PARK` unset — reuses **99.2%** of the chat's prefix on turn 5
+with **0 evictions**, all 25 skip lines present, the walk at 99.5%/99.9%, and the 235 at
+**81.3** (baseline 79.8) with 235/235 on the fast path. One run, not three: the
+repeatability is the table above. `STRATA_DECISION_PARK=0` restores the old call; the
+config and binary from before the change are backed up outside the repo. The record is
+companion doc §12.
 
 **Exit criterion: MET** — the chat's fifth turn reuses 99.6% of its prefix with the
 key on (0% with it off), the evictions are 0 (19), the walk's reuse is intact, and
