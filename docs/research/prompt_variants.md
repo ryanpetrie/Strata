@@ -1373,7 +1373,7 @@ together and cannot be charged to N1, which is inert on half B.
 | **N1 `criteria-order`** | PASS +0.0346 | PASS -0.0023 | PASS 2 items, +0.0057 | **FAIL** -0.9 and -2.7 | PASS -0.0326, -0.0422 | PASS | **does not ship** (population-specific) |
 | **N2 `answer-order`** | not run | not run | not run | not run | not run | not run | **incomplete, 13 of 500; not compared** |
 | **N3 `rule-form`** | PASS +0.0173 | PASS -0.0107 | **FAIL 5 items**, +0.01996 | PASS/FAIL on the base | PASS -0.0166, -0.0158 | PASS | **does not ship** |
-| **N4 `criteria-first`** | PASS +0.0687 | PASS -0.0013 | PASS 2 items, +0.0104 | **PASS** +1.8 and 0.0 | PASS -0.0623, -0.0749 | PASS | **SHIPS** |
+| **N4 `criteria-first`** | PASS +0.0687 | PASS -0.0013 | PASS 2 items, +0.0104 | **PASS** +1.8 and 0.0 | PASS -0.0623, -0.0749 | PASS | **clears the rule; not applied** |
 | **N5 `decision-rule`** | PASS +0.0227 | PASS -0.0040 | **FAIL 4 items**, +0.0179 | PASS/FAIL on the base | PASS -0.0326, -0.0490 | PASS | **does not ship** |
 
 **N4 `criteria-first` is the one shipping candidate.** It cuts half A's bias from
