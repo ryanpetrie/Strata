@@ -1,0 +1,98 @@
+{
+  "passed": true,
+  "url": "http://127.0.0.1:8098",
+  "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+  "engine": {
+    "model": "qwen3.8-flash-next-unsloth-ud-iq4_xs",
+    "conversation_cache_mib": 0,
+    "conversation_cache_slots": 4,
+    "conversation_disk_mib": 32768,
+    "conversation_disk_dir": "D:\\strata-disk-cache-smoke",
+    "conversation_disk_slots": 0
+  },
+  "cache_before": {
+    "disk_saves": 0,
+    "disk_restores": 0,
+    "disk_evictions": 0,
+    "disk_refusals": 0,
+    "disk_errors": 0,
+    "disk_bytes": 0,
+    "disk_entries": 0,
+    "disk_last_save_ms": null,
+    "disk_last_restore_ms": null,
+    "disk_last_restore_mib_s": null,
+    "last_tier": null,
+    "refusals": {
+      "ram": 0,
+      "budget": 0,
+      "min_tokens": 0,
+      "disk_space": 0,
+      "identity": 0,
+      "disk_other": 0
+    },
+    "last_refusal": null
+  },
+  "cache_after": {
+    "disk_saves": 2,
+    "disk_restores": 1,
+    "disk_evictions": 0,
+    "disk_refusals": 0,
+    "disk_errors": 0,
+    "disk_bytes": 416276384,
+    "disk_entries": 1,
+    "disk_last_save_ms": 255.0,
+    "disk_last_restore_ms": 136.0,
+    "disk_last_restore_mib_s": 2904.0,
+    "last_tier": "disk",
+    "refusals": {
+      "ram": 0,
+      "budget": 0,
+      "min_tokens": 0,
+      "disk_space": 0,
+      "identity": 0,
+      "disk_other": 0
+    },
+    "last_refusal": null
+  },
+  "spilled_this_run": 2,
+  "restored_this_run": 1,
+  "requests": [
+    {
+      "name": "MAIN",
+      "turn": 1,
+      "prompt_tokens": 11693,
+      "reused": 0,
+      "request_reused": 0,
+      "request_prompt": 11693,
+      "seconds": 12.341280460357666
+    },
+    {
+      "name": "SUB",
+      "turn": 1,
+      "prompt_tokens": 1414,
+      "reused": 0,
+      "request_reused": 0,
+      "request_prompt": 1414,
+      "seconds": 4.421158313751221
+    },
+    {
+      "name": "MAIN",
+      "turn": 2,
+      "prompt_tokens": 11788,
+      "reused": 11697,
+      "request_reused": 11697,
+      "request_prompt": 11788,
+      "seconds": 2.420358657836914
+    },
+    {
+      "name": "SUB",
+      "turn": 2,
+      "prompt_tokens": 1729,
+      "reused": 0,
+      "request_reused": 0,
+      "request_prompt": 1729,
+      "seconds": 4.353193044662476
+    }
+  ],
+  "note": "Numbers from this run only. The tool's author did not run it against a model; do not quote them as Strata's disk-cache speed or memory without your own measurement and hardware."
+}

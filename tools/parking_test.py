@@ -6,7 +6,7 @@ parks A, then the follow-up).  Greedy; run with --extra "--pcie-frac 0 --adapt-e
   python3 tools/parking_test.py --exe engine/strata --config strata-<model>.json \
       --extra "--layer-split 12,24,36 --conversation-cache-mib 8192 --conversation-cache-slots 4 --pcie-frac 0"
 """
-import argparse, json, re, sys, time
+import argparse, hashlib, json, os, re, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,6 +39,8 @@ def run(a, cfg, tok, with_b):
     out = eng.lines()
     pa = tok.encode(chat(DOC * a.repeat + "\nSummarize this text in five sentences."), parse_special=True)
     ans, _ = gen(eng, out, pa, a.max_new)
+    print(f"   arm({'A,B,A' if with_b else 'live'}): A answer {len(ans)} tokens, first8={ans[:8]}, "
+          f"sha256={hashlib.sha256(str(ans).encode()).hexdigest()[:16]}", flush=True)
     if with_b:
         pb = tok.encode(chat("Write a short poem about the sea, then explain its metaphors." * 20), parse_special=True)
         gen(eng, out, pb, a.max_new)
@@ -52,7 +54,8 @@ def run(a, cfg, tok, with_b):
         gen(eng, out, pb, 8)
     eng.send("QUIT")
     eng.p.wait(timeout=180)
-    log = open("/tmp/batch_test_engine.log").read()
+    log_path = os.environ.get("BATCH_TEST_LOG") or os.path.join(tempfile.gettempdir(), "batch_test_engine.log")
+    log = open(log_path).read()
     restored = re.findall(r"restored \d+ tokens[^\n]*", log)
     if with_b and "SNAPSHOT_VERIFY draft=" not in log:
         print("no SNAPSHOT_VERIFY line: the draft ring was not read back", flush=True)
@@ -79,10 +82,16 @@ def main():
     same = ref[2] == park[2]
     first = next((k for k in range(min(len(ref[2]), len(park[2]))) if ref[2][k] != park[2][k]), None)
     print("follow-up tokens:", "IDENTICAL" if same else f"DIFFER at {first}", f"({len(ref[2])} / {len(park[2])})")
+    print("    live first10:", ref[2][:10])
+    print("    parked first10:", park[2][:10])
     print("   ", repr(tok.decode(park[2])[:200]))
     reused = park[6][-1] if park[6] else 0
     print(f"second park of A: {reused} bytes of K/V reused (retained from its restore)")
-    return 0 if same and park[5] and reused > 0 else 1
+    # With a disk-only tier (or when RAM refused the park) the reused_kv_bytes figure stays 0: the state came back
+    # from a spill file, which the restore line names.  A restore from either tier proves the state left the session.
+    disk_restore = any("from disk" in line for line in park[5])
+    print("restore tier:", "disk" if disk_restore else "RAM parking" if park[5] else "none")
+    return 0 if same and park[5] and (reused > 0 or disk_restore) else 1
 
 
 if __name__ == "__main__":

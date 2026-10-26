@@ -7,8 +7,8 @@ A long conversation can be too big for RAM. The disk cache is a second place for
 the RAM cache cannot keep is written to one file on disk, and read back when it returns. Then a long chat that takes
 turns with small sub-agent requests does not read its whole prompt again.
 
-The disk cache is opt-in and off by default. It is new: its files, manifest and restore have unit tests, but the whole
-path has not been measured on a model yet. Try a small budget on your own hardware first.
+The disk cache is opt-in and off by default. It has been measured on the reference host below; your model, context
+and drive will differ, so try a small budget on your own hardware first.
 
 ## Turn it on
 
@@ -27,14 +27,32 @@ Add two engine arguments to the run config's `args`, the same place as `--conver
 
 Optional: `--conversation-cache-disk-only` keeps no conversations in RAM and uses only the disk tier. It is slower for
 short conversations and useful for testing. `--conversation-cache-disk-slots N` limits how many conversations are kept.
+`--conversation-cache-disk-staging-mib N` is the host-memory admission bound for a save or a restore (default 1024); a
+smaller value can refuse a restore, and the log says the limit by name.
+
+## What was measured
+
+On a Windows host with an RTX 4090 (24 GB), 63.7 GiB RAM and a Samsung 980 PRO NVMe, with Qwen3.8-Flash-Next
+UD-IQ4_XS and a 194.4K-token main conversation alternating with a small sub-agent conversation:
+
+- 99.95% of each follow-up prompt was reused.
+- A restore took 1.48-1.79 s at 1.77-2.07 GiB/s; the restored turn took 4.14 s end to end, against 166.6 s for the
+  cold read.
+- The file was 3.06 GiB. Saves wrote at 1.46-1.93 GiB/s.
+- The cache's own private memory rose 357 MiB during the save. The process working set rose about 2.9 GiB while the
+  3.0 GiB file was written, because the OS caches the file; that cache is reclaimable and the private count returned
+  below the live level. VRAM rose 106-172 MiB.
+
+The full measurements, including the cases where the RAM cache refused the park, are in
+[work/evidence/disk-cache-200k.md](work/evidence/disk-cache-200k.md). They are one model on one drive, not a promise
+for another configuration.
 
 ## What it costs in disk
 
-Budget by the size of the conversations you keep. The measurement behind this feature, on the reference host in the
-[implementation plan](work/DISK_CONVERSATION_CACHE_PLAN.md#13-why-it-does-not-fit), was a 75,659-token snapshot of
-1,891.4 MiB, about 25 KB per token; a 200K-token conversation is therefore several GB. That figure is for one model and
-one KV format: measure your own model and context, then set the budget above what you expect to need. The engine also
-keeps 4 GiB free on the drive by default (`--conversation-cache-disk-min-free-mib`).
+Budget by the size of the conversations you keep. The measured 194.4K-token conversation above wrote 3.06 GiB; the
+implementation plan's measured 75,659-token snapshot was 1,891.4 MiB, about 25 KB per token. That is one model and one
+KV format: measure your own model and context, then set the budget above what you expect to need. The engine also keeps
+4 GiB free on the drive by default (`--conversation-cache-disk-min-free-mib`).
 
 When the budget is full, the oldest conversation goes first. A save that does not fit is refused, and the conversations
 already on disk stay.

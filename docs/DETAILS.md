@@ -653,7 +653,7 @@ flags absent the RAM cache alone behaves exactly as before.
 | `--conversation-cache-disk-only` | Do not park in RAM at all; use the disk tier for every conversation it wants. |
 | `--conversation-cache-disk-min-tokens N` | Do not write conversations shorter than N tokens. Default: the RAM cache's `--conversation-cache-min-tokens`. |
 | `--conversation-cache-disk-min-free-mib N` | Free space the drive must still have after a save; default 4096 (`0` = no check). |
-| `--conversation-cache-disk-staging-mib N` | Host memory a save or a restore may copy at once; default 512. |
+| `--conversation-cache-disk-staging-mib N` | Host memory a save or a restore may copy at once; default 1024. |
 | `--conversation-cache-disk-park-gain N` | Write a conversation again only after it advanced N tokens past its disk copy. Default: `--conversation-cache-park-gain`. |
 | `--conversation-cache-disk-slots N` | At most N conversations on disk; `0` (the default) means no count limit (the budget still applies). |
 
@@ -676,9 +676,22 @@ flags absent the RAM cache alone behaves exactly as before.
 - Files are plaintext: engine state and token identity, not an encrypted archive and not a chat export. The folder is
   created 0700 and files 0600 on Linux and macOS; on Windows they inherit the user profile's permissions. Keep the
   folder private to your user and do not share it.
-- The save is synchronous: the next request waits for the write. The path is compiled and tested at the unit level, but
-  it has not been measured end to end on a model yet. Do not assume a restore time.
+- The save is synchronous: the next request waits for the write.
 - The Monitor card shows the disk tier separately (see [DISK_CACHE.md](DISK_CACHE.md)).
+
+Measured on the reference host (Windows, RTX 4090 24 GB, 63.7 GiB RAM, Qwen3.8-Flash-Next UD-IQ4_XS, 194.4K-token
+conversation, Samsung 980 PRO NVMe) with the disk tier taking the conversation when the RAM cache was off or refused
+it: 99.95% of each follow-up prompt was reused; a restore took 1.48-1.79 s at 1.77-2.07 GiB/s; the restored HTTP turn
+took 4.14 s (the RAM-only cold turn took 166.6 s); the file was 3.06 GiB. The cache's own private memory rose 357 MiB
+during the spill. The process working set rose about 2.9 GiB while the 3.0 GiB file was written, because the OS caches
+the file; that cache is reclaimable and the private count returned below the live level. VRAM rose 106-172 MiB. The
+save's copy fits 512 MiB, but the reader needs more than that for the metadata: an 11.7K-token restore already asked
+for 537 MiB, which is why the staging default is 1024 MiB. The evidence is in
+[work/evidence/disk-cache-200k.md](work/evidence/disk-cache-200k.md).
+
+The engine must be built for the card: on this 4090 a build configured with `CMAKE_CUDA_ARCHITECTURES=75` crashed on
+prefills of about 7.8K tokens or more (`prefill copy_i32: unspecified launch failure`). Configure with the card's
+architecture (`-DCMAKE_CUDA_ARCHITECTURES=89` here). This is a build setting, not a disk-tier setting.
 
 ### Session files (disk)
 

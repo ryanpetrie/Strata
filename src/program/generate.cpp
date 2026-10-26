@@ -741,11 +741,12 @@ struct Options {
     bool conversation_disk_only = false;          // --conversation-cache-disk-only
     int64_t conversation_disk_min_tokens = -1;    // -1 = use conversation_cache_min_tokens
     int64_t conversation_disk_min_free_mib = 4096;
-    /// Host staging a spill may copy at once.  The admission figure is session_save_peak_bytes: the live running
-    /// state plus two copies of the deepest checkpoint (~118 MB each on the reference model), so ~371 MiB there,
-    /// and 512 MiB is the save/restore peak-host-RAM acceptance limit.  A user-set smaller value is honored: the
-    /// spill is refused with a message that names the limit, never silently dropped.
-    int64_t conversation_disk_staging_mib = 512;
+    /// Host staging a spill or a restore may copy at once.  The admission figure is the live running state plus the
+    /// deepest checkpoint; measured on the reference 194K conversation, the reader needed the metadata plus one layer
+    /// plus the 16 MiB block, and an 11.7K restore already needed 537 MiB.  1024 MiB admits both; the measured private
+    /// save/restore peak was 357 MiB, so this bound is not the actual peak.  A user-set smaller value is honored: the
+    /// spill or restore is refused with a message that names the limit, never silently dropped.
+    int64_t conversation_disk_staging_mib = 1024;
     int64_t conversation_disk_park_gain = -1;     // -1 = use conversation_cache_park_gain
     int64_t conversation_disk_slots = 0;          // 0 = unlimited
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
@@ -932,8 +933,8 @@ void usage() {
                  "  --conversation-cache-disk-park-gain N  --serve: skip a disk write until the conversation advanced N\n"
                  "                       tokens past its disk copy (default: the RAM cache's --conversation-cache-park-gain)\n"
                  "  --conversation-cache-disk-min-free-mib N  --serve: disk space a spill must leave free (default 4096)\n"
-                 "  --conversation-cache-disk-staging-mib N  --serve: host staging a spill may copy at once, the live\n"
-                 "                       state plus two checkpoint copies (default 512; a smaller value refuses the spill)\n"
+                 "  --conversation-cache-disk-staging-mib N  --serve: host staging a spill or restore may copy at once\n"
+                 "                       (metadata plus one layer; default 1024; a smaller value refuses the spill)\n"
                  "  --conversation-cache-disk-slots N  --serve: at most N conversations on disk (default 0 = unlimited)\n"
                  "  --session-min-free-mib N  --serve: disk space a SAVE must leave free (default 4096; 0 = no check)\n"
                  "  --session-save-reclaim  --serve: reclaim unpinned host caches if SAVE needs RAM (opt-in)\n"

@@ -57,7 +57,7 @@ INFO_KEYS = ("model", "conversation_cache_mib", "conversation_cache_slots", "con
              "conversation_disk_dir", "conversation_disk_slots")
 
 
-def run(client, model, turns, main_words, sub_words):
+def run(client, model, turns, main_words, sub_words, step_words=None):
     first = client.metrics()
     require(first["live"]["state"] == "idle" and first["live"]["queued"] == 0, "the server is busy; use an idle one")
     cache = first["conversation_cache"]
@@ -82,14 +82,16 @@ def run(client, model, turns, main_words, sub_words):
         conversation.append({"role": "assistant", "content": reply["choices"][0]["message"].get("content") or "ok"})
         prompt = (reply.get("usage") or {}).get("prompt_tokens", 0)
         reused = int(cache_after.get("reused_tokens", 0)) - int(cache_before.get("reused_tokens", 0))
-        recent = (cache_after.get("requests") or [{}])[0]
+        # /metrics reports the last request's figures as last_reused / last_prompt (it does not list requests).
+        recent = {"reused": cache_after.get("last_reused"), "prompt_tokens": cache_after.get("last_prompt")}
         rows.append({"name": name, "turn": turn, "prompt_tokens": prompt, "reused": reused,
                      "request_reused": recent.get("reused"), "request_prompt": recent.get("prompt_tokens"),
                      "seconds": seconds})
         return reused
 
+    main_step = max(16, main_words // 8) if step_words is None else max(1, step_words)
     for turn in range(1, turns + 1):
-        ask("MAIN", turn, mains, max(16, main_words // 8))
+        ask("MAIN", turn, mains, main_step)
         if turn > 1:
             require(rows[-1]["reused"] > 0, f"MAIN turn {turn} reused no prompt at all: neither cache restored it")
         ask("SUB", turn, subs, max(8, sub_words // 4))
@@ -118,6 +120,9 @@ def main():
     parser.add_argument("--main-words", type=int, default=3000,
                         help="words in MAIN's system prompt; raise it for a long-conversation run")
     parser.add_argument("--sub-words", type=int, default=400, help="words in SUB's system prompt")
+    parser.add_argument("--step-words", type=int, default=None,
+                        help="words in each MAIN user turn (default: main_words // 8, at least 16); use a small "
+                             "value when main_words is near the context limit")
     parser.add_argument("--run", action="store_true")
     args = parser.parse_args()
     if args.turns < 2:
@@ -127,7 +132,8 @@ def main():
         return
     with args.output.open("x", encoding="utf-8") as output:
         try:
-            result = run(Client(args.url, args.key), args.model, args.turns, args.main_words, args.sub_words)
+            result = run(Client(args.url, args.key), args.model, args.turns, args.main_words, args.sub_words,
+                         args.step_words)
         except Exception as error:
             json.dump({"passed": False, "error": str(error)}, output, indent=2)
             output.write("\n")
