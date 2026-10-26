@@ -1,7 +1,9 @@
 # Shared-backbone System 1 decision policy in Strata
 
-**Status:** Phase 0 and Phase 1 complete. Phases 2-6 not started.
-**Date:** 2026-10-19
+**Status:** the endpoint is built and measured (§10, §11); the engine's stale-context
+failure is under investigation and the evidence is corrected (§12).
+**Date:** 2026-10-21 (the sections before §6 are the 2026-10-19 record, kept as it was
+then)
 **Task:** explore whether Strata can serve a fast, specialized agent decision policy from the already-loaded
 Qwen3.8-Flash-Next backbone, without a second model or a second copy of the weights.
 **Result so far:** the prompt route is measured; the capture point is identified; the go/no-go question is answered
@@ -297,7 +299,9 @@ written:
   (§10.8).
 - Several questions are no longer answered by one shared prompt. §11: every question
   is answered on its own, so every answer carries the model's own probability, and a
-  question that fails does not cost the others their answers.
+  question that fails does not cost the others their answers. Measured on the
+  235-item sample: Capability 79.0 with every item predicted, against the shared
+  prompt's 49.5 with 165 of 235 (§11.5).
 
 ### 6.0 Final design (IMPLEMENTED in the workspace, 2026-10-19)
 
@@ -1059,6 +1063,14 @@ batched arm measured 12 of 47 mixed batches (25.5%) failing that way, against 5.
 for the serial arm, and the failures were correlated - one bad line, 46 serial-correct
 items lost as collateral. Zero partial batches, "by construction".
 
+**Re-measured on a fresh engine (2026-10-21), the shared prompt lost 70 of the 235
+questions (30%)** - the same 5 questions per request, one attempt each, a freshly
+restarted engine, Capability 49.5 against the merged path's 79.0 (§11.5). So the
+atomicity is the shared prompt's own, not a stale engine: the handoff's suspicion
+that these failures were the engine bug (§12) is wrong, and the 36.8 that the
+2026-10-20 handoff recorded for this arm was measured on a bad engine and is too
+low.
+
 ### 11.2 What it is now
 
 **A request with several questions is answered by running the single-question path
@@ -1102,19 +1114,56 @@ The shared prompt is still reachable: `"systemone": {"enabled": true, "multi":
 endpoint itself is opt-in (`"enabled": true`), so this is a change to an opt-in
 endpoint's own behaviour, and the old behaviour is one config key away.
 
-### 11.5 What it costs, and what is not measured
+### 11.5 What it costs, and what it measures at
 
 **The cost.** The shared prompt amortized the prefill over the questions: one read
 of the state, one decode. The new path puts the state in every question's prompt, so
-the prefill is repeated per question - a request with N questions costs about N
-prefills (the conversation cache may reuse the state's tokens between the questions;
-that has not been measured). The §9 batched arms measured the amortization the new
-path gives up (per-question latency median 1.5 s against 3.2 s serial, 2.1x); it is
-given up for the real probabilities and the per-question isolation.
+the prefill is repeated per question.
 
-**Not measured.** The §10.8 OpenDecisions numbers are the **one-question-per-request**
-path, which this change does not touch. The merged path has not been run against the
-sample yet, so there is no measured Capability for it - the numbers in §9 for the
-batched arms belong to the shared prompt, which is still there behind the flag. A
-run of the sample through the merged path (several questions per request) is the
-measurement this change still owes.
+**The measurement (2026-10-21, the 235-item sample, a freshly restarted engine).**
+The sample sent 5 questions per request (47 requests), one attempt each, the official
+scorer on `sample10_items.jsonl`. The serial row is the same sample through the
+one-question-per-request path (2026-10-20, a fresh engine, the same code). The shared
+row is the same batched arm on the shared prompt (2026-10-21, a fresh engine).
+
+| run | Capability | Intelligence | Calibration | predicted | fast path | per question |
+|---|---:|---:|---:|---:|---:|---:|
+| the serial path (1 question per request) | 79.1 | 76.3 | 81.9 | 235/235 | 235 items | **3.66 s** |
+| **the merged path (5 questions per request)** | **79.0** | **74.4** | **83.7** | **235/235** | **235 items** | **6.92 s** |
+| the shared path (5 questions per request) | 49.5 | 27.8 | 71.2 | 165/235 | - | 1.61 s |
+
+**The merged path's quality is the serial path's, to within the noise floor.** The
+two rows differ by 0.1 Capability points, against a run-to-run spread of about 0.6
+(§10.8), and the merged run predicted **every** item with **every** question on the
+fast path: no fallbacks, no 502s, no collateral loss. That is the point of the
+change - the merged path *is* the single-question path, run once per question, so it
+cannot be worse than the single-question path.
+
+**The shared path, re-measured on a fresh engine, is 49.5 and not the 36.8 the
+2026-10-20 handoff recorded.** That number was taken on an engine that was already
+bad (§12), so it was too low; §9's older batched arm (54.0, 175/235) was closer to
+the truth. The shared path's cost is confirmed, and its per-question latency matches
+§9 (1.61 s against 1.5 s, the request total 8.0 s against 7.5 s). **The shared
+prompt's failures are its own, not a stale engine**: on a fresh engine it still lost
+70 of the 235 questions (30%), because one unparseable line loses every question in
+the request. That is exactly what the merged path removes.
+
+**The merged path's cost is real and it is the prefill.** Per question it costs
+**6.92 s** against the serial path's **3.66 s** (median, amortized over the request);
+a 5-question request takes 34.6 s. The reason is the shape of this dataset's batched
+arm: it puts **five different states in one request** (as numbered sections), so the
+merged path re-reads all five sections once per question - 25 state-reads where the
+serial path does 5. **That is the merged path's worst case, not its normal one.** An
+agent's real request is *one* state and *many* questions, which costs one
+state-read per question, not five. The number is quoted as "the merged path, when the
+request carries as many states as questions", because quoting the amortized
+per-question latency as if it were the general case would overstate it.
+
+**The open design question (A1 versus A2) is now measurable.** A2 is "one prompt, one
+extra request per question to read the row at that question's answer position". It
+would keep the shared prompt's single read of the state and still give every question
+its own probability, so on a request with one state and N questions it should cost
+about N tail-reads instead of N state-reads. That is the number that decides A1
+versus A2, and it is not measured yet: A2 is not implemented. What this section
+establishes is the end A1 has to beat - the quality of the serial path (79.1) and the
+speed of the shared path (1.61 s a question, at a third of the quality).
