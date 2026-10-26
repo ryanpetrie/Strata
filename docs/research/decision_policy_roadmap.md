@@ -820,8 +820,13 @@ step 3 (C5); it cannot be left until after step 4.
 
 **What the engine refuses, and why it matters downstream.** At upload: a target whose activation the build cannot
 serve - today the shared expert, PEFT's `mlp.*` - and an adapter that does not fit under the engine's reserve
-(both numbers in the message). Against the spike's measured 1061 MiB free, rank 16 (11.4 MB) and rank 32
-(22.8 MB) fit and rank 64 (45.6 MB) does not. The first refusal decides 2.3's recipe; see 2.3 below.
+(both numbers in the message). **The reserve check is not the rank ceiling the plan first described.** Measured on
+2026-10-23 with the shipping config and an 11.4 MB adapter resident, `INFO` printed `expert_cache_mib=8744
+expert_slots=3796 vram_free_mib=7348`: the adapter is uploaded before the expert cache is sized, so its bytes cost
+cache capacity (45.6 MB is about twenty of 3,796 slots) and the refusal only fires on a card that is already nearly
+full. Rank 16, 32 and 64 all pass; the 1061 MiB figure the plan quotes is a serving-time minimum from a different
+configuration. Rank 16 stays because the pre-registration chose it, not because the card forbids more. The first
+refusal - the shared expert - is what decides 2.3's recipe; see 2.3 below.
 
 **The plan's §4.9 was wrong about Metal** and is corrected there: `--lora` is not an unknown argument on the
 Metal build, because the parser is shared. `metal/src/engine/missing.cpp` stubs the device side, so the flag
@@ -862,8 +867,9 @@ reaches **24 of 48**. Two things follow. First, the pre-registration (QSA projec
 recipe the engine serves, so the recipe itself needs no change; what needs changing is its **reason** for leaving
 the shared expert out - it is refused whatever its size, not merely too large at this rank. Second, the 24-layer
 recipe is not available yet: the converter still refuses the GDN modules by name, because their Hugging Face names
-are open question 1 of the plan's §7. Settle that before widening the recipe, and check the size first - all 24
-layers at rank 16 is 46.2 MB (plan §3.3), more than the 37 MiB of headroom the 1061 MiB run leaves.
+are open question 1 of the plan's §7. Settle that before widening the recipe. Its size is not a problem: 46.2 MB at
+rank 16 (plan §3.3) is about twenty expert-cache slots, since the adapter is uploaded before the cache is sized
+(the measured correction is above, in 2.2).
 
 - **Effort:** 1–2 weeks of compute + tuning.
 - **Depends on:** 2.1, 2.2.
