@@ -531,7 +531,7 @@ Arm A is today's server and engine; arm B is the new engine and the server start
 `STRATA_DECISION_PARK=1`. `$D` is the OpenDecisions sample directory §9 names.
 
 ```powershell
-$D   = "C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions"
+$D   = "<opencode temp>\opendecisions"
 $PY  = "C:\tools\strata\.venv\Scripts\python.exe"
 $LOG = "C:\tools\strata\strata-unsloth-ud-iq4_xs.log"     # the user's engine log
 $env:STRATA_DECISION_PARK = "1"                            # arm B only; unset it for arm A
@@ -589,7 +589,7 @@ line. Neither line exists in arm A.
 A B A B A B, a fresh server and engine per run. Each run: four chat turns that build the
 conversation to **7,258 tokens** (turn 1; turns 2-4 add 30-60), **20 decisions** with fresh
 state text, then chat turn 5. The server is the branch's `serve/server.py`; the scripts are
-`C:\Users\ryanp\AppData\Local\Temp\opencode\cache_measure\` (`run_cache.py`, `cache_arm.py`,
+`<opencode temp>\cache_measure\` (`run_cache.py`, `cache_arm.py`,
 `analyze.py`), and each run's engine log is beside them under `runs\A1` ... `runs\B3`.
 
 **The host, as it was.** An RTX 4090 with **9,890 MiB in use by other work** (14,249 MiB

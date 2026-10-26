@@ -50,15 +50,15 @@
     "note": "the pool is licence-clean and out of sample with respect to OpenDecisions and to the jev-bench test split; the constants are fitted on it and on nothing else",
     "files": {
       "items": {
-        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\decision_policy_training\\items\\p1b_pool.jsonl",
+        "path": "<opencode temp>\\decision_policy_training\\items\\p1b_pool.jsonl",
         "sha256": "eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7"
       },
       "runlog": {
-        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\decision_policy_training\\run\\p1b_pool_T1.runlog.jsonl",
+        "path": "<opencode temp>\\decision_policy_training\\run\\p1b_pool_T1.runlog.jsonl",
         "sha256": "60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72"
       },
       "predictions": {
-        "path": "C:\\Users\\ryanp\\AppData\\Local\\Temp\\opencode\\decision_policy_training\\run\\p1b_pool_T1.jsonl",
+        "path": "<opencode temp>\\decision_policy_training\\run\\p1b_pool_T1.jsonl",
         "sha256": "7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589"
       }
     }

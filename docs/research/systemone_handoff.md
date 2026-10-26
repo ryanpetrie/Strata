@@ -67,7 +67,7 @@ python <D>\score.py <predictions.jsonl> --data <items.jsonl>
 :: unit tests (workspace venv python, NOT system python)
 C:\tools\strata\.venv\Scripts\python.exe -m unittest serve.test_systemone -v
 ```
-`<D>` = `C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions` (data + predictions + runlogs live here, OUTSIDE the repo, by design: dataset says do-not-train; keep it out of git).
+`<D>` = `<opencode temp>\opendecisions` (data + predictions + runlogs live here, OUTSIDE the repo, by design: dataset says do-not-train; keep it out of git).
 
 ## 6. Gotchas learned the hard way
 

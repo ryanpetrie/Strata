@@ -4,7 +4,7 @@
 the design set's N4 evidence is one run per arm on 250 items, and this asks whether the
 **paired change** comes back on a fresh engine state with a smaller, independent draw.
 Neither run is in git; both arms' artefacts are under
-`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\`.
+`<opencode temp>\decision_policy_training\run\`.
 
 ## The design set, for comparison
 

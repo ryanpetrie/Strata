@@ -298,11 +298,11 @@ The files the fit read, with their digests:
 
 | file | sha256 |
 |---|---|
-| items (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\items\p1b_pool.jsonl`) | `eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7` |
-| runlog (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.runlog.jsonl`) | `60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72` |
-| predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_pool_T1.jsonl`) | `7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589` |
-| od235_items (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10_items.jsonl`) | `ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8` |
-| od235_predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_235_T1_from_current.jsonl`) | `ab495c5ca5e73306d8e8c0af293d6fa84d2592a5a51acc60565f38586d1c60b0` |
-| test_items (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\jevbench_sample3_items.jsonl`) | `df190fab6ab927866d254623c461be3b611c0d4ea089162cdc90e178edcf7729` |
-| test_predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\run\p1b_jevbench_test_soft_T1.jsonl`) | `a789fba3758a199fe4357a10001acdaec947810f2d7d336feff76829343b63fb` |
+| items (`<opencode temp>\decision_policy_training\items\p1b_pool.jsonl`) | `eae751ef36fe7822fc09edcd178a91a2cd75d9997ea1d3122e32e048672481d7` |
+| runlog (`<opencode temp>\decision_policy_training\run\p1b_pool_T1.runlog.jsonl`) | `60aab16cd8540aa8460aea6463f681ae9c2ae59c55f958805010200570f74e72` |
+| predictions (`<opencode temp>\decision_policy_training\run\p1b_pool_T1.jsonl`) | `7d556fa7a2a52af1413b30d0094b4d47f23e1e0e6f3a5dfdec18ea23615b8589` |
+| od235_items (`<opencode temp>\opendecisions\sample10_items.jsonl`) | `ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8` |
+| od235_predictions (`<opencode temp>\decision_policy_training\run\p1b_235_T1_from_current.jsonl`) | `ab495c5ca5e73306d8e8c0af293d6fa84d2592a5a51acc60565f38586d1c60b0` |
+| test_items (`<opencode temp>\opendecisions\jevbench_sample3_items.jsonl`) | `df190fab6ab927866d254623c461be3b611c0d4ea089162cdc90e178edcf7729` |
+| test_predictions (`<opencode temp>\decision_policy_training\run\p1b_jevbench_test_soft_T1.jsonl`) | `a789fba3758a199fe4357a10001acdaec947810f2d7d336feff76829343b63fb` |
 
