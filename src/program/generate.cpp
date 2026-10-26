@@ -92,6 +92,8 @@
 #include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
+#include "strata/core/lora_pack.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/emulate.hpp"
@@ -804,6 +806,11 @@ struct Options {
     int cvec_first = -1, cvec_last = -1;   ///< llama.cpp's defaults: 1 .. the last layer
     int cvec_mode = 1;                     ///< 0 = project, 1 = add (llama.cpp's default)
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
+    /// --lora DIR: one LoRA adapter (tools/lora_pack.py's `index.txt` + `lora.bin`) added to the base projections
+    /// this adapter targets.  Empty = none.  Read and uploaded once, before graph capture, so every captured graph
+    /// already contains the delta kernel and the per-request flag only switches it on and off (kernels/lora.hpp).
+    /// --serve turns it on for one LOGITS request (`lora=1`); a chat turn always runs the base model.
+    std::string lora;
 };
 
 void usage() {
@@ -958,6 +965,8 @@ void usage() {
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
                  "  --cvec-mode add|project  h += s v (default) or h -= s (h.v) v with v unit\n"
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
+                 "  --lora DIR           a LoRA adapter directory (tools/lora_pack.py's index.txt + lora.bin) added to the base\n"
+                 "                       projections.  --serve: only a LOGITS request switches it on (lora=1); chat is base\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
@@ -2736,6 +2745,7 @@ int main(int argc, char** argv) {
             else if (d.rfind("single:", 0) == 0) o.cvec_single = std::atoi(d.c_str() + 7);
             else { std::fprintf(stderr, "--cvec-dir: per-layer or single:L, got '%s'\n", d.c_str()); return 2; }
         }
+        else if (a == "--lora") o.lora = next("--lora");
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -3379,6 +3389,13 @@ int main(int argc, char** argv) {
                                             : "--expert-cache-device1..3 (the peer tier already caches experts there)");
         return 2;
     }
+    // an adapter's flag is one device int for the whole engine, and continuous batching interleaves slots: a slot
+    // that asked for the base model would read another slot's flag, i.e. answer with the wrong model silently
+    if (!o.lora.empty() && o.batch > 0) {
+        std::fprintf(stderr, "strata generate: --lora cannot be combined with %s\n",
+                     "--batch (per-slot adapter state is not built)");
+        return 2;
+    }
 
     if (o.native_flash_attn_short && o.max_context > 256) {
         std::fprintf(stderr, "strata generate: --native-flash-attn-short requires --max-context <=256\n");
@@ -3972,6 +3989,38 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // --lora: the same rule as the vector above, and for the same reason - the delta kernel's node is placed inside
+    // every graph captured from here on, and the per-request flag only turns its arithmetic on and off.  A refusal
+    // (plan 3.5) is printed verbatim and the engine continues WITHOUT the adapter: exiting would take a serve process
+    // down over a file the caller can fix, and `INFO ... lora=none` says which model the engine is actually serving.
+    // The digest is taken before the upload, so a digest failure cannot leave an adapter resident that no session
+    // file could ever match.
+    std::string lora_summary = "none";
+    uint64_t lora_digest = 0;   // a session file is bound to the loaded adapter (0: none)
+    if (!o.lora.empty()) {
+        std::string le;
+        strata::core::LoraAdapter adapter;
+        if (!strata::core::lora_load(o.lora, g, adapter, le) ||
+            !strata::core::lora_digest(o.lora, adapter, lora_digest, le) ||
+            !strata::kernels::lora_upload(adapter, o.lora, le)) {
+            std::fprintf(stderr, "strata generate: lora: %s\n", le.c_str());
+            lora_digest = 0;
+            lora_summary = "none";
+        } else {
+            const strata::kernels::Lora& resident = strata::kernels::lora();
+            // One token and no spaces: serve/server.py tokenizes INFO on whitespace, so a value with spaces would
+            // truncate at the first one and leave its words in `self.info` as keys of their own.
+            lora_summary = std::to_string((long long) resident.n_entries) + "t/" +
+                           std::to_string((long long) resident.n_layers) + "l/" +
+                           std::to_string((unsigned long long) resident.bytes) + "B";
+            // START FROM THE BASE MODEL, ALWAYS.  `lora_upload` leaves the flag ON (the cvec upload's convention), and
+            // the only other `lora_set_enabled` in the engine is the serve request loop's, which a plain CLI run never
+            // reaches: without this line `strata generate --lora X ...` would answer the WHOLE turn on adapted
+            // weights - the opposite of what the usage text promises, and silent.  Every path from here to a request
+            // now starts at base; only a `lora=1` LOGITS request raises the flag, and it lowers it again afterwards.
+            strata::kernels::lora_set_enabled(false);
+        }
+    }
     if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
@@ -4372,6 +4421,13 @@ int main(int argc, char** argv) {
         }
         // a control vector (the speed projection): its tables on this device too - the stage's layers apply it here
         if (!strata::kernels::cvec_replicate(err)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
+            return 1;
+        }
+        // the LoRA adapter, for the same reason: `lora_apply_layer` reads the tables of the device it runs on, so a
+        // stage without them writes no delta and returns false - which the forward path does not check, i.e. the
+        // stage's layers would answer from the base weights with no error anywhere.  A no-op when none is loaded.
+        if (!strata::kernels::lora_replicate(err)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
             return 1;
         }
@@ -9473,6 +9529,7 @@ int main(int argc, char** argv) {
                           rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
                           rope_cfg.beta_slow};
                 c.cvec = cvec_digest;
+                c.lora = lora_digest;
                 c.switches = {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
                     {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
@@ -11113,7 +11170,7 @@ int main(int argc, char** argv) {
                 }
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
-                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s lora=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
@@ -11124,7 +11181,7 @@ int main(int argc, char** argv) {
                         (long long) slots_all, (long long) mib_all,
                         (long long) slots_primary, (long long) mib_primary,
                         o.spec, o.mtp_max_t,
-                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
+                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(), lora_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
