@@ -58,7 +58,7 @@ under `...\opendecisions\jevbench_data` is test-only, as the research pass said.
 
 | dataset | what it is | split | size | the licence, verbatim (read from) | training? | soft labels? |
 |---|---|---|---|---|---|---|
-| `google/civil_comments` | Reddit news-site comments, Jigsaw's toxicity labels | train, validation | 1,804,874 / 97,320 / 97,320 upstream; 8,000 / 500 in jev-bench | "This dataset is released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)." — [card](https://huggingface.co/datasets/google/civil_comments/raw/main/README.md) | **Yes.** Nothing owed. | **Yes.** The noul question's `toxicity` share of the annotators. 263 distinct values over the 8,000 train rows, exact fractions such as 5/46, stored as float32. |
+| `google/civil_comments` | Reddit news-site comments, Jigsaw's toxicity labels | train, validation (jev-bench) — **both are the upstream VALIDATION split**, see 5.7.1 | 97,320 upstream validation; 8,000 / 500 in jev-bench. (The upstream TRAIN split is 1,804,874 rows and is **not** what jev-bench took.) | "This dataset is released under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)." — [card](https://huggingface.co/datasets/google/civil_comments/raw/main/README.md) | **Yes.** Nothing owed. | **Yes**, and now MEASURED: the noul question's `toxicity` is the **share of the annotators**, not a continuous score. Over the whole upstream train split (1,804,874 rows) all 2,913 distinct values are exactly `k/n` for integers k and n — 0 failures, denominators from 1 to 4,936 (5.7.2). The 8,000 jev-bench rows carry 263 distinct values, exact fractions such as 5/46, stored as float32. |
 | `google-research-datasets/go_emotions` | Reddit comments with 27 emotions plus neutral | train, validation | 8,000 / 500 in jev-bench | "The GitHub repository which houses this dataset has an [Apache License 2.0](https://github.com/google-research/google-research/blob/master/LICENSE)." — [card](https://huggingface.co/datasets/google-research-datasets/go_emotions/raw/main/README.md) | **Yes.** Nothing owed. | **Yes.** The rater vote shares over the 28 emotions, one per rater. 3 raters on 5,153 of the 8,000 train rows, 5 on 2,545, 4 on 302. |
 | `ucberkeley-dlab/measuring-hate-speech` | comments with a hate-speech level | train, validation | 8,000 / 500 in jev-bench | the card's front matter reads `license:` / `- cc-by-4.0` — [card](https://huggingface.co/datasets/ucberkeley-dlab/measuring-hate-speech/raw/main/README.md) | **Yes**, with attribution (see 5.3). | **Yes.** The annotator vote shares over the 3 levels. 3 annotators on 5,233 of the 8,000 train rows, 4 on 2,642; a few rows carry hundreds. |
 | `metaeval/chaos-mnli-ambiguity` | MNLI pairs re-annotated by 100 crowdworkers each | test only | 1,599 | the hub card declares **no licence at all** (no `license:` field; the hub API returns no licence tag) — [card](https://huggingface.co/datasets/metaeval/chaos-mnli-ambiguity/raw/main/README.md). The upstream says: "**Chaos NLI** is licensed under Creative Commons-Non Commercial 4.0. See the LICENSE file for details." — [ChaosNLI README](https://github.com/easonnie/ChaosNLI) | **No.** Non-commercial (see 5.1). | **Yes**, but out of reach: test only, and non-commercial. |
@@ -89,7 +89,7 @@ under `...\opendecisions\jevbench_data` is test-only, as the research pass said.
 | dataset | what it is | split and size | the licence, verbatim (read from) | training? | soft labels? |
 |---|---|---|---|---|---|
 | `ZefanCai/Open-Jev` | typed decision records: a yes/no probability, a distribution over choices, independent label probabilities, an ordinal decision | 12 frozen configs; train, calibration, validation, test and OOD published separately | the card's front matter reads `license: cc0-1.0`; its Licensing and provenance section says "Original generated records are marked **CC0-1.0** in their existing provenance. This dedication covers our generated content, not upstream wording, external assets, source data or model weights. Original source code is **MIT**." — [card](https://huggingface.co/datasets/ZefanCai/Open-Jev/raw/main/README.md) | **Yes** for the generated content. The upstream wording keeps its own terms. | Yes: distribution, binary, multilabel and ordinal targets. |
-| `ZefanCai/Open-Jev-v1.1` | 326,619 typed decision records, of which 147,139 are training records, from the frozen `community-hard-mix-v2-final` mixture | train / calibration / validation / test / OOD | the card's front matter reads `license: other`, `license_name: source-dependent-cc0-1.0-and-cc-by-4.0`. Its LICENSE-DATA.md says "WANLI source text and its converted records remain under Creative Commons Attribution 4.0 International... Original generated Open-Jev content is dedicated under CC0 1.0 Universal... No Wikispeedia task payload is included." — [LICENSE-DATA.md](https://huggingface.co/datasets/ZefanCai/Open-Jev-v1.1/blob/main/LICENSE-DATA.md) | **Yes**, with attribution for the WANLI part. | Yes. |
+| `ZefanCai/Open-Jev-v1.1` | 326,619 typed decision records, of which 147,139 are training records, from the frozen `community-hard-mix-v2-final` mixture | train / calibration / validation / test / OOD | the card's front matter reads `license: other`, `license_name: source-dependent-cc0-1.0-and-cc-by-4.0`. Its LICENSE-DATA.md says "WANLI source text and its converted records remain under Creative Commons Attribution 4.0 International... Original generated Open-Jev content is dedicated under CC0 1.0 Universal... No Wikispeedia task payload is included." — [LICENSE-DATA.md](https://huggingface.co/datasets/ZefanCai/Open-Jev-v1.1/blob/main/LICENSE-DATA.md) | **Yes**, with attribution for the WANLI part — and **1,500 rows out**: the `customer-control-v1` rows carry short TypeSafe question descriptions whose licence is **not verified** (5.7.3). | **No.** Measured over the 147,139 train rows: the 82,045 human-annotated rows (WANLI, basis `published_human_reviewed_label`) are **one-hot** — the human gold is a class, not a vote share — and only **1,025** rows have a non-degenerate target at all, every one of them synthetic. It is a source of decision **shapes and hard labels**, not of human uncertainty (5.7.3). |
 | `jylin001206/SII-Decision-4B-Training-Data` | 29,326 training and 7,506 validation questions with a teacher's distributions | train, validation | the card's front matter reads `license: other`, `license_name: mixed-upstream-licenses`; its Licensing section says "This collection combines multiple upstream datasets and generated decision questions. Source materials retain their upstream terms; no uniform license is asserted for the entire collection. The source inventory is provided in `SOURCES.json`." — [card](https://huggingface.co/datasets/jylin001206/SII-Decision-4B-Training-Data/raw/main/README.md) | **Not verified per source.** `SOURCES.json` names 23 sources and their row counts but **no licence per source** (read on 2026-10-21). The mixture includes `chaosnli` (1,777 rows), `mnli` (838) and `paws` (555), so it inherits terms this document excludes. | Yes: `train_target` is "Same-size teacher probability distribution", `p0` is "Original same-size non-thinking distribution". This is the self-distillation shape. |
 | `jgeuter/OpenDecisions` | 2,352 Jev-style decisions, a validation set | test | the card's front matter reads `license: cc-by-sa-4.0`; its Licence section says "CC BY-SA 4.0. Items built from real requests keep the terms of their source (Chatbot Arena 55k: Apache-2.0; Dolly: CC BY-SA 3.0; GSM8K and MATH-500: MIT); each item names its source and licence in `provenance`. The code (`score.py`, `predict_letters.py`) is under the MIT License." — [card](https://huggingface.co/datasets/jgeuter/OpenDecisions/raw/main/README.md) | **No.** The card says, in the first paragraph: "**Please do not use for training.**" (read on 2026-10-21) | Yes on 129 items: `target_probs`, "the exact probability of each option implied by the state". |
 | `Mapika/decider` (GitHub) | a decision model: code, weights and the recipe for its training mixture | repository | the README says "Apache 2.0. See [LICENSE](https://github.com/Mapika/decider/blob/main/LICENSE)." — [README](https://github.com/Mapika/decider/blob/main/README.md), [LICENSE](https://github.com/Mapika/decider/blob/main/LICENSE) | **Yes** for the code and the repository. The code licence does not settle the licences of the data in its mixture. | The mixture is "public datasets plus data labelled by a local Qwen3.5-27B teacher". That is teacher data, not human data. |
@@ -214,8 +214,9 @@ the Wikipedia terms. **Not verified** which of the two applies to the rows. Unti
 - The **UCI SMS Spam Collection's terms** (`sms_spam`). The hub card says `unknown`.
 - **Per-source terms for the SII-Decision mixture.** `SOURCES.json` names the sources and their row
   counts but no licences.
-- **`Open-Jev` and `Open-Jev-v1.1` payload**: not downloaded here (see 6), so their contents were not
-  checked against their cards.
+- **`Open-Jev` and `Open-Jev-v1.1` payload**: `Open-Jev-v1.1`'s train split was read by the
+  second project (5.7) and its `target_basis` breakdown is in 5.7.3; `Open-Jev`'s own
+  payload was still not downloaded, so its contents were not checked against its card.
 - **The `Mapika/decider` mixture's per-source terms.** The repository's own README does not list the
   licences of the ~95 datasets in its mixture.
 - **The research pass's claim that `Mapika/decider` is "about 72% of the 'Releasing the Inner Jev'
@@ -225,6 +226,153 @@ the Wikipedia terms. **Not verified** which of the two applies to the rows. Unti
   requests, and gives no mixture share. The two numbers in the decider README that look like 72 are a
   Decision Index score (72.1 for Jev 1.13.0) and a note that a model "agreed with only 72% of its own
   generic-option labels". **Not verified**; treat the claim as unsourced.
+
+### 5.7 The second pass: the parquet sources, opened (2026-10-21)
+
+A second project, outside the repository (`C:\tools\strata-decision-data\`, its own
+virtual environment with pyarrow 26.0.0 and requests 2.34.2; the repository's
+environment untouched), opened the two parquet sources this document could not.  Three
+findings change what this record says.  Every number below is that project's, from a
+command it ran on this machine; its notes, with the commands and the files, are at
+`C:\tools\strata-decision-data\notes.md`.
+
+#### 5.7.1 The `google/civil_comments` rows in jev-bench are the upstream VALIDATION split, not train
+
+The table in 3.1 read "1,804,874 / 97,320 / 97,320 upstream; 8,000 / 500 in
+jev-bench", which reads as "the jev-bench train split is 8,000 rows of the upstream
+train split".  It is not:
+
+- the **8,492 distinct comment texts** of the repository's 8,500 civil_comments rows
+  (the 8,000-row train file and the 500-row validation file) are **all** in the upstream
+  **validation** split (measured: every one of the 8,492 texts is among the 96,846
+  distinct texts of `data/validation-00000-of-00001.parquet`);
+- **0 of the 8,000** `civil_comments/train/<n>` ids and **0 of the 500**
+  `civil_comments/validation/<n>` ids index the same comment in the hub's validation
+  parquet.  The ids index an ordering the hub's current parquet does not have: the
+  `datasets` library shuffles a split with a fixed seed, and the parquet was
+  regenerated after this document's packager read it.  **Unconfirmed static analysis**
+  on the cause; the measurement above is what the data shows.
+
+**The licence verdict does not change.**  The upstream validation split is trainable
+under this document's own rule (5.1 and 7), and the licence is CC0 either way.  What
+changes is the provenance line, and one caveat that has to travel with the rows:
+
+- **71 of the 8,492 distinct comments are also in the upstream test split** — the
+  yardstick.  The dataset repeats comments across splits (591 texts are in both the
+  upstream validation and test splits), so 71 comments (0.84% of the set) sit in the
+  trainable set and in the yardstick.  Small, but counted here rather than assumed
+  away.  (The second project also measured 29 of the 49,802 distinct texts of its own
+  50,000-row upstream train sample overlapping the repository's 8,492 — a 0.06% leak
+  the other way.)
+
+**These three numbers were re-measured here, on this machine, on 2026-10-21**, from
+the upstream validation and test parquets (97,320 rows and 96,846 / 96,862 distinct
+texts; 591 texts in both) against the repository's 8,500 rows: **8,492 of 8,492** of
+the repository's distinct texts are in the upstream validation split, **71** of them
+are in the upstream test split, **0** are in neither, and **0 of the 8,500** ids point
+at the same comment in the hub's validation parquet.  (The two upstream parquets were
+fetched for the check and written under the data root's `parquet\` directory, outside
+the repository.)
+
+**Measured on the fitting pool of roadmap item 1.1b** (the 500-items-per-type pool of
+`tools/decision_policy/soft_label_pool.json`): the pool's 250 civil_comments items are
+**all** in the upstream validation split, **one** of them is among the 71 test-split
+comments, and the pool shares **0** texts with the jev-bench **test** sample — whose
+100 civil_comments items are all from the upstream test split, and are therefore
+disjoint from the pool's.  So the one comment is a leak into the *population* the
+yardstick is drawn from, not into the yardstick itself, and it is 1 item in 250.
+
+#### 5.7.2 `toxicity` IS the annotator share, and it is now measured
+
+This document recorded the claim as read from the data ("exact fractions such as
+5/46") and said the card does not state it.  The second pass measured it over the
+**whole upstream train split** (1,804,874 rows):
+
+- the split has **2,913 distinct `toxicity` values**;
+- for every distinct value the smallest `n` was found for which the value is exactly
+  `float32(k/n)`, the search allowed up to n = 10,000,000: **zero values failed**;
+- the implied denominator — the number of annotators, at its smallest — runs from
+  **1 to 4,936**; 750 rows need a denominator above 1,000; the denominators cluster
+  hard on the small ones (`n = 1` covers 1,269,170 rows, `n = 5` 188,709, `n = 6`
+  142,401, `n = 10` 88,621);
+- the shape of the column: **toxicity == 0.0 in 1,264,764 rows (70.07%)**, **== 1.0 in
+  4,406 rows (0.2441%)**, strictly between in 535,704 rows (29.68%).
+
+**The method:** read only the `toxicity` column of every row over HTTP range
+requests, find the smallest denominator for each distinct value, and count the
+distribution of the denominators and the numerators.  **A continuous score — a model's
+output, a sentiment regression, a probability — is not a rational number with a small
+denominator**, so 2,913 distinct values, every one of them exactly `k/n`, is the
+signature of a count: `k` votes for "toxic" out of `n` annotators.
+
+Two things the data does **not** say, and the record keeps them:
+
+- the reduced denominator is a **lower bound**: a comment with 2 toxic votes out of 4
+  is stored as 1/2, and the real count was 4.  The share is recoverable; the count
+  behind it is not.
+- **the dataset carries no rating-count column**, so the number of annotators behind
+  each share cannot be recovered from this column at all.  That matters if the work
+  ever needs to weight rows by how many people were asked: a 1/2 share from 4 people
+  and a 1/2 share from 4,936 people are very different amounts of evidence, and the
+  data cannot tell them apart.
+- (and the annotation protocol itself is not in the data: the card's "Annotation
+  process" and "Who are the annotators?" sections both read "[More Information
+  Needed]".  The numbers are the fraction of annotators; that the annotators were
+  told what to do, and how the raters were chosen, is not in the data and not in the
+  card.)
+
+#### 5.7.3 `ZefanCai/Open-Jev-v1.1` does not contain human uncertainty
+
+Section 4 said "Yes" in its soft-labels column.  It is wrong, and the measurement is a
+breakdown of the `target_basis` field over the 147,139 train rows (the schema carries
+`metadata_json.target_basis`; the counts are in that project's
+`items\open-jev-v1.1_train_items.jsonl.meta.json`):
+
+| rows | target_basis | kinds |
+|---:|---|---|
+| **82,045** | `published_human_reviewed_label` (wanli-decisions-v1) | choice 82,045 |
+| 30,720 | `three_valued_visible_rules_exact_one_hot` | choice 15,360, noul 7,680, score 7,680 |
+| 6,000 | `deterministic_local_policy_not_official_labels` | noul 6,000 |
+| 4,500 | **no `target_basis` field at all** | score 829, choice 501, noul 3,170 |
+| the rest (22 distinct basis strings, one per generator family) | oracles, rubrics, uniform sets of optimal actions | — |
+
+Three things follow:
+
+1. **Only the 82,045 WANLI rows are a human label** (CC BY 4.0, all choice).  Every
+   other row's target is an oracle: an exact rule, a BFS or a minimax answer, a
+   rubric, or a uniform set of optimal actions.  A one-hot oracle target is a **hard
+   label, not an uncertainty estimate**: training a readout on it teaches confidence in
+   a label the generator already knew.
+2. **The WANLI targets are one-hot too.**  Every WANLI row's target is a single 1.0 and
+   the rest 0.0 — the human gold is a class, not a vote share.  So even the human part
+   of Open-Jev carries **no distribution**, and it is a *choice*-only label set.  The
+   only rows with a non-degenerate target are **1,025** rows from four synthetic
+   game/control sources (tic_tac_toe-v1 766, snake-v1 123, customer-control-v1 90,
+   ir-control-v1 46), and those are uniform-over-optimal-actions, not human
+   uncertainty.  **Open-Jev v1.1 is a good source of decision shapes and of hard
+   labels, and it is not a source of human uncertainty.**
+3. **4,500 rows have no `target_basis` at all** (ir-control-v1, mailroom-control-v1,
+   silent-failure-control-v1).  Their provenance cannot be read from the data; they are
+   not counted as human.
+
+**The filter is an explicit list of basis names, not a word search, and the difference
+matters.**  A search for the word "human" in the basis string takes 1,500 more rows
+for human labels: the basis "Exact category under the disclosed original
+speech-function rubric, not Jev output or human confidence."
+(sponsor-segment-control-v1) *disclaims* human uncertainty, and its target is a hard
+reference decision.  The list is `published_human_reviewed_label`, and
+`--human-basis NAME` adds to it.
+
+**And 1,500 rows carry an unverified licence.**  1,500 of the 147,139 train rows come
+from `customer-control-v1` and carry short TypeSafe question descriptions.  The card's
+own "Licensing and attribution" section says: "Customer-control provenance retains its
+existing qualification: generated conversations are CC0, while short upstream
+question descriptions are from TypeSafe documentation whose source license was not
+verified", and `THIRD_PARTY_NOTICES.md` says the public TypeSafe Jev examples "have
+not been assigned a verified general redistribution/training license and are not copied
+into our training data".  **Treat those 1,500 rows as not verified: keep them out of
+anything released** unless the TypeSafe terms are read.  They may sit in an internal
+pool.
 
 ## 6. What was downloaded, and where
 
@@ -250,24 +398,49 @@ the type mix and the number of soft-label records for each file.
 One file (`go_emotions/validation.jsonl`) was fetched a second time on 2026-10-21 and its sha256 matched
 the manifest's, so the digests are the digests of the hub's files and not of a corrupted copy.
 
-**The parquet sources are out of reach here, and that is a limitation of the machine, not of the plan.**
-The workspace virtual environment has numpy, requests and tqdm, and no `pyarrow`, `pandas` or
-`datasets`. Nothing was installed for this work. So:
+**The parquet sources were out of reach in THIS repository's environment, and a second
+project opened them (2026-10-21).**  The workspace virtual environment has numpy,
+requests and tqdm, and no `pyarrow`, `pandas` or `datasets`, so the two parquet sources
+could not be read here:
 
-- the upstream `google/civil_comments` train split (1,804,874 rows, "Size of downloaded dataset files:
-  414.95 MB" per its card) is a parquet file that cannot be opened here;
-- `ZefanCai/Open-Jev-v1.1` (326,619 records) ships as parquet and cannot be opened here either.
+- the upstream `google/civil_comments` train split (1,804,874 rows, "Size of downloaded
+  dataset files: 414.95 MB" per its card);
+- `ZefanCai/Open-Jev-v1.1` (326,619 records).
 
-**The proposal, not done here:** add `pyarrow` to the workspace virtual environment
-(`C:\tools\strata\.venv\Scripts\python.exe -m pip install pyarrow`). That is one wheel, about 40 MB, and
-it opens every parquet source the hub serves. The install needs the user's go-ahead, because this
-machine holds one engine and the work should not change the environment without being asked.
+**The second project did it, outside the repository** (`C:\tools\strata-decision-data\`,
+its own virtual environment with pyarrow 26.0.0 and requests 2.34.2, the repository's
+environment untouched — see its notes, §1).  What it took:
+
+- the `toxicity` column of every row of the upstream civil_comments train split, over
+  HTTP range requests, plus the text of 76 row groups: **17,515,820 bytes fetched of
+  the 380,305,237 on the hub** (4.6%).  The full 380 MB file was never on disk;
+- the upstream civil_comments **validation and test** splits, read to answer the
+  provenance question in 5.7.1 (about 21 MB each; not written to the data root, not
+  turned into items);
+- the **Open-Jev v1.1 train split whole**: 36,137,173 bytes, 147,139 rows, the sha256
+  of the downloaded copy matching the hub's LFS object id.
+
+Its items are in its own project, not in this repository's data root: the 50,000-row
+upstream civil_comments sample, the 147,139 Open-Jev train rows, and the same rows
+split by basis (82,045 human / 65,094 synthetic).  The official scorer parses all four
+files (exit 0 on an empty predictions file and on a uniform prediction on every item).
+
+**The proposal, still not done here:** add `pyarrow` to the workspace virtual
+environment (`C:\tools\strata\.venv\Scripts\python.exe -m pip install pyarrow`).  That
+is one wheel, about 40 MB, and it opens every parquet source the hub serves.  The
+install needs the user's go-ahead, because this machine holds one engine and the work
+should not change the environment without being asked — and the second project shows
+the reading can be done without touching the repository's environment at all.
 
 ## 7. The rule for the next step
 
 **What may be trained on, for an adapter that will be released:**
 
-1. `google/civil_comments` (CC0 1.0) - the noul soft labels
+1. `google/civil_comments` (CC0 1.0) - the noul soft labels.  **The rows jev-bench
+   ships under `train` and `validation` are the upstream VALIDATION split** (5.7.1),
+   and 71 of the set's 8,492 distinct comments are also in the upstream test split:
+   counted, not assumed away, and not in the 1.1b fitting pool (measured: 0 shared
+   texts with the jev-bench test sample).
 2. `google-research-datasets/go_emotions` (Apache-2.0) - the choice soft labels
 3. `ucberkeley-dlab/measuring-hate-speech` (CC BY 4.0) - the score soft labels, with attribution
 4. `cais/mmlu`, `ChilleD/StrategyQA` (MIT), and `mteb/banking77`, `mteb/amazon_massive_intent` on
@@ -276,13 +449,22 @@ machine holds one engine and the work should not change the environment without 
 5. `nvidia/HelpSteer2`, `clinc/clinc_oos`, `coastalcph/lex_glue`, `google-research-datasets/paws` -
    the shapes, with attribution
 6. `ZefanCai/Open-Jev` for its generated content (CC0 1.0)
+7. `ZefanCai/Open-Jev-v1.1` - the **shapes and the hard labels**, NOT the human
+   uncertainty (5.7.3): the 82,045 WANLI rows are one-hot human labels under CC BY 4.0
+   (name them, say what was changed), every other row's target is an oracle, and only
+   1,025 rows have a non-degenerate target at all - all of them synthetic.  **The 1,500
+   `customer-control-v1` rows are out of anything released** (the TypeSafe wording's
+   licence is not verified); they may sit in an internal pool.
 
 **What may not:** `mnli`, `yelp5`, `sst5`, `chaosnli` (section 5.1), `fever_evidence` until its terms
-are settled (5.5), `sms_spam` and `stsb` until theirs are read (5.6), and `jgeuter/OpenDecisions`,
-which says in plain words that it is not for training.
+are settled (5.5), `sms_spam` and `stsb` until theirs are read (5.6), `jgeuter/OpenDecisions`,
+which says in plain words that it is not for training, and the 1,500 `customer-control-v1`
+rows of `ZefanCai/Open-Jev-v1.1` until the TypeSafe terms are read (5.7.3).
 
 **What is validation-only, for every source:** the `test` split. The train and validation splits are
-the only ones a training run may read, and the test split stays a yardstick.
+the only ones a training run may read, and the test split stays a yardstick.  The measured
+caveat on that rule is the civil_comments one (5.7.1): the dataset repeats comments across
+splits, so a small number of comments sit in both the trainable set and the yardstick.
 
 **The share-alike question is settled conservatively** (5.2): a released adapter is trained on the
 list above only, so it owes attribution but no share-alike and no licence on the weights.
@@ -310,3 +492,18 @@ the smaller of the two and the pool plan supersedes it for the temperature fit.
   sha256 digests, the type mixes and the soft-label counts were measured by reading the downloaded
   files on this machine.
 - The share-alike reading in 5.2 is an unconfirmed static analysis, marked as such there.
+- **Section 5.7's numbers are a second project's**, from `C:\tools\strata-decision-data\notes.md`,
+  not from this repository's own downloads.  They were not re-measured here; the two copies of the
+  data they describe are the ones on the machine, and the notes name the commands.  The one
+  measurement in 5.7.1 that IS from this repository's side is the leak check on the 1.1b pool (0
+  shared texts with the jev-bench test sample and with the OpenDecisions 235), which was run here.
+- **The re-measurements in 5.7.1 and 5.7.3 were run here** (2026-10-21) with the second project's
+  virtual environment, read-only, on the files already on the machine and on the two upstream
+  civil_comments parquets fetched for the check: the 8,492 / 71 / 0 counts, the WANLI one-hot
+  finding, the 1,025 non-degenerate targets and the 22 basis strings.  **The 2,913 distinct
+  `toxicity` values and the denominator distribution over the whole upstream train split are the
+  second project's**, read from its report; the 50,000-row sample on this machine was checked
+  independently and all 814 of its distinct values are exactly `k/n` (largest denominator 3,043).
+  The upstream train split itself (380 MB) was never on this machine.
+- The cause of the civil_comments id mismatch (5.7.1) is **unconfirmed static analysis**; the
+  measurement is what the data shows.

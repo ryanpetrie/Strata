@@ -9,6 +9,17 @@ train split and a validation split. That human distribution is the scarce
 resource for the decision policy: self-distillation can only copy the model's
 own thinking-mode distribution, so an over-confident mode is inherited.
 
+WHERE THE ROWS COME FROM, for the config whose upstream provenance is not
+obvious (the licence record has the rest, with the measurements):
+  civil_comments  the rows jev-bench ships as train and validation are the
+    upstream VALIDATION split, not the upstream train split - all 8,492 distinct
+    comment texts are in the upstream validation parquet, and none of the ids
+    index the same comment there.  The licence verdict is unchanged (CC0 1.0, and
+    validation is trainable under the record's rule).  The noul's target is the
+    `toxicity` field, which is MEASURED to be the share of the annotators, not
+    a continuous score: over the whole upstream train split all 2,913 distinct
+    values are exactly k/n, with 0 failures.
+
 This script turns a downloaded jev-bench split into items the harness can run
 and the official scorer can read:
 
