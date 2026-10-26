@@ -654,7 +654,16 @@ engineering lift in this roadmap.
 
 ### 2.1 Training infrastructure prerequisite
 
-- **Effort:** 1–2 weeks (and user approval).
+**Status: INSTALLED AND SMOKE-TESTED (2026-10-22); the exit criterion is NOT met yet.**  A separate venv outside
+the repository (`C:\tools\strata-train`, Python 3.12) holds torch 2.11.0+cu128 (`torch.cuda.is_available()` is
+True on the 4090), transformers 5.20.2, peft 0.21.2, trl 1.16.0, datasets 5.1.0 and accelerate 1.15.0; the repo's
+`.venv` still cannot import torch, which is the check that the server's environment stayed untouched.  The
+trivial run is `tools/phase2/smoke_train.py` - a random two-layer GPT-2, a LoRA on one projection, eight rows of
+made-up ids, three steps, 1,024 trainable parameters - and it has run **on the CPU**; the `--cuda` variant is
+what 2.1 asks for and it needs the card free.  Reproduce with `tools/phase2/env_setup.ps1`.  The environment, the
+versions and what the smoke test does and does not prove: `docs/research/phase2_training_env.md`.
+
+- **Effort:** 1-2 weeks (and user approval).
 - **Depends on:** user approval to install PyTorch + PEFT/TRL (or Unsloth) into
   the venv; a GPU training slot (the same 4090, but training needs it free — so
   either stop the server or use off-hours).
