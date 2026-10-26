@@ -19,6 +19,12 @@ Without that prefix the model starts its turn by writing the question's NAME (th
 answer format is `name: answer`), and the next-token logits describe the name, not the
 answer - measured: the name was the top token in every probe.
 
+THE TEMPERATURE.  A temperature divides the logits before the softmax, so the reported
+distribution over the options is flattened (T > 1) or sharpened (T < 1).  It is
+opt-in: the config's "systemone": {"temperature": {...}}, and 1.0 - the default -
+leaves every number byte-identical to the path before it.  The PICK cannot change: the
+map is monotone, so the answer is the same under every temperature.
+
 Pure Python: no Service, no engine, no I/O. server.py's Service.systemone wires it to
 the model; serve/test_logits_first_token.py covers it without a GPU.
 """
@@ -263,8 +269,12 @@ and the question is still answered.
     return out
 
 
-def trie_readings(q: dict, plan: dict, rows: dict[tuple, tuple[dict[int, float], float]]) -> dict | None:
+def trie_readings(q: dict, plan: dict, rows: dict[tuple, tuple[dict[int, float], float]],
+                   temperature: float = 1.0) -> dict | None:
     """-> the reading of a trie question, or None when it cannot be computed.
+
+    `temperature` scales the closed distribution (see `apply_temperature`): it is
+    applied to the OPTION-LEVEL effective logits, not to the per-trie-row logits.
 
 The reading has the same shape as the first-token one (closed, open, stop, outside),
 so the two can be compared and the response is built the same way.
@@ -300,8 +310,9 @@ probability at all.
     node = tuple(plan["tokens"][pick][:plan["resolution"][pick]])
     topk, logz = rows[node]
     stop = sum(math.exp(topk[t] - logz) for t in plan["stop_ids"] if t in topk)
-    return {"type": q["type"], "options": options, "closed": closed, "open": dict(probs),
-            "stop": stop, "outside": max(0.0, 1.0 - total), "model_picked": model_picked}
+    reading = {"type": q["type"], "options": options, "closed": closed, "open": dict(probs),
+               "stop": stop, "outside": max(0.0, 1.0 - total), "model_picked": model_picked}
+    return apply_temperature(reading, temperature)
 
 
 def end_of_turn_ids(tok) -> set[int]:
@@ -309,6 +320,63 @@ def end_of_turn_ids(tok) -> set[int]:
     tokens).  Their weight is the model's "rather not answer"."""
     from serve.systemone import end_of_turn_ids as _ids
     return _ids(tok)
+
+
+def apply_temperature(reading: dict, temperature: float = 1.0) -> dict:
+    """-> the reading with the temperature applied to the closed distribution.
+
+    THE CLOSED READING - THE PART THAT IS SCALED.  A temperature divides the logits
+    before the softmax, so the distribution over the options is flattened (T > 1) or
+    sharpened (T < 1) and renormalized:
+
+        closed_T(i) = normalize(closed_1(i) ** (1/T))
+
+    That is exact, and it is why a temperature fitted offline on a stored run log
+    predicts what the endpoint reports.  For the TRIE WALK the temperature is applied
+    HERE, to the option-level effective logits (the closed distribution), and NOT to
+    the per-trie-row logits: an option's weight is a PRODUCT of per-node token
+    probabilities, and the per-row normalizers differ per option (the options' paths
+    have different numbers of nodes), so "divide each node's logit by T" is not the
+    same thing.  For a single-row question the two forms are identical.
+
+    THE OPEN READING - WHAT IT IS, PLAINLY.  The open reading is the model's OWN
+    probability of each option, P = exp(logit - logz), with the full-vocabulary
+    normalizer logz.  At temperature T it would be exp(logit/T) / Z(T), and Z(T) is
+    NOT available: the server has the engine's top-k window and the T = 1 normalizer,
+    not the whole 248,320-token vocabulary.  So the mass the model put on the options
+    (the sum of the open reading, measured at T = 1) is kept, and the closed reading
+    at T is what it is scaled by:
+
+        open_T(i) = closed_T(i) * M,    M = the mass on the options at T = 1
+
+    That is NOT the model's own probability at temperature T, and the difference is
+    stated in the docs rather than hidden.  It keeps the three properties the endpoint
+    promises: the confidence is in [0, 1], it never exceeds the reported
+    distribution's maximum (M <= 1), and a larger T lowers it (the maximum of a
+    softened distribution falls towards 1/k).
+
+    The mass outside the options ("stop", "outside") is left at its T = 1 value: the
+    temperature reshapes the distribution OVER the options, and the model's mass
+    elsewhere is not rescaled.
+
+    The PICK cannot change: the map is monotone, so the answer is the same under
+    every temperature.
+    """
+    if temperature == 1.0:
+        return reading
+    closed = reading["closed"]
+    inv = 1.0 / temperature
+    weights = {k: (v ** inv if v > 0.0 else 0.0) for k, v in closed.items()}
+    total = sum(weights.values())
+    if total <= 0.0:
+        return reading
+    scaled = {k: v / total for k, v in weights.items()}
+    mass = min(1.0, max(0.0, sum(reading["open"].values())))
+    out = dict(reading)
+    out["closed"] = scaled
+    out["open"] = {k: scaled[k] * mass for k in scaled}
+    out["temperature"] = temperature
+    return out
 
 
 def first_token_plan(questions: list[tuple[str, dict]], tok, prefix: str = ""):
@@ -380,12 +448,15 @@ def trie_failure_reason(plan: dict, rows: dict[tuple, tuple[dict[int, float], fl
 
 
 def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float], tok,
-                       prefix: str = "", logz: float | None = None) -> dict[str, dict] | None:
+                       prefix: str = "", logz: float | None = None,
+                       temperature: float = 1.0) -> dict[str, dict] | None:
     """-> {question_name: reading} or None to fall back to the decode path.
 
     `logits` is {token_id: logit_value} from the engine's top-k; `logz` is the
     full-vocabulary log-sum-exp the engine reports (the normalizer that turns a logit
     into the model's own probability).  None when the engine did not report one.
+
+    `temperature` scales the closed distribution (see `apply_temperature`).
 
     Each reading holds:
       closed  - the distribution over the options alone: the FORCED-CHOICE reading.  The
@@ -446,9 +517,9 @@ AN OPTION OUTSIDE THE WINDOW.  The engine sends the top k logits, not the whole
         openp = {opt: math.exp(logits.get(ftids[opt], OUT_OF_WINDOW) - logz) for opt in options}
         stop = sum(math.exp(logits[t] - logz) for t in stop_ids if t in logits)
         outside = max(0.0, 1.0 - sum(openp.values()))
-        out[name] = {"type": q["type"], "options": options, "closed": closed, "open": openp,
-                     "stop": stop, "outside": outside,
-                     "model_picked": top in set(ftids.values())}
+        out[name] = apply_temperature({"type": q["type"], "options": options, "closed": closed,
+                                       "open": openp, "stop": stop, "outside": outside,
+                                       "model_picked": top in set(ftids.values())}, temperature)
     return out
 
 
