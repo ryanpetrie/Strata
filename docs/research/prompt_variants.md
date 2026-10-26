@@ -1,8 +1,10 @@
 # Per-type prompt variants: a pre-registered ablation
 
-**Status:** design, written 2026-10-21. **Nothing has been run.** No engine was
-started for this document and no request went to a live server. Every number below
-is either **measured** (and says where) or **static analysis** (and says so).
+**Status:** the design is written and **the mechanism is built** (2026-10-21).
+Nothing has been **run**: no engine was started for this document, no request went
+to a live server, and no variant has been measured. Every number below is either
+**measured** (and says where) or **static analysis** (and says so). The
+implementation is in §4.4, and what it changed about the design is in §4.6.
 
 This is the plan for roadmap item 1.5
 ([decision_policy_roadmap.md](decision_policy_roadmap.md) §1.5). It is a plan, not
@@ -50,10 +52,12 @@ places to fix that.
    gives one **diagnostic probe** that is not a shipping candidate.
 4. §4 is the mechanism: a per-type variant in the launch config, absent = today's
    bytes exactly, an unknown value refused at start-up, the variant reported in
-   `/v1/status`. With the file:line map. It is **not implemented here**.
+   `/v1/status`. With the file:line map. **It is built** (§4.4); it is not
+   measured.
 5. §5 is the measurement design: the design set, the measured noise floor, the
    power arithmetic, the GPU budget, and the yardsticks.
 6. §6 is the **pre-registered decision rule**, written before the run.
+7. §4.5 is the probe's usage, and §4.6 is what the implementation changed.
 
 ---
 
@@ -68,7 +72,7 @@ The text is the text; nothing is paraphrased.
 
 ### 1.1 The parts that never change
 
-**The system turn** (`serve/systemone.py:57-61`), verbatim, and the same for every
+**The system turn** (`serve/systemone.py:86-90`), verbatim, and the same for every
 question type:
 
 ```
@@ -79,7 +83,7 @@ Copy each question name exactly. Do not repeat the question, the type, or the in
 - A score question takes exactly one level name, copied exactly.
 ```
 
-**The user turn's preamble** (`serve/systemone.py:259-262`), the same for every
+**The user turn's preamble** (`serve/systemone.py:373-376`), the same for every
 question type:
 
 ```
@@ -91,7 +95,7 @@ Answer the question on its own line as `name: answer`, and nothing else. Copy ea
 Questions:
 ```
 
-(The shared prompt path, `render_prompt` at `serve/systemone.py:227-246`, has the
+(The shared prompt path, `render_prompt` at `serve/systemone.py:333-358`, has the
 same preamble with "every question" and a closing `Valid line starts:` line. It is
 not the default path; the default answers one question per prompt, so every answer
 carries the model's own probability.)
@@ -314,7 +318,7 @@ Questions:
 ### 1.5 The whole prompt, once
 
 The user turn above is wrapped in the chat template and the assistant's turn is
-prefilled with the answer line's prefix (`serve/server.py:4638`, the prefix is
+prefilled with the answer line's prefix (`serve/server.py:4650`, the prefix is
 `f"{name}:"`). The pool's noul, whole:
 
 ```
@@ -491,7 +495,7 @@ the code says it cannot be:
 - `tools/decision_policy/logits_prob.py:152`: the reported noul value is
   `distribution["yes"]`, and the distribution's keys came from
   `option_names_for_question`. "yes" is "yes".
-- `serve/systemone.py:312-316` and `370-373`: the decode path maps the text
+- `serve/systemone.py:426-432` and `484-487`: the decode path maps the text
   "yes" to yes and "no" to no, the same way.
 
 And the stored run agrees with itself: over the 100 human-labelled noul items the
@@ -669,7 +673,7 @@ dataset's instruction, and the answer-line instruction
 **Two implementation notes that the text above makes plain.**
 
 - A noul item with **no** criteria prints only `  answer yes or no` today
-  (`serve/systemone.py:213`). So **N1, N3 and N4 are inert on half B** (the 250
+  (`serve/systemone.py:252`). So **N1, N3 and N4 are inert on half B** (the 250
   `paws` and `strategyqa` items): they rewrite or move the criteria line, and
   there is none. **N2 and N5 are not inert** - the answer line and the added
   rule are there for every noul item. That matters for the base-rate check:
@@ -723,58 +727,228 @@ same place, and it is read the same way.
 
 ### 4.2 The file:line map
 
-The line numbers are against this branch's `feat/p1a-prompt-design` (base
-`4bb9bcd8`). `serve/systemone.py` has not changed since the engine work; the
-server and the readout have, and the numbers below are the current ones.
+**As built** (2026-10-21, this branch). The line numbers are against
+`feat/p1a-prompt-design`; the base is `4bb9bcd8` plus the implementation commit.
 
-| file:line | what changes |
+| file:line | what it is now |
 |---|---|
-| `serve/systemone.py:203-224` | `_question_lines(name, q)` gains a `variant="base"` parameter. The per-type block (207-223) is the whole variant surface: the criteria line (209-210), `answer yes or no` (211 and 213), the choice's block (215-217), the score's block (219-222), and the answer-line instruction (223). The default arm must produce today's lines exactly |
-| `serve/systemone.py:227-246` | `render_prompt(state_text, questions)` (the shared path) gains a `variants=None` parameter, a mapping from the question's **type** to a variant name, defaulting to `base` for every type |
-| `serve/systemone.py:249-264` | `render_answer_prompt(state_text, name, q)` gains a `variant="base"` parameter and passes it down. The preamble (259-262) does not change: the variants live in the per-type lines only |
-| `serve/systemone.py:57-61` | `SYSTEM` does **not** change. A per-type system turn is a bigger change and is out of scope for item 1.5 (§2.3, point 6) |
-| `serve/server.py:8328-8359` | the **pattern to copy**: `systemone_temperatures(cfg)` is the config's `"systemone": {"temperature": {...}}` - one value per question type, the default when the block is absent, and a `ValueError` for an unknown type or an invalid value ("an invalid value is an error, not a silent default: a typo in a config must not quietly change what the endpoint reports"). The new `systemone_prompt_variants(cfg)` is the same shape for a **string** per type |
-| `serve/server.py:8311-8325` | `systemone_multi_mode(cfg)` is the other pattern: a plain value in the same block, refused when it is not one of the known ones |
-| `serve/server.py:3530-3533` | `Service` gains `self.systemone_prompt = {"noul": "base", "choice": "base", "score": "base"}` next to `systemone_enabled`, `systemone_diagnostics`, `systemone_multi` and `systemone_temperature` |
-| `serve/server.py:8725-8734` | the config plumbing: `svc.systemone_prompt = systemone_prompt_variants(cfg)` inside the same `try` / `except ValueError` / `SystemExit` that `systemone_multi` uses (8731-8734) and that `systemone_temperature` uses (8736), plus one `print` line naming the variants in force, like the ones at 8738-8746 |
-| `serve/server.py:4638-4640` | the single-question call site: `render_answer_prompt(state_text, name, q)` becomes `render_answer_prompt(state_text, name, q, self.systemone_prompt.get(q["type"], "base"))` |
-| `serve/server.py:4596-4597` | the shared-path call site: `render_prompt(state_text, questions)` becomes `render_prompt(state_text, questions, self.systemone_prompt)` |
-| `serve/server.py:4948-4954` | the `/v1/status` block gains `"prompt": dict(self.systemone_prompt)`, beside the `"temperature"` block that is already there |
-| `serve/test_systemone.py:128-188` | `RenderParse` is where the render is pinned (§4.3) |
-| `serve/test_systemone.py:399-413` | `ConfigFlag` is where the config resolution is pinned (§4.3) |
+| `serve/systemone.py:79-88` | `PROMPT_VARIANTS`: the registry. One list per question type, the name of every variant that type accepts. It is the only list, and the config reader and the renderer both read it, so they cannot drift |
+| `serve/systemone.py:232-271` | `_noul_lines(crit, variant)` -> (the lines in front of the header, the lines after it). The noul's six variants, each one axis |
+| `serve/systemone.py:273-288` | `_choice_lines(crit, variant)`: the choice's four variants |
+| `serve/systemone.py:290-309` | `_score_lines(q, variant)`: the score's four variants |
+| `serve/systemone.py:311-331` | `_question_lines(name, q, variant="base")`: assembles the question's lines, and **refuses an unknown variant** (a typo is an error, not a silent default) |
+| `serve/systemone.py:333-358` | `render_prompt(state_text, questions, variants=None)`: the shared path. `variants` maps a question **type** to a variant name; a type that is not in it is rendered on "base" |
+| `serve/systemone.py:360-377` | `render_answer_prompt(state_text, name, q, variant="base")`: the default path, one question per prompt |
+| `serve/systemone.py:86-90` | `SYSTEM`: **unchanged**. A per-type system turn is a bigger change and is out of scope for item 1.5 (§2.3, point 6) |
+| `serve/server.py:79` | `from serve.systemone import PROMPT_VARIANTS` |
+| `serve/server.py:8377-8405` | `systemone_prompt_variants(cfg)`: the config's `"systemone": {"prompt": {...}}`, in the shape of `systemone_temperatures` (8328-8359): the default when the block is absent, and a `ValueError` for an unknown type, an unknown variant name, a value that is not a string, or a block that is not an object |
+| `serve/server.py:3535` | `Service.systemone_prompt`: the resolved variants, next to `systemone_enabled`, `systemone_diagnostics`, `systemone_multi` and `systemone_temperature` |
+| `serve/server.py:4368-4379` | `Service._decision_prompt_variant(qtype)`: the call site's own rule - the question's **type** picks the variant, and a type that is not in the config is on "base". It sits beside `_decision_temperature`, the temperature's own rule |
+| `serve/server.py:8790-8798` | the config plumbing: the resolver inside the same `try` / `except ValueError` / `SystemExit` that `systemone_multi` and `systemone_temperature` use, plus the startup line that names the variants in force |
+| `serve/server.py:4966-4970` | the `/v1/status` block gains `"prompt": {...}`, beside the `"temperature"` block |
+| `serve/server.py:4651-4654` | the single-question call site: the variant comes from `_decision_prompt_variant` |
+| `serve/server.py:4607-4610` | the shared-path call site: the whole map goes in |
+| `serve/test_systemone.py:511-800` | `PromptVariants`: the byte-identity tests and the per-variant tests |
+| `serve/test_systemone.py:801-870` | `PromptVariantConfig`: the config reader, the status, and the call site's rule |
 
-**The variant names.** One list per type, and the list lives next to the renderer
-so the two cannot drift:
+**The variant names**, exactly as they are in the registry:
 
 ```
-noul:   base, criteria-order, answer-order, rule-form, criteria-first, decision-rule
+noul:   base, criteria-order, answer-order, rule-form, criteria-first, decision-rule, swap
 choice: base, options-order, evidence, one-best, options-first
 score:  base, direction, wording, levels-first, full-scale
 ```
 
-`swap` (the probe, §3.4) is **not** in the `noul` list: it is a probe, and it
-must not be reachable from a launch config. If the probe is run, it is run from a
-branch, and the branch is not merged.
+**`swap` IS in the noul's list, and that is a change from the design.** The design
+said the probe "must not be reachable from a launch config" and would be run from a
+branch that is not merged. The implementation needs the opposite: the probe is a
+measurement somebody else runs later, against a **live server**, and the variant is
+a launch-config value, so the probe's arm has to be startable. `swap` is therefore
+a known name, it is in the registry beside the others, and it is marked in the
+code and in this document as **the probe, not a shipping candidate**. Nothing
+else changed: the six shipping candidates are the same five plus the base.
 
 ### 4.3 The tests
 
-Four things have to be pinned, and the first one is a gap in the current tests.
+Four things have to be pinned, and the first one was a gap in the tests that were
+there. All four are now written (§4.4).
 
-1. **The base arm is byte-identical.** The current render test only checks
+1. **The base arm is byte-identical.** The render test that was there only checks
    `assertIn` for a list of needles (`serve/test_systemone.py:141-150`), so a
    change to the base template's wording would not fail anything. The new test
-   must hold the **whole** expected prompt for one question of each type as a
-   literal string and compare it exactly, with the variant absent and with
-   `variant="base"`. This is the test that makes "absent = today's bytes" true.
-2. **Each variant renders its own lines and not the base's.** For every variant
-   name, the rendered prompt contains the variant's line and does not contain the
-   base line it replaced.
+   holds the **whole** expected prompt for one question of each type as a literal
+   string and compares it exactly, with the variant absent and with
+   `variant="base"`.
+2. **Each variant renders its own lines and not the base's.** The new tests pin
+   the **whole line list** of the question for every variant, so a variant that
+   changed one line too many would fail.
 3. **The config resolver.** Absent -> all `base`; the three types; an unknown
    type refused; an unknown variant name refused; a `prompt` block that is not a
-   dict refused. The shape of `systemone_multi_mode`'s tests
-   (`serve/test_systemone.py:402-413`) and of `systemone_temperatures`'s.
-4. **The status.** `/v1/status` carries the resolved variants, and carries
-   `base` for every type when the block is absent.
+   dict refused; a value that is not a name refused.
+4. **The status.** `/v1/status` carries the resolved variants, and carries `base`
+   for every type when the block is absent.
+
+### 4.4 The implementation (2026-10-21)
+
+**What is built.** The mechanism of §4.1-§4.3, in full:
+
+- `serve/systemone.py`: the registry `PROMPT_VARIANTS` (`:79`), the three per-type
+  line builders (`:232`, `:273`, `:290`), the assembler `_question_lines`
+  (`:311`), and the two renderers (`:333`, `:360`). All **fourteen** variants are
+  implemented: the noul's N1-N5 and the probe P1, the choice's C1-C4 and the
+  score's S1-S4. The mechanism generalised cleanly to the choice and the score -
+  the same shape (a lead block, a body, a suffix) carries all three types - so all
+  three are there, each with its own one-axis test.
+- `serve/server.py`: the config reader `systemone_prompt_variants` (`:8377`), the
+  `Service` attribute (`:3535`), the call site's rule `_decision_prompt_variant`
+  (`:4368`), the start-up plumbing and the startup line (`:8790-8798`), the
+  `/v1/status` field (`:4966-4970`) and the two call sites (`:4607-4610`,
+  `:4651-4654`).
+- `serve/test_systemone.py`: `PromptVariants` (`:511-800`) and
+  `PromptVariantConfig` (`:801-870`).
+- `tools/decision_policy/prompt_probe.py`: the probe (§4.5).
+- `tools/decision_policy/prompt_design_set.py`: the design set's composition.
+- `tools/decision_policy/test_prompt_probe.py`: the probe's own arithmetic.
+
+**The byte-identity test, and what it proves.** The expected strings in
+`PromptVariants.BASE_*` were taken from `serve/systemone.py` **as it was before
+this feature** (the commit `f331cb8a`), not from the new code: so they are the
+bytes the endpoint has always sent. The test then asserts that the renderer
+produces exactly those bytes with the variant absent, with `variant="base"`, and
+with the config reader's resolved variants, for the noul, the choice, the score,
+the noul without criteria, and the shared prompt.
+
+```
+python -m unittest serve.test_systemone -v
+...
+Ran 62 tests in 0.404s
+OK
+```
+
+and the new tests alone:
+
+```
+python -m unittest serve.test_systemone.PromptVariants serve.test_systemone.PromptVariantConfig -v
+Ran 18 tests in 0.047s
+OK
+```
+
+**The per-variant tests.** Each variant's **whole line list** is pinned, so a
+variant that changed one line too many fails. `test_the_noul_variants`,
+`test_the_choice_variants` and `test_the_score_variants` cover the fourteen
+variants; `test_a_noul_without_criteria` covers the ones that are inert when the
+question has no criteria (N1, N3, N4) and the ones that are not (N2, N5, P1);
+`test_an_unknown_variant_is_refused` covers the refusal, including a variant that
+belongs to another type; `test_the_service_picks_the_variant_by_type` covers the
+call site's own rule.
+
+**The whole server suite.** `python -m unittest discover -s serve -p "test_*.py"`
+on the final tree: **1,053 tests, OK, 20 skipped, no failures.**
+
+One test in that suite is flaky: `test_responses.NoLeakedSampler.test_server_close_ends_the_sampler`
+counts the asyncio event-loop threads, so it depends on what ran before it. It
+failed on two earlier runs of this tree and **it also fails on the base commit**
+(1,035 tests, the same one failure), and it passes in isolation both before and
+after this change. It is not caused by the variants; it is a pre-existing
+order-dependent test, and the final run of the whole suite is green.
+
+### 4.5 The probe's usage
+
+`tools/decision_policy/prompt_probe.py` is the P1 measurement: the noul's
+template mirrored, on the design set's half A.
+
+**The design set, first** (no server, no engine, no GPU):
+
+```sh
+python tools/decision_policy/prompt_design_set.py --items <the pool's p1b_pool.jsonl>
+```
+
+It prints the composition: the noul's 500 items in two halves - **half A**, the
+250 `civil_comments` items with a human distribution (the human's mean P(yes)
+0.1096, 174 of them at exactly 0) and a 9.2% gold "yes" rate, and **half B**, the
+250 `paws` and `strategyqa` items at a 45.2% gold "yes" rate and no criteria.
+
+**The dry run** (prints the prompt the endpoint would send, and the item count;
+sends nothing):
+
+```sh
+python tools/decision_policy/prompt_probe.py --items <p1b_pool.jsonl> --out <swap.jsonl> --dry-run
+```
+
+**The run.** The variant is a launch-config value, so the arm is a server start.
+The server must be started with
+
+```json
+"systemone": {"enabled": true, "diagnostics": true, "prompt": {"noul": "swap"}}
+```
+
+and then:
+
+```sh
+python tools/decision_policy/prompt_probe.py \
+  --items <p1b_pool.jsonl> --out <swap.jsonl> \
+  --base <the pool run's predictions.jsonl> --report <report.md>
+```
+
+**The launch config is per machine and is not in the repository** (it is
+`.gitignore`d, `/strata-*.json`), so on a fresh checkout the script says so and
+uses the default port with `STRATA_API_KEY`; pass `--config <this machine's
+config>` for the port and the key. The script is resume-safe, like the other
+harnesses: the ids already in `--out` are skipped, so an interrupted run
+continues.
+
+**The base arm is free, if the pool run left its artifacts.** Roadmap item 1.1b's
+pool run is the base arm: the pool at T = 1, the direct readout, today's template.
+`--base` points at that run's predictions file and the probe runs the **swap arm
+only** and computes the gap against the stored base. **On this machine those
+artifacts are not there yet** - the data root holds the pool's *items* file and no
+predictions from a pool run - so the fallback applies: run the base arm first
+(with the server on the default template, no `"prompt"` key), and then point
+`--base` at it:
+
+```sh
+# 1. the server on the default template
+python tools/decision_policy/prompt_probe.py --items <p1b_pool.jsonl> --out <base.jsonl> --arm base
+# 2. restart the server with "prompt": {"noul": "swap"} and run the probe
+python tools/decision_policy/prompt_probe.py --items <p1b_pool.jsonl> --out <swap.jsonl> \
+  --base <base.jsonl> --report <report.md>
+```
+
+**What the report says.** The three readouts of §3.4 - the **flip rate** (the
+share of items whose pick changes between the arms; the engine's own wobble flips
+about 1 in 100), the **swap gap** `d = mean(P_yes(base) - P_yes(swap))`, and the
+**AUC** of P(yes) against the humans' hard label in each arm - and the
+pre-registered reading of them (§6): a swap gap below 0.05 with the flip rate at
+the wobble means the order axis is dead.
+
+The probe's arithmetic has its own tests
+(`python -m unittest tools.decision_policy.test_prompt_probe -v`, 11 tests, all
+passing), so the three readouts and the reading of them are checked without a
+server. The whole CLI was exercised end to end without a server as well: with the
+output file already holding every id (the resume-safe path sends nothing), the
+script does the comparison, writes the report and exits 0.
+
+### 4.6 What changed from the design
+
+Three things, and one of them is a defect the implementation found.
+
+1. **`swap` is now a launch-config name** (§4.2). The design said the probe must
+   not be reachable from a config; the implementation needs it to be, because the
+   probe is a run somebody else does later against a live server. The probe is
+   marked as such in the code and here.
+2. **The choice's and the score's arms are implemented** (C1-C4, S1-S4), not only
+   the noul's. The mechanism generalised cleanly, and §6's last paragraph says the
+   choice's and the score's arms need their own pre-registration before they are
+   run; that is still true, and nothing has been run.
+3. **N5's rule line is applied to a noul with no criteria too.** The design's
+   §3.6 says N5 is not inert on half B, and the implementation follows it. **The
+   wording is a defect the implementation found**: the line says "answer yes only
+   when the state satisfies the *\"yes\" criterion*", and a noul without criteria
+   has no such criterion - the words have no referent. The one-line fix, before a
+   run, is to make N5 inert without criteria (which would also mean half B cannot
+   catch N5's base-rate shift, so §6(c) would lean on the 235 for it) or to
+   reword the line. **The design's text is kept as written, so the pre-registration
+   is not silently changed; the decision is the operator's.**
 
 ---
 
@@ -1108,7 +1282,7 @@ Two smaller notes.
   is the dataset's**. The server may change the frame around it (the connective,
   the order, the position) but not the criteria, without changing the question's
   meaning. §1.5's phrase "the criteria wording" should be read as the frame.
-- **A dead default, worth knowing.** `serve/systemone.py:209-210` prints
+- **A dead default, worth knowing.** `serve/systemone.py:243-244` prints
   `crit.get("true", "yes")` and `crit.get("false", "no")`, so a request with only
   one side would print `no means "no"`. **No item in any of the three sources has
   a half-specified criteria** (measured: 0 of the 791 noul items across the
