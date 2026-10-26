@@ -39,6 +39,16 @@ in the type's natural unit:
          be attached to the label's coordinate.  That is why the choice's b below is
          not a parameter at all.)
 
+         THE MEASUREMENT'S CORRECTION TO THAT CHOICE OF UNIT (the report's "the
+         score's configs"): the raw level index is NOT commensurable across the K the
+         type spans (3, 4, 5 and 6 on these populations), so a tilt fitted on a
+         3-level config moves a 5-level question by (K-1) times as much of its scale;
+         and the configs disagree in SIGN at T = 1, so no single per-type location -
+         normalized or not - can serve them.  The score's location is per config, not
+         per type.  The map was pre-registered with the level index and is reported as
+         fitted; the normalized position k/(K-1) is the corrected unit and a per-config
+         location is the next map, neither of which this item runs.
+
   choice s(l) = 0 for every option.  With no order among the options there is no
          coordinate to attach a shift to, and a constant shift over all options is
          cancelled by the normalizer: **a shift is not identified for the choice**.
@@ -128,9 +138,7 @@ import argparse
 import json
 import math
 import random
-import subprocess
 import sys
-import tempfile
 from datetime import date as _date
 from pathlib import Path
 
@@ -514,7 +522,15 @@ def bias(records: list[dict], dists: dict[str, dict], qtype: str) -> float | Non
 
 def type_metrics(records: list[dict], dists: dict[str, dict], qtype: str) -> dict:
     """The four numbers the brief asks for, on the type's items that carry humans,
-    plus discrimination on every item of the type."""
+    plus discrimination on every item of the type and the level's own values.
+
+    `mean` and `human_mean` are in the type's unit: P(yes) for the noul, the expected
+    level for the score, the top-label mass for the choice.  `bias` is their difference
+    (the mean signed difference of §19.6).  For the score the expected level's distance
+    to the GOLD is reported too, because it is not the same target as the humans' mean:
+    the humans are more uncertain than the gold, so fitting their mean is not fitting
+    the answer.
+    """
     sub = [r for r in records if r["type"] == qtype]
     with_target = [r for r in sub if r.get("target")]
     tvds = [tvd(dists[r["id"]], r["target"], r["labels"]) for r in with_target]
@@ -523,8 +539,22 @@ def type_metrics(records: list[dict], dists: dict[str, dict], qtype: str) -> dic
                          [1.0 if r["gold"] == "yes" else 0.0 for r in sub])
     else:
         auc = auc_rank(sub, dists)
-    return {"n": len(sub), "with_human_distribution": len(with_target),
-            "mean_tvd": mean(tvds), "bias": bias(records, dists, qtype), "auc": auc}
+    if qtype == "noul":
+        values = [float(dists[r["id"]]["yes"]) for r in with_target]
+        humans = [float(r["target"].get("yes", 0.0)) for r in with_target]
+    elif qtype == "score":
+        values = [expected_level(dists[r["id"]], r["labels"]) for r in with_target]
+        humans = [expected_level(r["target"], r["labels"]) for r in with_target]
+    else:
+        values = [top_mass(dists[r["id"]]) for r in with_target]
+        humans = [top_mass(r["target"]) for r in with_target]
+    out = {"n": len(sub), "with_human_distribution": len(with_target),
+           "mean_tvd": mean(tvds), "bias": bias(records, dists, qtype), "auc": auc,
+           "mean": mean(values), "human_mean": mean(humans)}
+    if qtype == "score":
+        out["expected_level_gap_to_gold"] = mean(
+            [expected_level(dists[r["id"]], r["labels"]) - float(r["gold"]) for r in sub])
+    return out
 
 
 def paired_tvd_bootstrap(records: list[dict], arm_a: dict[str, dict], arm_b: dict[str, dict],
@@ -581,6 +611,52 @@ def arm_distributions(records: list[dict], params: dict[str, dict],
     return out
 
 
+def accuracy(records: list[dict], dists: dict[str, dict], qtype: str) -> float | None:
+    """The scorer's own decision rule for the type: the argmax (smallest label on a
+    tie, as score.py does), or P(yes) >= 0.5 for the noul."""
+    sub = [r for r in records if r["type"] == qtype]
+    if not sub:
+        return None
+    right = 0
+    for r in sub:
+        probs = dists[r["id"]]
+        if qtype == "noul":
+            pick = "yes" if float(probs["yes"]) >= 0.5 else "no"
+        elif qtype == "choice":
+            pick = max(sorted(r["labels"]), key=lambda lab: float(probs.get(lab, 0.0)))
+        else:
+            pick = str(max(range(len(r["labels"])),
+                           key=lambda i: (float(probs.get(r["labels"][i], 0.0)), -i)))
+        right += 1 if pick == r["gold"] else 0
+    return right / len(sub)
+
+
+def config_metrics(records: list[dict], dists: dict[str, dict], qtype: str) -> dict:
+    """The type's metrics per config, because the score's location error is NOT one
+    direction: the configs disagree (see the report's 'the score's configs')."""
+    groups: dict[str, list[dict]] = {}
+    for r in records:
+        if r["type"] != qtype:
+            continue
+        cfg = r["task"].get("config") or r["task"].get("use_case") or "?"
+        groups.setdefault(cfg, []).append(r)
+    out = {}
+    for cfg, sub in sorted(groups.items()):
+        with_target = [r for r in sub if r.get("target")]
+        entry = {"n": len(sub), "k": len(sub[0]["labels"]),
+                 "with_human_distribution": len(with_target),
+                 "accuracy": accuracy(sub, dists, qtype)}
+        if with_target:
+            entry["mean_tvd"] = mean([tvd(dists[r["id"]], r["target"], r["labels"])
+                                      for r in with_target])
+            entry["bias"] = bias(with_target, dists, qtype)
+        if qtype == "score":
+            entry["expected_level_gap_to_gold"] = mean(
+                [expected_level(dists[r["id"]], r["labels"]) - float(r["gold"]) for r in sub])
+        out[cfg] = entry
+    return out
+
+
 def score_population(scorer_path: Path, records: list[dict],
                      dists_by_arm: dict[str, dict[str, dict]]) -> dict:
     """The official scorer's numbers for every arm of one population, and the
@@ -590,7 +666,8 @@ def score_population(scorer_path: Path, records: list[dict],
     for name, dists in dists_by_arm.items():
         scored = tp.score_with_official_scorer(scorer_path, records, dists)
         metrics = {q: type_metrics(records, dists, q) for q in TYPES}
-        out["arms"][name] = {"scorer": scored, "metrics": metrics}
+        by_config = {q: config_metrics(records, dists, q) for q in TYPES}
+        out["arms"][name] = {"scorer": scored, "metrics": metrics, "by_config": by_config}
         if name != base_name:
             out["arms"][name]["paired_tvd"] = {
                 q: paired_tvd_bootstrap(records, dists_by_arm[base_name], dists, q)
@@ -993,6 +1070,15 @@ def apply_rule(populations: dict, fits: dict, primary: str, pool_counts: dict) -
         ships = without_noul
     else:
         ships = []
+    # the noul's separate judgement: its own 235 competence must not fall either, even
+    # if the population's overall Capability would survive its loss
+    noul = rows["noul"]
+    noul_own_235 = (noul["od235_competence_before"] is not None
+                    and noul["od235_competence_after_own_map"] is not None
+                    and noul["od235_competence_after_own_map"]
+                    >= noul["od235_competence_before"])
+    if "noul" in ships and not noul_own_235:
+        ships = [q for q in ships if q != "noul"]
     rows["_overall"] = {
         "passing_types": passing,
         "od235_capability_t1": cap_t1,
@@ -1008,13 +1094,15 @@ def apply_rule(populations: dict, fits: dict, primary: str, pool_counts: dict) -
         "passing_a_and_b": passing,
         "c_pass": c_pass,
         "c_pass_without_noul": c_pass_without_noul,
+        "noul_own_235_competence_holds": bool(noul_own_235),
         "ships": ships,
         "noul_judged_separately": True,
         "note": ("(c) is a population-level guard: the Capability of the arm made of the "
                  "types that pass (a) and (b). A type that passes (a)/(b) but whose "
                  "addition costs the 235 its Capability does not ship. The noul is judged "
                  "separately: if the set fails (c), it is removed first and (c) is "
-                 "re-checked for the others (§20.2)."),
+                 "re-checked for the others, and its own 235 competence must hold "
+                 "(§20.2)."),
     }}
 
 
@@ -1166,6 +1254,42 @@ def render(out: dict) -> str:
                             % (qtype, signed(v["mean"]), signed(v["p025"]),
                                signed(v["p975"]), v["share_better"]))
                 add("")
+    add("## The score's configs, and the unit of its location")
+    add("")
+    add("The score type is the one the tilt was meant for, and the per-config table is why")
+    add("the type is the wrong unit for it.  `level - gold` is the mean signed distance of")
+    add("the expected level to the GOLD level (the measure of §22.5), in levels; the")
+    add("humans' own expected level is not the gold's either, and a single per-type")
+    add("location cannot serve configs that disagree in sign.")
+    add("")
+    add("| population | config | K | n | level - gold, T = 1 | level - gold, affine | accuracy T = 1 | accuracy affine | TVD T = 1 | TVD affine |")
+    add("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+    for name in ("pool", "jevtest"):
+        pop = out["populations"][name][out["objective"]]["arms"]
+        arm = "affine (out of fold)" if name == "pool" else "affine (all three)"
+        cfgs = pop[arm]["by_config"]["score"]
+        for cfg, c in cfgs.items():
+            c1 = pop["T = 1"]["by_config"]["score"].get(cfg, {})
+            add("| %s | %s | %d | %d | %s | %s | %s | %s | %s | %s |"
+                % (name, cfg, c["k"], c["n"],
+                   signed(c1.get("expected_level_gap_to_gold")),
+                   signed(c.get("expected_level_gap_to_gold")),
+                   fmt(c1.get("accuracy"), 2), fmt(c.get("accuracy"), 2),
+                   fmt(c1.get("mean_tvd")), fmt(c.get("mean_tvd"))))
+    add("")
+    add("The tilt was fitted on the only score config the pool carries a human")
+    add("distribution for, `measuring_hate_speech` (K = 3), and it fixes that config on")
+    add("every measure.  The other configs have K = 5 (and 6 on the test), so a tilt of")
+    add("0.54 in log-odds **per level** is about 1.1 levels of expected level on a 5-level")
+    add("question and 0.36 on a 3-level one: the raw level index is not commensurable")
+    add("across the K the type spans.  And the magnitude is not the whole story: at T = 1")
+    add("the 5-level configs disagree in **sign** (`helpsteer2_helpfulness` is 0.39 levels")
+    add("*below* the gold and `helpsteer2_verbosity` 0.51 *above* it on the pool), so even a")
+    add("correctly scaled tilt could not serve both.  **The score's location error is")
+    add("per config, not per type** - the aggregate +0.14 of §22.5 is two opposite errors")
+    add("cancelling.  The normalized position k/(K-1) would fix the unit, not the sign; a")
+    add("per-config location is a different item.")
+    add("")
     add("## The control: the TVD objective")
     add("")
     add("The same map, fitted on the mean TVD to the human distribution instead of the")
@@ -1255,7 +1379,14 @@ def render(out: dict) -> str:
     add("  has no human distribution, so the fit cannot see its 45.2% base rate - that is")
     add("  what the 235 and the test sample are for.")
     add("- **The choice and the score are judged on fewer human items in the pool** (250")
-    add("  each), and the score's tilt is fitted on 250 items of three configs only.")
+    add("  each), and the score's tilt is fitted on 250 items of ONE config only")
+    add("  (`measuring_hate_speech`, K = 3): the other two score configs of the pool")
+    add("  carry no human distribution, which is the cause of the finding below.")
+    add("- **The score's location is per config, not per type** (see the per-config table")
+    add("  above): the type spans K = 3 to 6, the raw level index is not commensurable")
+    add("  across K, and the configs disagree in sign at T = 1.  The tilt as fitted is one")
+    add("  number for a family that does not share a location, and its failure is that,")
+    add("  not the model's.")
     add("- **One map per type is one map for a whole family of questions.**  A per-question")
     add("  map would fit better and would not be honest.")
     add("- **No new dependency, no engine, no server, no GPU.**  Everything above comes")
