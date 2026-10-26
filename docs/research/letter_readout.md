@@ -214,6 +214,46 @@ The flag stays (it is faster and simpler where it works, and on the yes/no quest
 it is closer to the humans), the default stays the direct readout, and the next steps
 are the >26-options fix and a paired re-measurement on both populations.
 
+## The >26-option fallback: the rule (2026-10-23, written before the analysis)
+
+**The question.** The letter readout's jev-bench loss (-6.9 Capability) has two candidate
+causes: the 144 of 683 questions with more options than letters (answered by the decode
+path, whose 1.0/0.0 distribution calibrates at 18.1), or the letter reading itself (the
+539 questions it serves already lose 4 Capability points, measured in the section above).
+This settles how much of the loss is the fallback. It is a decision aid, not a new
+readout: no default changes on the result.
+
+**The fix under test.** A request with a question that has more options than letters is
+rendered and answered on the **direct** path from the start - the same prompt, the same
+first-token reading, the same trie walk - instead of being lettered and falling back to
+decode. A request that mixes a letterable question with an unletterable one goes direct as
+a whole (the endpoint answers one question per prompt by default, so this is the rare
+case). This is a small change to `serve/server.py`'s choice of readout; the letter module
+is not touched.
+
+**Why this needs no new engine run.** Under the fix, an unletterable question's request is
+byte-identical to the direct arm's request for the same item, so its reading is the direct
+arm's reading. The fixed arm's predictions are therefore exactly: the **stored direct
+run** for the 144 unletterable items, and the **stored letter run** for the other 539.
+That recombination is the measurement, and it is paired item by item.
+
+**The arms.** (1) the direct readout, stored (`jevbench_sample3_predictions.jsonl`);
+(2) the letter readout, stored (`jevbench_sample3_letter_predictions.jsonl`); (3)
+letters + direct fallback, recombined as above. Same items, same order, same scorer.
+
+**The rule.** "The fallback was the loss" only if the recombined arm's **official
+Capability** is within **1.8 points** of the direct arm's (the programme's measured
+run-to-run spread) **and** its mean **TVD to the humans** on the 280 items with a human
+distribution is no worse by more than **0.005**. Anything larger on either means the loss
+is the letter reading, and the 539 served items' own loss stands. The per-type numbers and
+the two subsets are reported either way.
+
+**What the result decides.** If the fallback is the loss, the letter readout's flag gets
+the fix and a re-measurement before any default question. If it is not, the flag stays
+opt-in and unused (or is deleted) as `letter_readout.md`'s recommendation already says -
+and the fix is still worth having, because a decode-path answer with a 1.0/0.0
+distribution is wrong for any caller that reads probabilities, whatever the arm is called.
+
 ## How to measure it again
 
 Both arms run over the same 235 ids, from the same build, on a freshly restarted
