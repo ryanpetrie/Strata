@@ -88,6 +88,48 @@ def end_of_turn_ids(tok) -> set[int]:
     return _ids(tok)
 
 
+def first_token_plan(questions: list[tuple[str, dict]], tok, prefix: str = ""):
+    """-> [(name, question, options, {option: first_token_id})] per question, or None.
+
+    None when two options of one question share their first token: the first-token
+    logits cannot separate them, so the question needs the chain rule (or the decode
+    path).  The plan is what the readings are computed from, and the reason a plan
+    does not exist is what the diagnostics report.
+    """
+    per_question = []
+    for name, q in questions:
+        options = option_names_for_question(q)
+        ftids = first_token_ids(options, tok, prefix)
+        # Collision check: two options with the same first token
+        if len(set(ftids.values())) != len(ftids):
+            return None
+        per_question.append((name, q, options, ftids))
+    return per_question
+
+
+def fallback_reason(questions: list[tuple[str, dict]], logits: dict[int, float], tok,
+                    prefix: str = "", logz: float | None = None) -> str:
+    """Why the first-token lookup cannot answer this question, in a few words.
+
+    The reason is what tells the two ways of failing apart: "collision" means the
+    options share a first token and the chain rule would separate them, while
+    "outside the window" or "the model wanted something else" mean the question needs
+    the decode path.  It is a diagnostic, so it never changes the answer.
+    """
+    plan = first_token_plan(questions, tok, prefix)
+    if plan is None:
+        return "collision: two options share their first token"
+    if not logits:
+        return "no logits from the engine"
+    for name, q, options, ftids in plan:
+        missing = [o for o in options if ftids[o] not in logits]
+        if missing:
+            return f"outside the window: {missing[0]!r} is not in the engine's top-k"
+    if max(logits, key=lambda t: logits[t]) not in {t for _, _, _, f in plan for t in f.values()}:
+        return "the model's top token is not one of the options"
+    return "no reason: the readings should have been computed"
+
+
 def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float], tok,
                        prefix: str = "", logz: float | None = None) -> dict[str, dict] | None:
     """-> {question_name: reading} or None to fall back to the decode path.
@@ -116,13 +158,10 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
     tokens collide (two options sharing a first token cannot be separated by first-token
     logits alone).
     """
-    per_question = []
-    for name, q in questions:
-        options = option_names_for_question(q)
-        ftids = first_token_ids(options, tok, prefix)
-        # Collision check: two options with the same first token
-        if len(set(ftids.values())) != len(ftids):
-            return None
+    per_question = first_token_plan(questions, tok, prefix)
+    if per_question is None:
+        return None
+    for name, q, options, ftids in per_question:
         # Missing from top-k check
         for tid in ftids.values():
             if tid not in logits:
@@ -135,7 +174,6 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
         # writes "0.7") on the decode path, where the number can be read.
         if max(logits, key=lambda t: logits[t]) not in set(ftids.values()):
             return None
-        per_question.append((name, q, options, ftids))
 
     if logz is None:
         # the engine reported no normalizer: normalize over the tokens it did send

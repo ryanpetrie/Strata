@@ -177,6 +177,24 @@ class Readings(unittest.TestCase):
     def test_missing_falls_back(self):
         self.assertIsNone(lft.first_token_probs(self.qs, self._logits({"a": 2.0}), self.tok, PREFIX))
 
+    def test_the_fallback_reason_says_which_way_it_fell_back(self):
+        # the two failures mean different things: a collision is what the chain rule
+        # would fix, a missing token is not
+        _, qs = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"rule_1": None, "rule_2": None}}}})
+        self.assertIn("collision", lft.fallback_reason(qs, {1: 2.0}, self.tok, PREFIX))
+        self.assertIn("outside the window",
+                      lft.fallback_reason(self.qs, self._logits({"a": 2.0}), self.tok, PREFIX))
+        stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        logits[stop_id] = 5.0
+        self.assertIn("top token", lft.fallback_reason(self.qs, logits, self.tok, PREFIX))
+
+    def test_the_fallback_reason_is_none_when_the_readings_exist(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        self.assertIsNotNone(lft.first_token_probs(self.qs, logits, self.tok, PREFIX))
+        self.assertIn("no reason", lft.fallback_reason(self.qs, logits, self.tok, PREFIX))
+
     def test_noul(self):
         _, qs = sysone.validate_request({"state": "x", "questions": {
             "q": {"type": "noul", "instructions": "Is it?"}}})
