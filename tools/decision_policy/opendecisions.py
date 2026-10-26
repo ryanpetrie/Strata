@@ -264,6 +264,18 @@ def main() -> int:
                         usage = body.get("usage") or {}
                         record["prompt_tokens"] = usage.get("prompt_tokens")
                         record["cached_tokens"] = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+                        # both readings of the confidence, when the server sent them (the
+                        # single-question path): the closed one (renormalized over the
+                        # options) and the open one (the model's own probability), with
+                        # the mass it put on ending the turn and on everything else
+                        diag = (body.get("diagnostics") or {}).get(name)
+                        if diag:
+                            record["closed_confidence"] = diag.get("closed_confidence")
+                            record["open_confidence"] = diag.get("open_confidence")
+                            record["stop_probability"] = diag.get("stop")
+                            record["outside_probability"] = diag.get("outside")
+                            record["open_probs"] = diag.get("open")
+                            record["fast_path"] = bool(body.get("calibrated"))
                         n_ok += 1
                     except (KeyError, TypeError, ValueError) as e:
                         record["predicted"] = False
