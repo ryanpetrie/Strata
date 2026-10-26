@@ -149,6 +149,9 @@ user's authorization. Printed configuration and a previous vendor test are not a
 - Use the actual API key when enabled. Tool identifiers and limits: [connection guide](TERMINAL_LAUNCH.md#connect-your-apps-strata-connect).
 - Flash-Next's template defaults to thinking on with `xhigh` effort; `high` maps to `xhigh`. Requests, shared Chat
   settings and run-config settings can override defaults. Do not assert a sampling configuration without inspecting it.
+- The server's browser page carries a **Decide** tab when the decision endpoint is on
+  (`"systemone": {"enabled": true}`): it asks the model a question about a state and shows the answer with the numbers
+  behind it.
 
 ## 7. Handoff, update or stop
 
