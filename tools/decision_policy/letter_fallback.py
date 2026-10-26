@@ -40,7 +40,8 @@ def read_jsonl(path: Path) -> list[dict]:
 
 
 def load(path: Path) -> dict[str, dict]:
-    return {r["id"]: r for r in read_jsonl(path)}
+    """The predictions file: {id: {"probs": {...}}}, as every harness writes it."""
+    return {r["id"]: r["probs"] for r in read_jsonl(path)}
 
 
 def n_options(item: dict) -> int:
@@ -72,10 +73,9 @@ def tvd(p: dict, h: dict) -> float:
     return 0.5 * sum(abs(float(p.get(k, 0.0)) - float(h.get(k, 0.0))) for k in keys)
 
 
-def correctness(item: dict, pred: dict) -> int | None:
+def correctness(item: dict, probs: dict) -> int | None:
     """1/0 when the item has a hard label, else None."""
     q = item["question"]
-    probs = pred["probabilities"]
     if q["type"] == "choice":
         pick = max(probs, key=lambda k: float(probs[k]))
         return 1 if pick == str(item.get("expected")) else 0
@@ -95,16 +95,15 @@ def subset_stats(ids: list[str], items: dict, arms: dict[str, dict]) -> dict:
         hits = [correctness(items[i], preds[i]) for i in good]
         hits = [h for h in hits if h is not None]
         out[f"acc_{tag}"] = (sum(hits) / len(hits)) if hits else None
-        conf = [(max(preds[i]["probabilities"].values()), correctness(items[i], preds[i]))
+        conf = [(max(preds[i].values()), correctness(items[i], preds[i]))
                 for i in good if correctness(items[i], preds[i]) is not None]
         out[f"ece_{tag}"] = ece(conf)
         soft = [i for i in good if items[i].get("target_probs")]
         out[f"n_soft_{tag}"] = len(soft)
-        out[f"tvd_{tag}"] = (sum(tvd(preds[i]["probabilities"], items[i]["target_probs"])
+        out[f"tvd_{tag}"] = (sum(tvd(preds[i], items[i]["target_probs"])
                                  for i in soft) / len(soft)) if soft else None
         if soft:
-            out[f"mass_{tag}"] = sum(max(preds[i]["probabilities"].values())
-                                     for i in soft) / len(soft)
+            out[f"mass_{tag}"] = sum(max(preds[i].values()) for i in soft) / len(soft)
     return out
 
 
@@ -161,7 +160,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:
         for i in common:
-            f.write(json.dumps({"id": i, "probs": fixed[i]["probabilities"]},
+            f.write(json.dumps({"id": i, "probs": fixed[i]},
                                ensure_ascii=False) + "\n")
 
     print(f"the jev-bench sample: {len(items)} items, {len(common)} in both arms")

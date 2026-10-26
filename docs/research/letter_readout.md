@@ -8,7 +8,9 @@ items. **On jev-bench - the sample that carries the human label distributions - 
 loses: 48.3 against 55.1, and the mean distance to the humans goes from 0.4439 to
 0.4688.** The OpenDecisions win does not generalize; the letter readout is not
 ready to be the default. The comparisons are in the companion doc's sections 20 and
-21.
+21. **2026-10-23: the >26-option fallback was fixed and measured** - it costs 3.8 of
+the 6.9 Capability points, and the readout itself costs the other 3.1; the flag stays
+opt-in and no default changes (the result is below).
 
 **Date:** 2026-10-21
 
@@ -211,8 +213,10 @@ from the gold.
 **The recommendation: do not ship it as the default.**  The exit criterion was met on
 the OpenDecisions sample; it does not survive the population with the humans' labels.
 The flag stays (it is faster and simpler where it works, and on the yes/no questions
-it is closer to the humans), the default stays the direct readout, and the next steps
-are the >26-options fix and a paired re-measurement on both populations.
+it is closer to the humans), and the default stays the direct readout.  The
+>26-options fix was done on 2026-10-23 (below): it recovers 3.8 of the 6.9 points and
+the readout's own 3.1-point deficit remains, so the flag stays opt-in and nothing
+becomes the default.
 
 ## The >26-option fallback: the rule (2026-10-23, written before the analysis)
 
@@ -253,6 +257,60 @@ the fix and a re-measurement before any default question. If it is not, the flag
 opt-in and unused (or is deleted) as `letter_readout.md`'s recommendation already says -
 and the fix is still worth having, because a decode-path answer with a 1.0/0.0
 distribution is wrong for any caller that reads probabilities, whatever the arm is called.
+
+## The >26-option fallback: the result (2026-10-23)
+
+**The fix is built** (`serve/server.py`, `_systemone_single` and `_systemone_classic`): a
+question with more options than letters is rendered and read on the **direct** path, and a
+mixed request goes direct as a whole.  The test is
+`serve/test_systemone.py::LetterReadout::test_past_26_options_the_server_answers_it_on_the_direct_path`
+(27 options, one trie step, the fast path's probabilities keyed by the option names).  The
+default path is untouched: the branch only exists in letter mode.
+
+**The analysis** (`tools/decision_policy/letter_fallback.py`, on the two stored runs):
+
+| arm | Capability | Intelligence | Calibration | mean TVD to the humans |
+|---|---:|---:|---:|---:|
+| the direct readout | **55.2** | **46.7** | **63.7** | **0.443** |
+| the letter readout (as measured) | 48.3 | 44.4 | 52.2 | 0.469 |
+| letters + the direct fallback | 52.1 | 44.8 | 59.5 | 0.449 |
+
+| subset | arm | accuracy | ECE | human TVD | mode mass |
+|---|---|---:|---:|---:|---:|
+| >26 options (144, 50 with humans) | direct | 61.1% | 0.2177 | 0.7219 | 0.6757 |
+| | letters | 59.0% | 0.4097 | 0.8327 | **1.0000** |
+| | fixed | 61.1% | 0.2177 | 0.7219 | 0.6757 |
+| the 539 the letters serve (230 with humans) | direct | 67.7% | 0.1877 | 0.3826 | 0.8576 |
+| | letters | 66.8% | 0.2225 | 0.3897 | 0.8761 |
+| | fixed | 66.8% | 0.2225 | 0.3897 | 0.8761 |
+
+**The rule: the fallback is NOT the whole loss.** The fixed arm's Capability is **3.1
+points** below the direct arm's (the margin is 1.8) and its human TVD is **0.0060** worse
+(the margin is 0.005).  The decomposition is clean:
+
+* **The fallback costs 3.8 of the 6.9 Capability points** - 55% of the loss - and 7.3 of
+  the 11.5 calibration points.  The mode mass of **1.0000** on those 144 items is the
+  decode path's degenerate distribution, seen directly.
+* **The readout costs the other 3.1**, on the 539 items it does serve: accuracy 0.9 points
+  worse, ECE 0.035 higher, the human TVD 0.007 higher, and the mode mass 0.019 *higher*
+  than the direct arm's - the sharpening §22 measured, still there.  The letter readout is
+  a worse reading even where it works.
+
+**The decision.** The flag stays **opt-in**; nothing becomes the default.  The fix ships
+anyway, for two reasons: a decode-path answer that reports 1.0 on one option and 0.0 on the
+rest is wrong for any caller that reads probabilities, and it recovers more than half of
+the flag's loss.  The flag's remaining 3.1-point deficit is the readout's own and is not a
+bug to fix; a user who turns the flag on gets a faster, simpler readout that is slightly
+worse against people.  If the owner would rather remove the flag than carry that, this
+result says removing it costs nothing measurable: no default uses it.
+
+**The limits.** The fixed arm's numbers for the 144 items are the **stored direct run's**
+readings, not a fresh run's.  The code path is identical (the same prompt, the same
+functions), but the engine's logits wobble run to run (§5.2 of `prompt_variants.md`), so
+this is a paired estimate inside the 1.8-point noise floor, not a byte-exact transplant.
+The 235 cannot check it: its widest question has 7 options.  One model, one quantization,
+the jev-bench test sample only.
+
 
 ## How to measure it again
 
