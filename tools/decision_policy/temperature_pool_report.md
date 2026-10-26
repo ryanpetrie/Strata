@@ -1,8 +1,10 @@
 # The per-type temperature: the fit
 
 **Fitted 2026-10-22, model `qwen3.8-flash-next-unsloth-ud-iq4_xs`.**  The constants live in
-`temperature_calibration.json` next to this file; the server takes them from the
-launch config (`"systemone": {"temperature": {...}}`).
+`temperature_pool_calibration.json` next to this file.  They are **not** in any launch
+config: roadmap item 1.1b's rule returns "no constant ships" (they fail the 235 test),
+so the endpoint stays at T = 1.  The config accepts
+`"systemone": {"temperature": {...}}` if a future fit clears the rule.
 
 **The pool:** Praveenrajus/jev-bench, the validation split, the 500-per-type pool of soft_label_pool.json (seed 20261021) - the serial first-token path, one question per request, the server at T = 1, a fresh engine (1500/1500, 0 failures, 6306 s).
 
@@ -62,7 +64,8 @@ only defined on the items that carry one, and the report says how many that is:
 | noul | 500 | 250 |
 | score | 500 | 250 |
 
-**The shipped constants use the `brier` objective.**
+**The `brier` objective is the one this report's tables use; none of its constants is
+in any launch config.**
 
 ## The validation
 
