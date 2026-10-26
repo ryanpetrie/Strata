@@ -20,14 +20,17 @@ did the same thing by hand (the "temperature undone" arm was the same run with
 normalize(closed_T ** T) put back).
 
 The transform is the server's own: serve/logits_first_token.py::apply_temperature
-is called, not re-implemented.  The inverse of "apply T" is "apply 1/T", because
-f_T(p) = normalize(p ** (1/T)) and f_T^-1(q) = normalize(q ** T) = f_{1/T}(q).
+is called, not re-implemented - and it is called in ONE place, temperature.py,
+which this script imports (so there is a single copy of the arithmetic in the
+tools, and it is the server's).  The inverse of "apply T" is "apply 1/T",
+because f_T(p) = normalize(p ** (1/T)) and f_T^-1(q) = normalize(q ** T) =
+f_{1/T}(q).
 
-The open reading (the reported confidence) is NOT reconstructed: it is the closed
-reading at T scaled by the mass on the options, measured at T = 1, and the mass
-is not in the predictions file.  The scorer reads the closed reading, so the
-scorer's numbers are exact; a run log written with --runlog keeps the original
-open reading, which is the one field this script cannot rebuild.
+The open reading (the reported confidence) is NOT reconstructed from nothing: it
+is the closed reading at T scaled by the mass on the options, measured at T = 1,
+and the mass is recovered from the run log.  The scorer reads the closed
+reading, so the scorer's numbers are exact; a run log written with --runlog
+keeps the mass outside the options, which the predictions file does not carry.
 
 Pure standard library.  Nothing is written inside the repository.
 """
@@ -38,8 +41,8 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from serve.logits_first_token import apply_temperature as _server_apply_temperature  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import temperature as tp  # noqa: E402  (same folder: the one place that knows the transform)
 
 TYPES = ("choice", "noul", "score")
 
@@ -86,18 +89,16 @@ def parse_temperatures(text: str) -> dict[str, float]:
 
 def scale_closed(closed: dict[str, float], temperature: float) -> dict[str, float]:
     """The closed reading at temperature T, as the server computes it."""
-    reading = {"closed": closed, "open": closed}
-    return _server_apply_temperature(reading, temperature)["closed"]
+    return tp.scale(closed, temperature)
 
 
 def undo(closed: dict[str, float], temperature: float) -> dict[str, float]:
     """The closed reading at T = 1, from the closed reading at T.
 
-    The inverse of "apply T" is "apply 1/T" (see the module docstring).
+    The inverse of "apply T" is "apply 1/T" (see the module docstring).  It is the
+    fit script's own function, so the arithmetic lives in one place.
     """
-    if temperature == 1.0:
-        return dict(closed)
-    return scale_closed(closed, 1.0 / temperature)
+    return tp.undo_temperature(closed, temperature)
 
 
 def main() -> int:
