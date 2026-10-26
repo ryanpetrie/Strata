@@ -288,8 +288,8 @@ class DecisionPark(unittest.TestCase):
     Parking is a switch-time decision taken by the NEXT request, so it is the LAST
     engine request of a decision that leaves the conversation behind.  The key
     therefore goes on every LOGITS line of the decision - the base request and each
-    trie-walk step - and never on a chat's GEN line.  Off by default: the request
-    lines stay byte for byte today's.
+    trie-walk step - and never on a chat's GEN line.  On by default since the
+    measurement (§11); `STRATA_DECISION_PARK=0` restores today's lines byte for byte.
     """
 
     def svc_with(self, script="q: yes\n"):
@@ -330,23 +330,25 @@ class DecisionPark(unittest.TestCase):
         svc.engine.logits_rows = rows
         return svc
 
-    def test_the_key_is_not_sent_by_default(self):
+    def test_the_key_is_sent_by_default(self):
         svc = self.svc_with("q: data_analysis\n")
         seen = self.park_keys(svc)
-        with mock.patch.dict(os.environ, {"STRATA_DECISION_PARK": "0"}):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("STRATA_DECISION_PARK", None)
             code, _ = svc.systemone(self.req(), threading.Event())
         self.assertEqual(code, 200)
         self.assertTrue(seen, "the decision made no engine request")
-        self.assertTrue(all(seen), "the default path sent park=0")
+        self.assertFalse(any(seen), "the default path did not send park=0")
 
-    def test_the_key_is_sent_when_the_env_asks(self):
-        svc = self.svc_with("q: data_analysis\n")
-        seen = self.park_keys(svc)
-        with mock.patch.dict(os.environ, {"STRATA_DECISION_PARK": "1"}):
-            code, _ = svc.systemone(self.req(), threading.Event())
-        self.assertEqual(code, 200)
-        self.assertTrue(seen, "the decision made no engine request")
-        self.assertFalse(any(seen), "the decision path did not send park=0")
+    def test_the_key_is_not_sent_when_the_env_turns_it_off(self):
+        for value in ("0", ""):
+            svc = self.svc_with("q: data_analysis\n")
+            seen = self.park_keys(svc)
+            with mock.patch.dict(os.environ, {"STRATA_DECISION_PARK": value}):
+                code, _ = svc.systemone(self.req(), threading.Event())
+            self.assertEqual(code, 200)
+            self.assertTrue(seen, "the decision made no engine request")
+            self.assertTrue(all(seen), f"STRATA_DECISION_PARK={value!r} sent park=0")
 
     def test_every_step_of_the_walk_carries_the_key(self):
         # the walk's own steps continue the session, and its LAST one is what leaves
@@ -364,10 +366,15 @@ class DecisionPark(unittest.TestCase):
 
     def test_a_chat_gen_line_never_carries_the_key(self):
         # the chat path must not change, whatever the switch says
-        for value in ("0", "1"):
+        for value in ("0", "1", None):
             eng = fake_engine(["DONE 0 3 1 1 stop"])
-            with mock.patch.dict(os.environ, {"STRATA_DECISION_PARK": value}):
-                list(eng.generate([1, 2, 3], 8, {}, threading.Event()))
+            if value is None:
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("STRATA_DECISION_PARK", None)
+                    list(eng.generate([1, 2, 3], 8, {}, threading.Event()))
+            else:
+                with mock.patch.dict(os.environ, {"STRATA_DECISION_PARK": value}):
+                    list(eng.generate([1, 2, 3], 8, {}, threading.Event()))
             self.assertEqual(eng.proc.written, ["GEN 8 1,2,3\n"])
 
 
