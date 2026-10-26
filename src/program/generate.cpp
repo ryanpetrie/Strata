@@ -9378,6 +9378,12 @@ int main(int argc, char** argv) {
         std::vector<int32_t> live;
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
+        // park=0: parking is a switch-time decision taken by the NEXT request, so this is not the request's own
+        // `req_park` but whether the session the queue holds may be parked when a later request replaces it.  A
+        // request that read its prompt from scratch and said park=0 leaves false here; one that TOOK a parked
+        // conversation sets it back (that conversation must be put back), so the key suppresses only the park of
+        // one that was read from scratch.  See conversation_park_allowed().
+        bool live_parkable = true;
         // #879: a window met non-finite logits: the next request drops every cached state first and reads from token 0
         bool nan_flush = false;
         // #3465: the non-finite logits came in a window that reads the PROMPT's tail (the last few tokens, read through
@@ -9495,6 +9501,15 @@ int main(int argc, char** argv) {
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current_body = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            // park=0: the request that read this conversation from scratch said no later request extends it, so
+            // parking it would spend a slot only to evict the conversation it was interleaved with.  Returning
+            // true is the same non-error skip the minimum-length and budget paths below take.  A conversation a
+            // request TOOK from the cache is parkable again (live_parkable stays true for it: it must go back).
+            if (!live_parkable) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip parking (the request that read it said "
+                                     "park=0; parked=%zu)\n", conversations.size());
+                return true;
+            }
             // #2049: parking copies the outgoing conversation's running checkpoints and K/V into host memory, which
             // is a silent stretch of the "request" stage; when the OS has paged that memory out it takes minutes.
             // Named, so a stall report says "parking"; its copies beat (conversation_copy.hpp), so the watchdog
@@ -12305,6 +12320,7 @@ int main(int argc, char** argv) {
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
                     live_ok = true;
+                    live_parkable = true;   // a session file's conversation is parked as before (no park=0 on SAVE/LOAD)
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear();
@@ -12319,6 +12335,34 @@ int main(int argc, char** argv) {
                 }
                 std::fflush(stdout);
                 continue;
+            }
+            // LOGITS <k> <max_new> <id,id,...>: a GEN request that ALSO prints the top-k logits
+            // at the answer position (the prompt's last token's prediction) as `L <token_id> <logit>`
+            // lines, descending, plus `Z <logz>`, the full-vocabulary normalizer.  It is a NORMAL
+            // request: the same prefill, the same decode, the same counters, the same adaptive
+            // bookkeeping - only the caller uses the extra rows.  (It was once a prefill-only
+            // request that broke out of the window loop early; that skipped the counters, the
+            // policy's observation and the adaptive refill thread's join, and the engine died a
+            // few requests later on a card with VRAM to spare - measured, 18-39 requests per
+            // crash against 235 without a crash on the plain path.)
+            int req_logits_k = 0;
+            if (line.rfind("LOGITS ", 0) == 0) {
+                char* lk_end = nullptr;
+                const long lk = std::strtol(line.c_str() + 7, &lk_end, 10);
+                if (lk_end == line.c_str() + 7 || lk < 1 || lk > 1024 || *lk_end != ' ') {
+                    std::printf("ERR expected: LOGITS <k 1..1024> <max_new> <id,id,...>\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                char* mn_end = nullptr;
+                const long long mn = std::strtoll(lk_end + 1, &mn_end, 10);
+                if (mn_end == lk_end + 1 || mn < 1 || mn > 4096 || *mn_end != ' ') {
+                    std::printf("ERR expected: LOGITS <k 1..1024> <max_new 1..4096> <id,id,...>\n");
+                    std::fflush(stdout);
+                    continue;
+                }
+                req_logits_k = (int) lk;
+                line = std::string("GEN ") + std::to_string((long long) mn) + mn_end;
             }
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
@@ -12343,6 +12387,13 @@ int main(int argc, char** argv) {
             // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
             // when that reaches --prompt-cache-root.  Absent = checkpointed as before.
             int req_ckpt = 1;
+            // park=0: this request's conversation is not parked for the next one, while its session is still
+            // continued (`ckpt` stays 1: a trie walk's next step reuses it).  Parking is a switch-time decision,
+            // so a short one-shot request would otherwise leave a copy in the cache and, once it is full, evict
+            // the chat it was interleaved with.  A conversation this request RESTORES is parked again as before
+            // (it is put back).  Absent = parked as before.
+            bool req_park = true;
+            bool took_parked = false;   // this request restored a parked conversation, so it is parked again
             // pin=N: the first N prompt tokens are a shared read-only prefix (a long document that many short queries
             // follow).  The prompt is read in two parts at N, the checkpoint there is PINNED (retention never evicts it,
             // a parked conversation holding it stays parked) and a later request that resumes from it does not park the
@@ -12373,6 +12424,7 @@ int main(int argc, char** argv) {
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
+                    else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
                     else if (key == "temperature") req_temperature = fv;
                     else if (key == "top_p") req_top_p = fv;
@@ -12950,6 +13002,9 @@ int main(int argc, char** argv) {
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 lent_slot = -1;   // (the main session holds the parked conversation now)
+                // park=0 does not apply to a conversation the cache served: the entry is gone from the cache and
+                // must be put back by whichever request replaces this one (conversation_park_allowed).
+                took_parked = true;
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -14265,7 +14320,8 @@ int main(int argc, char** argv) {
             // and a window row computes what it would in any other window, so every emitted token is the serial loop's
             // (with STRATA_IQ_MT_MIN=1 bit for bit; sampled requests with the same Philox draw per position).
             bool pl_ran = false;
-            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok;
+            // (a LOGITS request decodes serially: its answer row is read from `ver`, the serial loop's verifier)
+            const bool pl_want = pipe && pl_pw >= 2 && pl_snap_ok && req_logits_k == 0;
             const char* pl_serial = !pl_want ? nullptr
                                   : hist_n > 0 ? "repetition penalties (penalty_last_n)"
                                   : mtp.coupled() ? "coupled draft sampling" : nullptr;
@@ -15144,6 +15200,44 @@ int main(int argc, char** argv) {
                         if (f) std::fclose(f);
                     }
                 }
+                // LOGITS: this window is the answer position - the prompt's last token alone (a merged window's last row
+                // is the prompt's last token, its output the first generated token) - so its row is the next-token
+                // distribution every decode path would sample from.  The top k go out as `L <token_id> <logit>` lines,
+                // in descending logit order (ties by id, lower first), from the row the head has just written.
+                if (first_window && req_logits_k > 0) {
+                    std::vector<float> row((size_t) ver.vocab());
+                    if (!ver.copy_logits(merged ? T - 1 : 0, row.data())) {
+                        std::printf("ERR reading the logits back failed\n");
+                        return 1;
+                    }
+                    int nbad = 0;
+                    for (float v : row) if (!std::isfinite(v)) ++nbad;
+                    if (nbad != 0) {   // #879: the ordinary check below ends this request with DONE nonfinite
+                        std::fprintf(stderr, "strata serve: %d of %zu logits are not finite at the answer position\n",
+                                     nbad, row.size());
+                    } else {
+                        const size_t kn = std::min<size_t>((size_t) req_logits_k, row.size());
+                        std::vector<int32_t> pick(row.size());
+                        for (size_t i = 0; i < pick.size(); ++i) pick[i] = (int32_t) i;
+                        const auto better = [&](int32_t i0, int32_t i1) {
+                            return row[(size_t) i0] != row[(size_t) i1] ? row[(size_t) i0] > row[(size_t) i1]
+                                                                        : i0 < i1;
+                        };
+                        std::partial_sort(pick.begin(), pick.begin() + (std::ptrdiff_t) kn, pick.end(), better);
+                        // the full-vocabulary normalizer: log sum(exp(logit)) over EVERY token, so the server can
+                        // turn a logit into the model's own probability (P(token) = exp(logit - Z)) instead of a
+                        // probability renormalized over a few tokens.  The tail below the top k is in it.
+                        double lmax = row.empty() ? 0.0 : (double) row[0];
+                        for (float v : row) if ((double) v > lmax) lmax = (double) v;
+                        double lsum = 0.0;
+                        for (float v : row) lsum += std::exp((double) v - lmax);
+                        std::printf("Z %.9g\n", lmax + std::log(lsum));
+                        for (size_t i = 0; i < kn; ++i)
+                            std::printf("L %d %.9g\n", (int) pick[i], (double) row[(size_t) pick[i]]);
+                        std::fflush(stdout);
+                    }
+                    strata::core::progress_beat();   // a step, as each emitted token is for the watchdog
+                }
                 int a = merged ? T - 1 : 0;   // a merged window commits every row, as the prompt windows do
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
@@ -15298,6 +15392,9 @@ int main(int argc, char** argv) {
                 live.swap(consumed);
                 live_imgs = imgs_below(req_imgs, (int64_t) live.size());
                 live_ok = o.prompt_cache > 0 && req_ckpt;   // ckpt=0: nothing to continue or park (#830)
+                // park=0: the next request does not park this conversation, unless this one took a parked entry
+                // from the cache (that one goes back).  live_ok stays as it was, so the session is still continued.
+                live_parkable = strata::core::conversation_park_allowed(req_park, took_parked);
                 if (nf_hit) live_ok = false;   // #879 (the next request's start drops the rest)
             } else if (!nf_hit && pp_exact && pp_reached > 0 && o.prompt_cache > 0 && req_ckpt &&
                        pp_reached <= (int64_t) cur.size()) {
@@ -15307,6 +15404,7 @@ int main(int argc, char** argv) {
                 live.assign(cur.begin(), cur.begin() + pp_reached);
                 live_imgs = imgs_below(req_imgs, pp_reached);
                 live_ok = true;
+                live_parkable = strata::core::conversation_park_allowed(req_park, took_parked);
                 std::fprintf(stderr, "strata serve: cancelled request keeps its conversation: %lld tokens live\n",
                              (long long) pp_reached);
             }
