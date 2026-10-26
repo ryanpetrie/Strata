@@ -481,6 +481,16 @@ for a 5-level config), with the mean-level prior reported beside it. The margins
 each type's measured run-to-run SD (choice 0.0348, score 0.0255): 0.0074 and 0.0060 on the
 primary metrics after the Bonferroni correction for four variants).
 
+**Test volume: screen at 100, confirm at 250 (companion doc §29, 2026-10-23).** The choice's
+batch showed the primary was over-powered - its two real effects were 7 and 13 SE at
+n = 250, and still 4.4 and 8.2 SE at n = 100 - while the 3-item accuracy guard could not
+resolve its own 1.2-point margin and no base repeat measured the noise floor. Every arm
+from now on runs a **100+100 screen** first, stops a variant that fails any guard, and sends
+only survivors to 250 and the yardsticks; each guard's n is sized to the smallest difference
+that would change the decision, and one base-vs-base repeat per type measures the noise
+floor before the margins are set. A GPU-day per question is the cap, and the Phase 2 kernel
+and teacher pilot come first. The already-run choice and score results stand as recorded.
+
 **The choice's arms ran (2026-10-23): none ships, and the batch found a real effect.**
 All four variants were inert on the instructions (C2 +0.0030 and C3 +0.0015 on the TVD,
 intervals through zero) and the two that move the options' **position** were real: C1
