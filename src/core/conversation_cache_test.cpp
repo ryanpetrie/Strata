@@ -12,11 +12,12 @@ void check(bool value, const char* description) {
     ++checks;
     if (!value) { std::fprintf(stderr, "FAIL: %s\n", description); std::exit(1); }
 }
-SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true) {
+SavedConversation image(std::initializer_list<int32_t> ids, bool cvec = true, ConversationLora lora = kLoraNone) {
     SavedConversation s;
     s.live.ids = ids;
     s.live.gdn.resize(64, 7);
     s.cvec = cvec;
+    s.lora = lora;
     return s;
 }
 }
@@ -123,15 +124,15 @@ int main() {
         ConversationCache cache(1024, 2);
         check(cache.put(image({1, 2, 3})), "park A");
         check(cache.put(image({9, 8, 7})), "park B");
-        auto match = cache.best(a, {}, true);
+        auto match = cache.best(a, {}, true, kLoraNone);
         check(match.tokens == 3 && match.live, "A/B/A: recover A");
         auto restored = cache.take(match.index);
         check(restored.live.ids == std::vector<int32_t>({1, 2, 3}), "taking selected A preserves identity");
-        check(cache.size() == 1 && cache.best(b, {}, true).tokens == 3, "B remains parked");
+        check(cache.size() == 1 && cache.best(b, {}, true, kLoraNone).tokens == 3, "B remains parked");
         check(cache.bytes() == image({9,8,7}).bytes(), "byte accounting after take");
         check(cache.put(std::move(restored)), "park returned A as newest");
         check(cache.put(image({5, 6})), "evict oldest by slot limit");
-        check(cache.best(b, {}, true).tokens == 0 && cache.best(a, {}, true).tokens == 3, "B evicted before A");
+        check(cache.best(b, {}, true, kLoraNone).tokens == 0 && cache.best(a, {}, true, kLoraNone).tokens == 3, "B evicted before A");
         check(cache.evictions() == 1, "eviction counter");
     }
     {
@@ -145,7 +146,7 @@ int main() {
         const size_t both = cache.bytes();
         check(cache.evict_oldest(), "evict_oldest reports an eviction");
         check(cache.size() == 1 && cache.evictions() == 1, "evict_oldest drops exactly one, oldest first");
-        check(cache.best(a, {}, true).tokens == 0 && cache.best(b, {}, true).tokens == 3,
+        check(cache.best(a, {}, true, kLoraNone).tokens == 0 && cache.best(b, {}, true, kLoraNone).tokens == 3,
               "the oldest conversation went, the newest stayed");
         check(cache.bytes() == both - image({1, 2, 3}).bytes(), "evict_oldest releases the entry's bytes");
         cache.evict_oldest();
@@ -173,7 +174,7 @@ int main() {
         check(cache.retained_bytes() > 0, "a retained K/V before clear()");
         check(cache.clear() == 2, "clear() reports how many were parked");
         check(cache.size() == 0 && cache.bytes() == 0 && cache.retained_bytes() == 0, "clear() leaves nothing parked");
-        check(cache.best(std::vector<int64_t>{1, 2, 3, 4}, {}, true).tokens == 0, "a cleared cache matches nothing");
+        check(cache.best(std::vector<int64_t>{1, 2, 3, 4}, {}, true, kLoraNone).tokens == 0, "a cleared cache matches nothing");
         check(cache.clear() == 0, "clear() on an empty cache");
     }
     {
@@ -183,33 +184,33 @@ int main() {
         s.checkpoints.push_back(cp);
         ConversationCache cache(4096, 4);
         cache.put(std::move(s));
-        auto match = cache.best(std::vector<int64_t>{1, 2, 9, 4}, {}, true);
+        auto match = cache.best(std::vector<int64_t>{1, 2, 9, 4}, {}, true, kLoraNone);
         check(match.tokens == 2 && !match.live, "edited suffix falls back to parked checkpoint");
-        check(cache.best(a, {}, true).tokens == 3, "live prefix beats shorter checkpoint");
-        check(cache.best(a, {}, false).tokens == 0, "steering mode is isolated");
-        check(cache.best(std::vector<int64_t>{1, 2}, {}, true).tokens == 0, "equal-length checkpoint cannot consume last token");
-        check(cache.best(std::vector<int64_t>{1}, {}, true).tokens == 0, "short prompt cannot match");
-        check(cache.best(std::vector<int64_t>{}, {}, true).tokens == 0, "empty prompt cannot match");
+        check(cache.best(a, {}, true, kLoraNone).tokens == 3, "live prefix beats shorter checkpoint");
+        check(cache.best(a, {}, false, kLoraNone).tokens == 0, "steering mode is isolated");
+        check(cache.best(std::vector<int64_t>{1, 2}, {}, true, kLoraNone).tokens == 0, "equal-length checkpoint cannot consume last token");
+        check(cache.best(std::vector<int64_t>{1}, {}, true, kLoraNone).tokens == 0, "short prompt cannot match");
+        check(cache.best(std::vector<int64_t>{}, {}, true, kLoraNone).tokens == 0, "empty prompt cannot match");
         cache.put(image({1, 2, 3}));
-        check(cache.best(a, {}, true).index == 1, "ties prefer most recently parked");
+        check(cache.best(a, {}, true, kLoraNone).index == 1, "ties prefer most recently parked");
     }
     {
         auto s = image({1, 2, 3});
         s.live.imgs = {{1, 123}};
         ConversationCache cache(1024, 3);
         cache.put(std::move(s));
-        check(cache.best(a, {{1,123}}, true).tokens == 3, "same image can resume");
-        check(cache.best(a, {{1,124}}, true).tokens == 0, "different image pixels invalidate same pad tokens");
-        check(cache.best(a, {}, true).tokens == 0, "missing image invalidates prefix");
-        check(cache.best(a, {{1,123},{2,45}}, true).tokens == 0, "additional image in cached prefix invalidates");
-        check(cache.best(a, {{1,123},{3,45}}, true).tokens == 3, "image after cached prefix does not invalidate");
+        check(cache.best(a, {{1,123}}, true, kLoraNone).tokens == 3, "same image can resume");
+        check(cache.best(a, {{1,124}}, true, kLoraNone).tokens == 0, "different image pixels invalidate same pad tokens");
+        check(cache.best(a, {}, true, kLoraNone).tokens == 0, "missing image invalidates prefix");
+        check(cache.best(a, {{1,123},{2,45}}, true, kLoraNone).tokens == 0, "additional image in cached prefix invalidates");
+        check(cache.best(a, {{1,123},{3,45}}, true, kLoraNone).tokens == 3, "image after cached prefix does not invalidate");
     }
     {
         const size_t one = image({1,2,3}).bytes();
         ConversationCache cache(one*2, 8);
         cache.put(image({1,2,3})); cache.put(image({9,8,7}));
         check(cache.bytes() == one*2, "budget holds two exact-sized images");
-        auto held = cache.take(cache.best(a, {}, true).index);
+        auto held = cache.take(cache.best(a, {}, true, kLoraNone).index);
         check(cache.make_room(one, held.bytes()), "count in-flight image when reserving outgoing snapshot");
         check(cache.size() == 0, "in-flight reservation evicts otherwise fitting B");
         check(cache.put(image({5,6,7}), held.bytes()), "insert with in-flight accounting");
@@ -248,9 +249,9 @@ int main() {
             history = with(history, {30, (int32_t) turn});       // the reply as the next request renders it
         }
         check(cache.evictions() == 0 && cache.superseded() == 8, "8 superseded copies dropped, nothing evicted");
-        const auto m = cache.best(with(with(root, {10, 11, 12}), {13, 14, 15}), {}, true);
+        const auto m = cache.best(with(with(root, {10, 11, 12}), {13, 14, 15}), {}, true, kLoraNone);
         check(m.tokens == 9 && m.live, "MAIN still restores in full");
-        const auto s = cache.best(with(history, {40}), {}, true);
+        const auto s = cache.best(with(history, {40}), {}, true, kLoraNone);
         check(s.tokens == (int64_t) history.size() - 2, "SUB resumes from its last turn boundary");
     }
     {
@@ -288,25 +289,25 @@ int main() {
         // snapshot again for the next turn to drop.  It must name exactly the entries drop_superseded() would remove.
         auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
         ConversationCache cache(1 << 20, 8);
-        check(cache.parked_prefix_tokens({1, 2, 3}, {}, {}, true) == 0, "an empty cache supersedes nothing");
+        check(cache.parked_prefix_tokens({1, 2, 3}, {}, {}, true, kLoraNone) == 0, "an empty cache supersedes nothing");
 
         const std::vector<int32_t> live_ids = {1, 2, 3, 4, 60, 70};
         const std::vector<ConversationCheckpoint> chain = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
         SavedConversation same = image({1, 2, 3, 4, 60, 70});
         same.checkpoints = chain;
         check(cache.put(std::move(same)), "park a conversation with a checkpoint chain");
-        check(cache.parked_prefix_tokens(live_ids, {}, chain, true) == 5,
+        check(cache.parked_prefix_tokens(live_ids, {}, chain, true, kLoraNone) == 5,
               "the entry the outgoing chain supersedes is reported by its deepest checkpoint");
 
         const std::vector<ConversationCheckpoint> other_chain = {cp({1, 2, 3})};
-        check(cache.parked_prefix_tokens({1, 2, 3, 40, 50}, {}, other_chain, true) == 0,
+        check(cache.parked_prefix_tokens({1, 2, 3, 40, 50}, {}, other_chain, true, kLoraNone) == 0,
               "a conversation sharing only the root supersedes nothing");
-        check(cache.parked_prefix_tokens(live_ids, {}, chain, false) == 0,
+        check(cache.parked_prefix_tokens(live_ids, {}, chain, false, kLoraNone) == 0,
               "the other steering mode is a different entry");
-        check(cache.parked_prefix_tokens({1, 2, 3, 4, 60, 70, 71}, {}, chain, true) == 5,
+        check(cache.parked_prefix_tokens({1, 2, 3, 4, 60, 70, 71}, {}, chain, true, kLoraNone) == 5,
               "an appended tail keeps the reported depth at the parked one");
         SavedConversation no_cp = image({1, 2, 3, 9});
-        check(cache.put(std::move(no_cp)) && cache.parked_prefix_tokens({1, 2, 3, 9}, {}, {}, true) == 0,
+        check(cache.put(std::move(no_cp)) && cache.parked_prefix_tokens({1, 2, 3, 9}, {}, {}, true, kLoraNone) == 0,
               "an entry without checkpoints is never reported");
     }
     {
@@ -319,20 +320,20 @@ int main() {
         a.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11})};
         ConversationCache cache(1 << 20, 2);
         check(cache.put(std::move(a)), "park subagent A");
-        const auto sib = cache.best(std::vector<int64_t>{1, 2, 3, 4, 20, 21}, {}, true);
+        const auto sib = cache.best(std::vector<int64_t>{1, 2, 3, 4, 20, 21}, {}, true, kLoraNone);
         check(sib.tokens == 4 && !sib.live && sib.serial != 0 && cache.borrows(sib), "a sibling on A's root borrows");
-        const auto again = cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 30}, {}, true);
+        const auto again = cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 30}, {}, true, kLoraNone);
         check(again.tokens == 6 && !again.live && !cache.borrows(again),
               "A re-rendered at its deepest checkpoint is taken");
-        const auto cont = cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 12, 13, 14}, {}, true);
+        const auto cont = cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 12, 13, 14}, {}, true, kLoraNone);
         check(cont.live && !cache.borrows(cont), "A going on is taken");
-        check(!cache.borrows(cache.best(std::vector<int64_t>{5, 6, 7}, {}, true)), "no match, nothing to borrow");
+        check(!cache.borrows(cache.best(std::vector<int64_t>{5, 6, 7}, {}, true, kLoraNone)), "no match, nothing to borrow");
         // while the outgoing conversations are parked, the guarded donor is neither evicted nor dropped
         cache.guard(sib.serial);
         check(cache.put(image({7, 7, 7})) && cache.put(image({8, 8, 8})), "two outgoing conversations park");
         check(cache.find(sib.serial) != nullptr && cache.size() == 2 && cache.evictions() == 1 && !cache.guard_blocked(),
               "the slot limit evicts the other entry, not the guarded donor");
-        check(cache.best(std::vector<int64_t>{7, 7, 7, 1}, {}, true).tokens == 0, "the other one went");
+        check(cache.best(std::vector<int64_t>{7, 7, 7, 1}, {}, true, kLoraNone).tokens == 0, "the other one went");
         SavedConversation rewritten = image({1, 2, 3, 4, 10, 11, 40});   // holds A's deepest checkpoint: supersedes A
         rewritten.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11})};
         check(cache.put(std::move(rewritten)) && cache.find(sib.serial) != nullptr && cache.superseded() == 0,
@@ -341,7 +342,7 @@ int main() {
         // identity survives index shifts: take an older entry, the donor's serial still finds it
         const auto donor_index = cache.index_of(sib.serial);
         check(donor_index != SIZE_MAX, "donor indexed by its serial");
-        check(cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 12, 13, 14}, {}, true).serial == sib.serial,
+        check(cache.best(std::vector<int64_t>{1, 2, 3, 4, 10, 11, 12, 13, 14}, {}, true, kLoraNone).serial == sib.serial,
               "matches report the entry's serial");
     }
     {
@@ -353,7 +354,7 @@ int main() {
         const size_t out_bytes = image({9, 9, 9}).bytes();
         ConversationCache tight(a_bytes + out_bytes - 1, 4);
         check(tight.put(std::move(a)), "park the donor");
-        const auto m = tight.best(std::vector<int64_t>{1, 2, 3, 4, 50}, {}, true);
+        const auto m = tight.best(std::vector<int64_t>{1, 2, 3, 4, 50}, {}, true, kLoraNone);
         check(tight.borrows(m), "a sibling would borrow");
         tight.guard(m.serial);
         check(!tight.put(image({9, 9, 9})) && tight.guard_blocked(), "no room beside the guarded donor: refused");
@@ -366,7 +367,7 @@ int main() {
         SavedConversation b = image({1, 2, 3, 4, 10, 11});
         b.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10})};
         check(one_slot.put(std::move(b)), "park in a single slot");
-        const auto mb = one_slot.best(std::vector<int64_t>{1, 2, 3, 4, 50}, {}, true);
+        const auto mb = one_slot.best(std::vector<int64_t>{1, 2, 3, 4, 50}, {}, true, kLoraNone);
         one_slot.guard(mb.serial);
         check(!one_slot.put(image({9, 9, 9})) && one_slot.guard_blocked() && one_slot.size() == 1,
               "one slot: the guarded donor blocks, nothing evicted");
@@ -385,17 +386,17 @@ int main() {
         ConversationCache cache(1 << 20, 3);
         check(cache.put(std::move(doc)) && cache.put(std::move(donor)) && cache.put(image({7, 7, 7})),
               "pinned document, donor and an ordinary conversation parked");
-        const auto m = cache.best(std::vector<int64_t>{1, 2, 40, 41}, {}, true);
+        const auto m = cache.best(std::vector<int64_t>{1, 2, 40, 41}, {}, true, kLoraNone);
         check(cache.borrows(m), "a sibling on the donor's root borrows");
         cache.guard(m.serial);
         check(cache.put(image({8, 8, 8})) && !cache.guard_blocked() && cache.size() == 3 && cache.evictions() == 1,
               "the outgoing conversation parks");
         check(cache.find(m.serial) != nullptr &&
-              cache.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 9}, {}, true).tokens == 6 &&
-              cache.best(std::vector<int64_t>{7, 7, 7, 1}, {}, true).tokens == 0,
+              cache.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 9}, {}, true, kLoraNone).tokens == 6 &&
+              cache.best(std::vector<int64_t>{7, 7, 7, 1}, {}, true, kLoraNone).tokens == 0,
               "only the ordinary entry was evicted: the donor and the pinned document stay");
         check(cache.put(image({9, 9, 9})) && cache.size() == 3 && cache.evictions() == 2 &&
-              cache.find(m.serial) != nullptr && cache.best(std::vector<int64_t>{8, 8, 8, 1}, {}, true).tokens == 0,
+              cache.find(m.serial) != nullptr && cache.best(std::vector<int64_t>{8, 8, 8, 1}, {}, true, kLoraNone).tokens == 0,
               "the next outgoing one evicts the previous outgoing one, still not the donor or the document");
         cache.unguard();
         ConversationCache two(1 << 20, 2);
@@ -404,19 +405,19 @@ int main() {
         SavedConversation donor2 = image({1, 2, 10, 11, 12});
         donor2.checkpoints = {cp({1, 2}), cp({1, 2, 10, 11})};
         check(two.put(std::move(doc2)) && two.put(std::move(donor2)), "pinned document and donor fill two slots");
-        const auto m2 = two.best(std::vector<int64_t>{1, 2, 40}, {}, true);
+        const auto m2 = two.best(std::vector<int64_t>{1, 2, 40}, {}, true, kLoraNone);
         two.guard(m2.serial);
         check(!two.put(image({9, 9, 9})) && two.guard_blocked() && two.size() == 2 && two.evictions() == 0,
               "no slot beside the donor and the pinned document: refused before evicting anything");
         two.unguard();
         // a match that reaches the pinned prefix is taken, not borrowed: one conversation keeps holding the pin
-        const auto on_pin = two.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 77}, {}, true);
+        const auto on_pin = two.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 77}, {}, true, kLoraNone);
         check(on_pin.tokens == 6 && !on_pin.live && !two.borrows(on_pin), "a pinned prefix is taken, not borrowed");
         ConversationCache three(1 << 20, 3);
         SavedConversation doc3 = image({1, 2, 3, 4, 5, 6, 30, 31, 32});
         doc3.checkpoints = {cp({1, 2, 3, 4, 5, 6}, true), cp({1, 2, 3, 4, 5, 6, 30}), cp({1, 2, 3, 4, 5, 6, 30, 31})};
         check(three.put(std::move(doc3)), "a conversation past its pinned prefix is parked");
-        const auto past_pin = three.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 30, 99}, {}, true);
+        const auto past_pin = three.best(std::vector<int64_t>{1, 2, 3, 4, 5, 6, 30, 99}, {}, true, kLoraNone);
         check(past_pin.tokens == 7 && !three.borrows(past_pin),
               "a match past the pinned prefix (the copy would carry the pin) is taken, not borrowed");
     }
@@ -424,7 +425,7 @@ int main() {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");
-        check(disabled.best(a,{},true).tokens == 0, "disabled cache has no matches");
+        check(disabled.best(a,{},true, kLoraNone).tokens == 0, "disabled cache has no matches");
     }
     {
         // --conversation-cache-min-tokens: a conversation shorter than the minimum is not worth one of the slots.
@@ -548,7 +549,7 @@ int main() {
         check(big.put(image({7,8,9})) && big.put(image({4,5,6})) && big.size() == 3, "two more fill the slots");
         check(big.put(image({10,11,12})) && big.size() == 3 && big.evictions() == 1,
               "a fourth evicts the oldest unpinned one");
-        check(big.best(std::vector<int32_t>{1,2,9,9}, {}, true).tokens == 2, "the pinned prefix is still found");
+        check(big.best(std::vector<int32_t>{1,2,9,9}, {}, true, kLoraNone).tokens == 2, "the pinned prefix is still found");
         ConversationCache tiny(pinned_bytes + 8, 2);
         auto p2 = image({1,2,3});
         p2.checkpoints.push_back(ConversationCheckpoint{});
@@ -557,6 +558,48 @@ int main() {
         p2.checkpoints.back().gdn.resize(64, 1);
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
+    }
+    {
+        // the adapter's key (`ConversationLora`): a conversation read with a different adapter state is not a match,
+        // however long its token prefix.  All THREE states are distinct - "no adapter resident" is not "resident but
+        // this request's flag off" - because the two populations answer different questions and an image carries no
+        // record of which model wrote its cells.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        check(conversation_lora_key(false, false) == kLoraNone && conversation_lora_key(false, true) == kLoraNone,
+              "no adapter resident is kLoraNone whatever the request asked");
+        check(conversation_lora_key(true, false) == kLoraOff && conversation_lora_key(true, true) == kLoraOn,
+              "a resident adapter is kLoraOff or kLoraOn by this request's flag");
+
+        ConversationCache cache(1 << 20, 4);
+        SavedConversation adapted = image({1, 2, 3, 4, 10}, true, kLoraOn);
+        adapted.checkpoints = {cp({1, 2, 3, 4})};
+        check(cache.put(std::move(adapted)), "park an adapted conversation");
+        const std::vector<int64_t> longer = {1, 2, 3, 4, 10, 11};   // the cached state is the prompt's prefix
+        check(cache.best(longer, {}, true, kLoraOn).tokens == 5, "the same adapter state matches");
+        check(cache.best(longer, {}, true, kLoraOff).tokens == 0,
+              "an engine with the adapter resident but this request's flag off does not match adapted state");
+        check(cache.best(longer, {}, true, kLoraNone).tokens == 0,
+              "an engine with no adapter resident does not match it");
+        // a checkpoint inside the entry is not a match either (the borrow path reads it the same way), and the two
+        // entries' functions that name what a park would supersede follow the same key
+        const std::vector<ConversationCheckpoint> chain = {cp({1, 2, 3, 4})};
+        check(cache.parked_prefix_tokens({1, 2, 3, 4, 10}, {}, chain, true, kLoraOn) == 4,
+              "parked_prefix_tokens reports the adapted entry under its own key");
+        check(cache.parked_prefix_tokens({1, 2, 3, 4, 10}, {}, chain, true, kLoraNone) == 0,
+              "and nothing under another key");
+        // drop_superseded: a base-model image is not superseded by an adapted conversation's chain
+        ConversationCache shared(1 << 20, 4);
+        SavedConversation base = image({1, 2, 3, 4, 20}, true, kLoraNone);
+        base.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 20})};
+        check(shared.put(std::move(base)), "park a base-model conversation with a chain");
+        SavedConversation outgoing = image({1, 2, 3, 4, 20});
+        outgoing.lora = kLoraOn;
+        check(shared.drop_superseded(outgoing.live.ids, {}, outgoing.checkpoints, true, kLoraOn) == 0 &&
+                  shared.size() == 1 && shared.superseded() == 0,
+              "an adapted conversation's chain supersedes nothing a base-model request parked");
+        check(shared.drop_superseded(outgoing.live.ids, {}, outgoing.checkpoints, true, kLoraOff) == 0 &&
+                  shared.size() == 1,
+              "and neither does an entry whose state is kLoraOff");
     }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }
