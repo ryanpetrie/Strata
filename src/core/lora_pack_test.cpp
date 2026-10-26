@@ -275,8 +275,8 @@ int main() {
         // A routed-expert tensor, refused with BOTH sizes.  The tensor is {in 2560, out 640, 512 experts}: its
         // dim 0 is the projection's INPUT, so a correct adapter is A {rank 16, in 2560} and B {out 640, rank 16}.
         // The plan's arithmetic, re-run with the right labels: 42.0 MB fused for one tensor (2.01 GB over the 48
-        // layers, 6.03 GB for the three expert tensors) and 52.4 MB per expert (2.52 GB per tensor, 7.55 GB for
-        // the three).
+        // layers), 52.4 MB per expert (2.52 GB per tensor, 7.55 GB for the three); the three tensors' fused
+        // total is 4.54 GB, because the down projection is {in 640, out 2560} and smaller.
         const ModelGeometry real;  // Qwen3.8-Flash-Next's compiled defaults
         auto rows = golden_rows();
         rows[0] = row("blk.3.ffn_gate_exps.weight.lora_a", 16, 16.0, 16, 2560, 0);
