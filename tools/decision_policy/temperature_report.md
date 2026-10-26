@@ -4,6 +4,8 @@
 `temperature_calibration.json` next to this file; the server takes them from the
 launch config (`"systemone": {"temperature": {...}}`).
 
+**The pool:** jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42) - the serial first-token path, every item on the fast path.
+
 ## What was fitted
 
 One scalar per question type.  The temperature divides the logits before the
@@ -25,15 +27,20 @@ walk the temperature is applied to the OPTION-LEVEL effective logits (the closed
 distribution), not to the per-trie-row logits: an option's weight is a product of
 per-node probabilities and the per-row normalizers differ per option.
 
-## The three objectives, and why the shipped one is the Brier score
+The expression is not written out a second time here: the fit calls the server's
+own `apply_temperature` (serve/logits_first_token.py), so the fit and the served
+numbers cannot drift apart.
 
-They disagree on this data, so all three are fitted and cross-validated:
+## The four objectives, and why the shipped one is the Brier score
+
+They disagree on this data, so all four are fitted and cross-validated:
 
 | objective | what it minimizes | choice | noul | score |
 |---|---|---:|---:|---:|
 | nll | the negative log-likelihood of the gold label | 1.16 | 1.57 | 0.94 |
 | brier | the multiclass Brier score | 0.62 | 0.67 | 0.77 |
 | ece | the scorer's own ECE for the type | 0.58 | 0.67 | 0.75 |
+| soft | the cross-entropy against the HUMAN distribution | 4.36 | 1.2 | 2.22 |
 
 The NLL is the textbook objective, and it wants a FLATTER distribution than the
 expected calibration error does.  The reason is in the data: the NLL is
@@ -43,6 +50,17 @@ treats every bin alike.  On this sample the model's errors sit in the MIDDLE of
 the confidence range, where it is UNDER-confident, so flattening makes the ECE
 worse.  The Brier score is between the two: a smooth proper scoring rule, like
 the NLL, but quadratic, so a confidently wrong item costs a bounded amount.
+
+The **soft** objective is the one that lines the probability up with how
+uncertain the PEOPLE were, not with a one-hot label: it is the cross-entropy
+against the item's `target_probs`, the annotators' own distribution.  It is
+only defined on the items that carry one, and the report says how many that is:
+
+| type | items | of those, with a human distribution |
+|---|---:|---:|
+| choice | 107 | 3 |
+| noul | 69 | 6 |
+| score | 59 | 4 |
 
 **The shipped constants use the `brier` objective.**
 
@@ -65,6 +83,30 @@ choice, the ECE of P(yes) for noul, the top-level ECE for score).
 | ece | choice | 0.1313 | 0.1301 |
 | ece | noul | 0.0756 | 0.0824 |
 | ece | score | 0.1082 | 0.0498 |
+| soft | choice | 0.1313 | 0.3462 |
+| soft | noul | 0.0756 | 0.1002 |
+| soft | score | 0.1082 | 0.1912 |
+
+The **scorer's own** per-type calibration (0-100) on the same out-of-fold
+predictions, from the scorer's `calibration` function: the top-label ECE on the
+hard tier for choice, the ECE of P(yes) for noul, and for score the mean of the
+top-level ECE and (1 - nRPS).  The ECE table above is the raw ECE, in ECE units;
+this table is what the scorer turns into its Calibration number.
+
+| objective | type | calibration before | calibration after (out-of-fold) |
+|---|---|---:|---:|
+| nll | choice | 73.7 | 71.0 |
+| nll | noul | 84.9 | 77.4 |
+| nll | score | 86.3 | 91.0 |
+| brier | choice | 73.7 | 75.5 |
+| brier | noul | 84.9 | 84.3 |
+| brier | score | 86.3 | 90.8 |
+| ece | choice | 73.7 | 74.0 |
+| ece | noul | 84.9 | 83.5 |
+| ece | score | 86.3 | 92.3 |
+| soft | choice | 73.7 | 30.8 |
+| soft | noul | 84.9 | 80.0 |
+| soft | score | 86.3 | 77.1 |
 
 The 70/30 split (the same seed), fitted on its own train part:
 
@@ -137,6 +179,7 @@ fold it was not in) were written out and scored with the official `score.py`:
 | the out-of-fold fit (nll) | 79.1 | 78.3 | 79.8 |
 | the out-of-fold fit (brier) | 81.5 | 79.4 | 83.5 |
 | the out-of-fold fit (ece) | 81.2 | 79.2 | 83.3 |
+| the out-of-fold fit (soft) | 68.0 | 73.5 | 62.6 |
 | the in-sample fit (brier, what the server gets) | 82.1 | 79.2 | 84.9 |
 
 Per-type calibration:
@@ -147,6 +190,7 @@ Per-type calibration:
 | the out-of-fold fit (nll) | 71.0 | 77.4 | 91.0 |
 | the out-of-fold fit (brier) | 75.5 | 84.3 | 90.8 |
 | the out-of-fold fit (ece) | 74.0 | 83.5 | 92.3 |
+| the out-of-fold fit (soft) | 30.8 | 80.0 | 77.1 |
 | the in-sample fit (brier) | 77.4 | 86.9 | 90.5 |
 
 Per-type competence (the score type's expected level moves with the temperature,
@@ -158,10 +202,13 @@ so its Intelligence is not fixed):
 | the out-of-fold fit (nll) | 86.7 | 80.5 | 67.8 |
 | the out-of-fold fit (brier) | 86.7 | 80.5 | 71.1 |
 | the out-of-fold fit (ece) | 86.7 | 80.5 | 70.4 |
+| the out-of-fold fit (soft) | 86.7 | 80.5 | 53.2 |
 | the in-sample fit (brier) | 86.7 | 80.5 | 70.4 |
 
 ## The limits
 
+- **What the fit is measured on:** jgeuter/OpenDecisions v1.0.1, the 235-item 10% sample (seed 42) - the serial first-token path, every item on the fast path.
+  the constants are fitted on these same items, so a re-run of the sample is IN-SAMPLE; the honest number is the out-of-fold one below
 - **The 235-item re-run is in-sample.**  The constants are fitted on those items,
   so the in-sample row above is not an unbiased estimate of anything.  The honest
   number is the out-of-fold one.
@@ -169,8 +216,7 @@ so its Intelligence is not fixed):
   data, never on OpenDecisions").  The roadmap asks for this fit, so the numbers
   are labelled as they are, and the independent check is the jev-bench run with
   human soft labels (roadmap item 1.2).
-- **The ECE of the choice questions is measured on the hard tier only** (53 of the
-  107 choice items), so it is a thin slice: the fold table above says how thin.
+- **The ECE of the choice questions is measured on the hard tier only** (53 of the 107 choice items), so it is a thin slice: the fold table above says how thin.
 - **The noul's ECE is a wash.**  Its curve is jagged and shallow around T = 1 and
   its minimum does not survive the cross-validation; see the table above.
 - **One temperature per type is one number for a whole family of questions.**  A
@@ -183,4 +229,12 @@ so its Intelligence is not fixed):
   bootstrap puts an interval on it, and that interval is wide: the direction is
   right, the size is not known.  The Intelligence gain is the part that holds up;
   the Calibration gain is the least certain of the three.
+
+The files the fit read, with their digests:
+
+| file | sha256 |
+|---|---|
+| items (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\sample10_items.jsonl`) | `ad61ec162c4f95b4ddadc6733f2da557b4a8dbeade37f611b41282d2f89100c8` |
+| runlog (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\fix_serial.runlog.jsonl`) | `778db6e107621865bb776a956558cc4b1d240bc2e0ef1759e8b099e31759c453` |
+| predictions (`C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\fix_serial.jsonl`) | `6ca1b3126673affcb4dbf566a58ec160d87106d5dfc713e779a5aff2a3942727` |
 
