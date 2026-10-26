@@ -71,8 +71,22 @@ python tools/decision_policy/temperature.py \
 The script reads a baseline run (the run log and the predictions the official scorer takes), rebuilds each
 item's closed distribution, fits the temperature per type, cross-validates it (5 folds, stratified by type,
 seed 42; the fit never sees the item it is scored on), scores the out-of-fold predictions with the official
-`score.py`, and writes the constants and the report.  Three objectives are fitted and cross-validated
-(`--objective nll|brier|ece`): they disagree on this data, and the report says why and which one is used.
+`score.py`, and writes the constants and the report.  Four objectives are fitted and cross-validated
+(`--objective nll|brier|ece|soft`): they disagree on this data, and the report says why and which one is used.
+
+**The fit works on any pool.**  The items file, the run log and the predictions are the CLI's arguments, so
+the same script fits the 235-item OpenDecisions sample and the jev-bench validation pool.  The source block
+of the JSON is written from the command line (`--source-dataset`, `--source-arm`, `--source-note`), and the
+files the fit read are recorded with their sha256, so a constant always says where it came from.
+
+**The transform is the server's own.**  The fit calls `serve/logits_first_token.py::apply_temperature` - the
+function the server calls on every answer - rather than writing the expression out a second time, so the fit
+and the served numbers cannot drift apart.
+
+**The `soft` objective** is the cross-entropy against the item's **human distribution** (`target_probs`), not
+against the one-hot gold label: it is the objective that lines the probability up with how uncertain the
+people were.  It is only defined on the items that carry a distribution, and the report says how many that
+is per type.
 
 It also says how sure the result is, in two ways, and neither of them is a point estimate on its own:
 
@@ -154,6 +168,8 @@ python tools/decision_policy/download_soft_labels.py --out-dir <D>       # fetch
 python tools/decision_policy/soft_labels.py --data-dir <D> --out items.jsonl          # the whole split
 python tools/decision_policy/soft_labels.py --data-dir <D> --sample --out sample.jsonl # the seeded sample
 python tools/decision_policy/soft_labels.py --data-dir <D> --validate --out items.jsonl
+python tools/decision_policy/soft_labels.py --data-dir <D> \
+    --plan tools/decision_policy/soft_label_pool.json --out pool.jsonl   # the fitting pool
 ```
 
 `download_soft_labels.py` fetches the train and validation splits of the three configs with a human
@@ -168,6 +184,13 @@ checks every item against the scorer's rules and then runs the official `score.p
 once with an empty predictions file, once with a uniform prediction on every item (that second run
 exercises the scorer's own normalization on every item). `--sample` writes a stratified, seeded sample
 of the validation pool, 200 items per question type by default, so a per-type fit has a stable split.
+
+**The pool plan** (`soft_label_pool.json`, tracked in the repo) is the fitting pool of the per-type
+temperature: 500 items of every question type, with the per-config counts and the seed fixed in the file,
+so the pool is reproducible.  It also carries the **licence verdict** of every config, taken from the
+licence record, and the list of the configs that are out and why.  `--plan` draws per config (the types
+in the fixed order choice, noul, score; the configs of a type in sorted order; one seeded generator), and
+a config the data does not have, or a count the split cannot fill, is an error rather than a smaller pool.
 
 ## The options' shape
 
@@ -206,7 +229,9 @@ whose options share a first token.
 | `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
 | `download_soft_labels.py` | source | fetches the licence-clean soft-label splits and writes the manifest of what it fetched. |
 | `soft_labels.py` | source | the soft-label data in the harness's item shape: the checks, the stratified sample and the scorer proof. |
+| `soft_label_pool.json` | source | the fitting pool: the per-config counts, the seed and the licence verdict of every config. |
 | `test_soft_labels.py` | source | unit tests for the converter (no network, no data). |
+| `test_temperature.py` | source | unit tests for the fit: the server's transform, the soft objective, the no-leak property and the regression on the 235-item fit. |
 | `tokenization_report.md`, `tokenization_results.json` | generated | the model's tokenizer against the reference one. |
 | `first_token_report.md`, `first_token_analysis.json` | generated | the first-token study's results. |
 

@@ -290,8 +290,16 @@ list above only, so it owes attribution but no share-alike and no licence on the
 **What to fit where.** The human distribution lives in three places: the noul share (civil_comments),
 the choice distribution over 28 emotions (go_emotions) and the score distribution over 3 levels
 (measuring_hate_speech). A copy of human uncertainty has to be fitted per question type, because the
-three types have different label spaces and different numbers of levels. The validation sample this
-work writes (200 items per type, seed 20261020) is the split a per-type temperature is fitted on.
+three types have different label spaces and different numbers of levels.
+
+**The fitting pool** is the jev-bench **validation** split, 500 items of every question type, with the
+per-config counts and the seed fixed in `tools/decision_policy/soft_label_pool.json` (that file also
+carries the licence verdict of every config, taken from the tables above, and the list of the configs
+that are out and why). The pool is built by `tools/decision_policy/soft_labels.py --plan`; the data
+itself stays outside the repository. The **test** split is the yardstick and is never fitted on.
+
+The 200-item-per-type sample this work wrote first (seed 20261020) is still in the data directory; it is
+the smaller of the two and the pool plan supersedes it for the temperature fit.
 
 ## 8. The limits of this document
 
