@@ -224,7 +224,7 @@ so its Intelligence is not fixed):
 ## The limits
 
 - **What the fit is measured on:** Praveenrajus/jev-bench, the validation split, the 500-per-type pool of soft_label_pool.json (seed 20261021) - the serial first-token path, one question per request, the server at T = 1, a fresh engine (1500/1500, 0 failures, 6306 s).
-  the pool is licence-clean and out of sample with respect to OpenDecisions and to the jev-bench test split; the constants are fitted on it and on nothing else
+  the pool is license-clean and out of sample with respect to OpenDecisions and to the jev-bench test split; the constants are fitted on it and on nothing else
 - **The raw top-level ECE of the choice questions is measured on the hard tier only** (500 of the 500 choice items), so it is a thin slice: the fold table above says how thin.  (For the choice and the noul types the scorer's calibration component is that ECE, scaled; for the score type it is the mean of the top-level ECE and (1 - nRPS), so the ECE half is only part of the component.)
 - **The noul's ECE is a wash.**  Its curve is jagged and shallow around T = 1 and
   its minimum does not survive the cross-validation; see the table above.

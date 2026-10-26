@@ -4,14 +4,14 @@
 
 **Status: a plan, not a result.** Nothing here has been trained. It fixes the two arms'
 data, recipe, evaluation, margins and stop rules **before** the first adapter is trained,
-because the programme's other items (1.1-1.5, 1.4b) each learned that a rule written after
+because the program's other items (1.1-1.5, 1.4b) each learned that a rule written after
 the numbers is a rule that can be read backwards. The engine hook the arms need does not
 exist yet: **2.2's step 2 (the LoRA kernel) is the blocker**, and it is weeks of work. This
 document is what makes those weeks have a target.
 
 **Read with** `phase2_engine_lora_plan.md` (2.2's design and file map),
 `phase2_training_env.md` (2.1's environment, installed and smoke-tested on the 4090),
-`decision_policy_training_data.md` (the licence record every data choice below comes from),
+`decision_policy_training_data.md` (the license record every data choice below comes from),
 `decision_policy_literature_and_gaps.md` §3.C and §3.E (why these two arms), and
 `shared_backbone_decision_policy.md` §27 (the metric family this rule reuses).
 
@@ -29,7 +29,7 @@ document is what makes those weeks have a target.
 * **The shared control.** A third adapter trained with the same recipe and steps on
   **shuffled targets**. It measures how much a LoRA shifts the readout by existing at all,
   so a 2.3/2.3b gain cannot be "any adapter helps".
-* **What decides.** The licence-clean pool's 750 human-labelled items are the
+* **What decides.** The license-clean pool's 750 human-labeled items are the
   **development** set (disjoint from the training split by split); the **jev-bench test
   sample** (683 items, 280 with a human distribution) and the **OpenDecisions 235** are the
   yardsticks. The rule is §6; the margins are the measured per-type run-to-run noise, the
@@ -48,8 +48,8 @@ document is what makes those weeks have a target.
 | **2.3b** human soft labels | people's distribution for the same question | the jev-bench train split's soft labels: `civil_comments` 8,000 (noul), `go_emotions` 8,000 (choice), `measuring_hate_speech` 8,000 (score) | a human-agreement gap, per type, on the configs that have human labels | the configs that have no human distribution (HelpSteer2's 5 levels, most of the 235's routing questions) - the adapter carries no target for them |
 
 The two are not alternatives to each other; they are the two things a decision adapter can
-learn. The programme's own result says why 2.3 alone is not enough: the endpoint's error on
-the human-labelled noul items is **93% a bias** (companion doc §19), and a bias copied from
+learn. The program's own result says why 2.3 alone is not enough: the endpoint's error on
+the human-labeled noul items is **93% a bias** (companion doc §19), and a bias copied from
 the teacher stays. 2.3b is the only arm whose target is outside the model. **The order is
 2.3 first**, because it needs no labels and it prices the teacher; 2.3b is evaluated against
 it, not only against the base.
@@ -62,7 +62,7 @@ it, not only against the base.
 
 `<data root>\decision_policy_training\<config>\train.jsonl`, jev-bench's own train split:
 
-| config | question type | rows | with a human distribution | licence (record §7) |
+| config | question type | rows | with a human distribution | license (record §7) |
 |---|---|---:|---:|---|
 | `civil_comments` | noul | 8,000 | 8,000 | CC0 1.0, nothing owed |
 | `go_emotions` | choice (28 options) | 8,000 | 8,000 | Apache-2.0, nothing owed |
@@ -75,7 +75,7 @@ run may train on** (record §7); the validation split is what selection reads, a
 split is the yardstick, never trained on.
 
 **What is excluded, and why** (record §5 and §7): `chaosnli` (non-commercial),
-`mnli`, `yelp5`, `sst5` (unusable or unspecified licences), `fever_evidence`, `sms_spam`
+`mnli`, `yelp5`, `sst5` (unusable or unspecified licenses), `fever_evidence`, `sms_spam`
 and `stsb` (terms not verified), **OpenDecisions** (its card says "Please do not use for
 training"), and Open-Jev-v1.1's 1,500 `customer-control-v1` rows (TypeSafe terms not read).
 A released adapter is trained on the list above only, so it owes attribution and no
@@ -102,12 +102,12 @@ different experiment.
 ### 2.3 The split, and what the model is selected on
 
 * **Train:** the train split, 24,000 rows (§2.1).
-* **Develop (choose the checkpoint, the rank, the epoch):** the 750 human-labelled items of
-  the licence-clean pool's **validation** split (1,500 items; 250 a type), the same pool
+* **Develop (choose the checkpoint, the rank, the epoch):** the 750 human-labeled items of
+  the license-clean pool's **validation** split (1,500 items; 250 a type), the same pool
   1.4b and 1.5 used, disjoint from the train split by split. It is also the set the rule's
   (a) is measured on.
 * **Yardsticks (after the checkpoint is chosen):** the jev-bench **test** sample and the
-  235. Same order as every other item in this programme: choose on the develop set, confirm
+  235. Same order as every other item in this program: choose on the develop set, confirm
   on the yardsticks, never the other way round.
 * **The civil_comments caveat:** jev-bench's train and validation rows are the upstream
   **validation** split, and the upstream repeats comments across splits (record §5.7.1:
@@ -156,7 +156,7 @@ Chosen by `phase2_engine_lora_plan.md` §3.3 and its VRAM finding, not re-opened
   target tensor. A different recipe for the winner is a second experiment.
 * **The loss** is the soft cross-entropy (KL) between the model's answer-position
   distribution and the target, over the question's answer options only - the same
-  renormalisation the endpoint reports. A hard-label loss is not used for either arm; the
+  renormalization the endpoint reports. A hard-label loss is not used for either arm; the
   whole point is the distribution.
 * **Steps and epochs:** fixed by the develop set, with the base control trained for the
   same number of steps. The training set is small (24,000 rows) and the adapter is small;
@@ -212,7 +212,7 @@ into a minimum detectable effect at the develop set's n = 250 by the same arithm
 > control's gain by more than the type's margin. **This is the check that separates
 > "training helped" from "a LoRA shifted the logits".**
 >
-> **(d) The jev-bench test sample.** Its 280 human-labelled items' mean TVD does not rise
+> **(d) The jev-bench test sample.** Its 280 human-labeled items' mean TVD does not rise
 > by more than **0.005**, and its official Capability does not fall by more than **1.8**
 > points, against a base arm run in the same session.
 >
@@ -231,7 +231,7 @@ into a minimum detectable effect at the develop set's n = 250 by the same arithm
 > margin. If it does not, **the answer is that the teacher's distribution is enough on this
 > model and the data-dependent adapter is not worth shipping** (2.3b's own exit criterion,
 > roadmap §2.3b). If neither arm clears (a)-(c), the finding is that a LoRA at this scale
-> does not move the readout, and the programme stops Phase 2 rather than spending 2.5's
+> does not move the readout, and the program stops Phase 2 rather than spending 2.5's
 > VRAM on an escalation with no measured cause.
 
 **If the develop set and a yardstick disagree, the arm does not ship**; it is recorded as
@@ -263,7 +263,7 @@ byte-identical with the adapter loaded, the decision path using it, the VRAM mea
 ## 8. What this document does not claim, and the limits
 
 * **No number here comes from a training run.** The data counts are the manifest's and the
-  licence record's; the margins are the measured engine noise, not an adapter's.
+  license record's; the margins are the measured engine noise, not an adapter's.
 * **The 24,000 rows are three configs of one dataset.** A noul adapter trained on
   `civil_comments` may overfit to toxicity; the develop set's 250 noul items are the same
   population, so the 235 (11 families, rule (e)) is the guard that matters. The same holds
@@ -274,9 +274,9 @@ byte-identical with the adapter loaded, the decision path using it, the VRAM mea
   questions (11 families, none in the training set) the adapter is a shift with no fitted
   meaning; that is what rule (e) is for.
 * **The teacher is the same model.** 2.3 inherits the teacher's bias by construction; its
-  value is the reasoning it internalises, not a correction.
+  value is the reasoning it internalizes, not a correction.
 * **One model, one quantization, one card.** The training environment is 2.1's
   (`C:\tools\strata-train`, torch 2.11.0+cu128), the engine is the shipping one, and the
   adapter format is 2.2's. A result here is a candidate for this model, not a general claim.
-* **The licence record governs.** No OpenDecisions row, no chaosnli, no `customer-control`
+* **The license record governs.** No OpenDecisions row, no chaosnli, no `customer-control`
   row, no test split. The adapter's release owes the attribution in record §5.3.

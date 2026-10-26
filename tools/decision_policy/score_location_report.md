@@ -1,7 +1,7 @@
 # 1.4b: one location per score config (the run of 2026-10-22)
 
 The map: `p'_k = normalize(p_k * exp(b_c * (u_k - 0.5)))`, `u_k = k/(K-1)`, `T = 1`; one `b_c` per
-config, fitted on the licence-clean pool's stored T = 1 run and transferred to the jev-bench
+config, fitted on the license-clean pool's stored T = 1 run and transferred to the jev-bench
 sample's items of the same config.  The rule is companion doc 26.1, committed before this ran.
 
 | config | K | n (pool) | b_c | pool T=1 | pool out-of-fold | the pool, paired |
