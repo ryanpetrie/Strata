@@ -219,8 +219,10 @@ struct SessionReadLimits {
     // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
     // A layer past the end of the list is bounded by the payload only.
     std::vector<std::array<uint64_t, 5>> max_kv_bytes;
-    // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
-    // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
+    // the RAM PREFLIGHT: asked once the header and identity match; false refuses the file.  session_file_read asks
+    // before any payload allocation, with what its whole parse holds at peak (session_read_peak_bytes).
+    // SessionFileStream asks after reading the metadata, with that metadata + one layer + the file block.  Not a
+    // reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
     SessionProgress progress;
 };
@@ -237,12 +239,13 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
                        SessionStatus* status = nullptr);
 
 // Reads a session file v1 one K/V layer at a time, for a restore whose whole host image would not fit in RAM.
-// open() validates the header, the identity, the size and the limits and reads everything before the K/V (the
-// metadata: geometry, live state, every checkpoint, the layer count); next() reads exactly one layer into the
-// caller's ConversationKv, releasing the previous one first; finish() reads the trailer and checks the payload hash
-// over every payload byte.  Until finish() returns true the file is not valid.  Nothing is copied to the device:
-// the caller passes each layer on (that restore API is a later step).  Host staging is the metadata, the largest
-// layer read and the fixed 16 MiB file block - never the whole file.
+// open() validates the header, the identity, the size and the limits, reads everything before the K/V (the
+// metadata: geometry, live state, every checkpoint, the layer count) and then asks limits.admit for that metadata
+// plus one layer and the file block; next() reads exactly one layer into the caller's ConversationKv, releasing the
+// previous one first; finish() reads the trailer and checks the payload hash over every payload byte.  Until
+// finish() returns true the file is not valid.  Nothing is copied to the device: the caller passes each layer on
+// (that restore API is a later step).  Host staging is the metadata, the largest layer read and the fixed 16 MiB
+// file block - never the whole file.
 class SessionFileStream {
 public:
     SessionFileStream();

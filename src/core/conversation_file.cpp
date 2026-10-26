@@ -1267,17 +1267,6 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
 }
 
 namespace {
-// The most the metadata (live plus every checkpoint, no K/V) can allocate, from the limits alone.  Saturating: one
-// open limit gives UINT64_MAX - no bound, never a small one pretending to be one.
-uint64_t stream_metadata_bytes(const SessionReadLimits& l) {
-    uint64_t cp = sat_add(16, sat_mul(l.max_tokens, 4 + 16));
-    for (uint64_t b : l.max_state_bytes) cp = sat_add(cp, sat_add(8, b));
-    cp = sat_add(cp, 8);
-    uint64_t n = sat_add(cp, 21 * 8);   // live, then geometry, layer range, cvec
-    n = sat_add(n, sat_mul(l.max_checkpoints, sat_add(cp, (uint64_t) sizeof(ConversationCheckpoint))));
-    return sat_add(n, uint64_t(1) << 20);   // the vectors' own overhead
-}
-
 // The largest layer the limits allow, from the per-layer caps.  Without them a layer is bounded only by the payload,
 // so there is no layer bound to claim.
 uint64_t stream_largest_layer_bytes(const SessionReadLimits& l) {
@@ -1414,16 +1403,7 @@ bool SessionFileStream::open(const std::string& path, const SessionFileIdentity&
                         std::to_string(kHeader + payload + kTrailer) + ")";
                 return false;
             }
-            // the bounded ask: the metadata (never more than the payload), the largest layer the limits allow and
-            // one block - not the whole file
-            const uint64_t need = sat_add(sat_add(std::min(stream_metadata_bytes(s->limits), payload),
-                                                  stream_largest_layer_bytes(s->limits)), kBlock);
-            std::string why;
-            if (s->limits.admit && !s->limits.admit(need, why)) {
-                st.error = SessionError::memory;
-                error = "session file: " + why;
-                return false;
-            }
+            // Everything before the first K/V layer, with every count already bounded by the limits and the payload.
             SavedConversation parsed;
             In in{&*s->source, SessionHasher(0), payload, error, s->limits};
             size_t layers = 0;
@@ -1437,6 +1417,24 @@ bool SessionFileStream::open(const std::string& path, const SessionFileIdentity&
             s->layers = layers;
             s->meta = std::move(parsed);
             s->peak = (uint64_t) s->meta.bytes();   // metadata so far; each layer adds its own staging
+            // Admission on the metadata the file ACTUALLY holds, not on a bound built from max_checkpoints: the
+            // pre-parse bound charged every checkpoint the caller would ever accept (6 in the engine), so a file with
+            // one 123 MiB checkpoint was estimated at 7 x 123 MiB and refused against a 512 MiB budget.
+            // What this bounds before the ask: the parse above is itself bounded by the caller's limits
+            // (max_tokens, max_checkpoints, max_state_bytes, max_kv_layers) and by the file size, and it runs only
+            // after the header's identity check.  A corrupt but identity-matching file can therefore allocate up to
+            // those limits before this refuses it - bounded by the caller's own maxima, never by the whole file.  That
+            // is not covered by the staging budget, so a refusal here is not a promise that nothing was allocated.
+            if (s->limits.admit) {
+                const uint64_t need = sat_add(sat_add((uint64_t) s->meta.bytes(),
+                                                      stream_largest_layer_bytes(s->limits)), kBlock);
+                std::string why;
+                if (!s->limits.admit(need, why)) {
+                    st.error = SessionError::memory;
+                    error = "session file: " + why;
+                    return false;
+                }
+            }
             st.error = SessionError::none;
             return true;
         };

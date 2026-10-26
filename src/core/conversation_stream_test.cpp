@@ -449,6 +449,61 @@ void admission(const fs::path& dir, const SessionFileIdentity& id) {
     check(s.open(p.string(), id, l, error, &st), "admission: open with open limits");
     check(asked == UINT64_MAX, "admission: open limits report no bound");
 }
+
+// ---- a file with one checkpoint is admitted on the metadata it holds, not on max_checkpoints of them
+void admission_of_one_checkpoint(const fs::path& dir, const SessionFileIdentity& id) {
+    // A ~1.2 MiB running state (and the same in one checkpoint) with small K/V layers: the file's metadata plus one
+    // layer is a few MiB, while the old pre-parse estimate charged 6 checkpoints (7 x the state) and asked ~27 MiB.
+    auto state = [](size_t tokens, uint8_t seed, size_t gdn, size_t tails) {
+        ConversationCheckpoint c = checkpoint(tokens, seed);
+        c.gdn = bytes_of(gdn, seed);
+        c.tails = bytes_of(tails, seed + 1);
+        return c;
+    };
+    SavedConversation s;
+    for (size_t i = 0; i < s.geometry.size(); ++i) s.geometry[i] = int64_t(7 + i);
+    s.layer_lo = 0;
+    s.layer_hi = 27;
+    s.live = state(16, 21, 600000, 600000);
+    s.checkpoints.push_back(state(16, 31, 575000, 575000));   // exactly one checkpoint: the normal save
+    for (int i = 0; i < 3; ++i) s.kv.push_back(kv_layer(i, 2600000, 0, 0, 0, 0));
+    const fs::path p = dir / "one-checkpoint.bin";
+    size_t written = 0;
+    std::string error;
+    check(session_file_write(p.string(), s, id, written, error), "one checkpoint: write");
+
+    SessionReadLimits l = exact_limits(s);
+    l.max_checkpoints = 6;   // the engine's allowance, though this file holds one: it must not be charged six times
+    // the restore's budget: 8 MiB for the metadata and the layer being read, plus the fixed 16 MiB file block
+    const uint64_t layer_budget = 8u << 20, block = 16u << 20;
+    uint64_t asked = 0;
+    bool admitted = false;
+    l.admit = [&](uint64_t need, std::string& why) {
+        asked = need;
+        admitted = true;
+        if (need <= layer_budget + block) return true;
+        why = "no room for " + std::to_string(need >> 20) + " MiB";
+        return false;
+    };
+    SessionFileStream stream;
+    SessionStatus st;
+    check(stream.open(p.string(), id, l, error, &st) && admitted, "one checkpoint: open is admitted");
+    check(st.error == SessionError::none && error.empty(), "one checkpoint: open succeeds without an error");
+    check(stream.meta().checkpoints.size() == 1, "one checkpoint: the file's own count");
+    std::printf("one checkpoint: metadata %llu KiB, largest layer %llu KiB, asked %llu KiB, budget %llu KiB\n",
+                (unsigned long long) (stream.meta().bytes() >> 10),
+                (unsigned long long) ((asked - (uint64_t) stream.meta().bytes() - block) >> 10),
+                (unsigned long long) (asked >> 10), (unsigned long long) ((layer_budget + block) >> 10));
+    check(asked >= (uint64_t) stream.meta().bytes() + block, "one checkpoint: the ask counts the real metadata");
+    check(asked <= layer_budget + block, "one checkpoint: the ask fits the staging budget");
+    check(stream.peak_bytes() < (8u << 20), "one checkpoint: the real peak is under 8 MiB");
+    ConversationKv got;
+    for (size_t i = 0; i < stream.layers(); ++i) {
+        check(stream.next(got, error), "one checkpoint: next");
+        check(same_kv(got, s.kv[i]), "one checkpoint: layer bytes");
+    }
+    check(stream.finish(error), "one checkpoint: finish");
+}
 } // namespace
 
 int main() {
@@ -464,6 +519,7 @@ int main() {
     refuse_limits(dir, id);
     refuse_trailer(dir, id);
     admission(dir, id);
+    admission_of_one_checkpoint(dir, id);
 
     std::error_code ec;
     fs::remove_all(dir, ec);
