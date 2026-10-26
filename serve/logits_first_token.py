@@ -36,6 +36,12 @@ from tools.decision_policy import logits_prob
 # maximum and costs one short pipe write per request.
 LOGITS_TOP_K = 1024
 
+# The logit of a token the engine did not send: the window holds the highest logits,
+# so a token outside it is below every token inside it.  Its probability is therefore
+# below the window's tail, which is what OUT_OF_WINDOW stands for - a token the model
+# has all but ruled out, not an unknown.
+OUT_OF_WINDOW = float("-inf")
+
 
 def answer_text(prefix: str, opt: str) -> str:
     """The text the model writes for this option.
@@ -219,8 +225,10 @@ The second factor is what makes options of different lengths comparable: without
 the shorter option ("frontier") would carry the whole weight of the shared prefix and
 always beat the longer one ("frontier_reasoning").
 
-None when a token the option needs is outside the row the engine sent: the
-probability would be a guess, and a guess is not an answer.
+A token the row does not carry is not a failure: the row holds the highest logits, so
+a token outside it is below every token inside it, and the option's probability is
+below the window's tail.  Such an option is scored as zero - it cannot be the pick -
+and the question is still answered.
     """
     tokens, resolution = plan["tokens"], plan["resolution"]
     out: dict[str, float] = {}
@@ -231,15 +239,17 @@ probability would be a guess, and a guess is not an answer.
             topk, logz = rows[tuple(ids[:i])]
             tid = ids[i]
             if tid not in topk:
-                return None
+                p = 0.0                  # the option is below the window's tail
+                break
             p *= math.exp(topk[tid] - logz)
         node = tuple(ids[:r])
         topk, logz = rows[node]
         if r < len(ids):
             tid = ids[r]
             if tid not in topk:
-                return None
-            p *= math.exp(topk[tid] - logz)
+                p = 0.0                  # the option is below the window's tail
+            else:
+                p *= math.exp(topk[tid] - logz)
         else:
             # the option's text ends here: the model answered with it only if the turn
             # ends here.  A turn-end token outside the window has a probability below
@@ -258,6 +268,10 @@ def trie_readings(q: dict, plan: dict, rows: dict[tuple, tuple[dict[int, float],
 
 The reading has the same shape as the first-token one (closed, open, stop, outside),
 so the two can be compared and the response is built the same way.
+
+None when the model was going to say something else at a node where the options are
+told apart (including the answer position itself), or when no option carries any
+probability at all.
     """
     options = option_names_for_question(q)
     probs = trie_probs(plan, rows)
@@ -329,7 +343,7 @@ def fallback_reason(questions: list[tuple[str, dict]], logits: dict[int, float],
         return "no logits from the engine"
     for name, q, options, ftids in plan:
         missing = [o for o in options if ftids[o] not in logits]
-        if missing:
+        if missing and len(missing) == len(options):
             return f"outside the window: {missing[0]!r} is not in the engine's top-k"
     if max(logits, key=lambda t: logits[t]) not in {t for _, _, _, f in plan for t in f.values()}:
         return "the model's top token is not one of the options"
@@ -384,18 +398,24 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
     decided.  For a multi-token option the open probability is the FIRST token's, an
     upper bound on the whole sequence.
 
-    Returns None when any option's first token is outside the top-k, or when first
-    tokens collide (two options sharing a first token cannot be separated by first-token
-    logits alone).
+AN OPTION OUTSIDE THE WINDOW.  The engine sends the top k logits, not the whole
+    vocabulary, so an option's first token can be outside it.  The window holds the
+    highest logits, so such an option is below every option inside it: it cannot be
+    the pick, and its probability is below the window's tail.  It is therefore scored
+    as zero - the answer cannot change - instead of giving up on the question.
+
+    Returns None when first tokens collide (two options sharing a first token cannot
+    be separated by first-token logits alone), when no option is in the window at
+    all, or when the model was going to say something else.
     """
     per_question = first_token_plan(questions, tok, prefix)
     if per_question is None:
         return None
     for name, q, options, ftids in per_question:
-        # Missing from top-k check
-        for tid in ftids.values():
-            if tid not in logits:
-                return None
+        # An option outside the window is scored as zero, not as a failure: it is
+        # below every option inside the window, so it cannot be the pick.
+        if not any(ftids[opt] in logits for opt in options):
+            return None               # nothing to score: the decode path
         # THE MODEL'S OWN CHOICE.  The first-token probabilities describe the answer only
         # if the model is choosing among the options: if its top token is something else
         # (a digit it wants to write, the end of the turn), the option distribution is
@@ -412,14 +432,14 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
     stop_ids = end_of_turn_ids(tok)
     out = {}
     for name, q, options, ftids in per_question:
-        vals = [logits[ftids[opt]] for opt in options]
+        vals = [logits.get(ftids[opt], OUT_OF_WINDOW) for opt in options]
         # closed: the softmax over the options alone
         m = max(vals)
         exps = [math.exp(v - m) for v in vals]
         s = sum(exps)
         closed = {opt: exps[i] / s for i, opt in enumerate(options)}
         # open: the model's own probability of each option
-        openp = {opt: math.exp(logits[ftids[opt]] - logz) for opt in options}
+        openp = {opt: math.exp(logits.get(ftids[opt], OUT_OF_WINDOW) - logz) for opt in options}
         stop = sum(math.exp(logits[t] - logz) for t in stop_ids if t in logits)
         outside = max(0.0, 1.0 - sum(openp.values()))
         out[name] = {"type": q["type"], "options": options, "closed": closed, "open": openp,

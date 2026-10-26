@@ -180,16 +180,35 @@ class Readings(unittest.TestCase):
         self.assertIsNone(lft.first_token_probs(qs, {shared: 2.0}, tok, PREFIX))
 
     def test_missing_falls_back(self):
-        self.assertIsNone(lft.first_token_probs(self.qs, self._logits({"a": 2.0}), self.tok, PREFIX))
+        # every option outside the window: there is nothing to compare
+        self.assertIsNone(lft.first_token_probs(self.qs, {999: 2.0}, self.tok, PREFIX))
+
+    def test_an_option_outside_the_window_is_scored_as_zero(self):
+        # the engine sends the top k logits, so an option can be below the window.  It
+        # is then below every option inside the window: it cannot be the pick, and the
+        # question is still answered.
+        logits = self._logits({"a": 2.0})                # "b" is outside the window
+        readings = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)
+        self.assertIsNotNone(readings)
+        r = readings["q"]
+        self.assertEqual(max(r["closed"], key=r["closed"].get), "a")
+        self.assertEqual(r["closed"]["b"], 0.0)
+        self.assertAlmostEqual(sum(r["closed"].values()), 1.0)
+        self.assertEqual(r["open"]["b"], 0.0)
+
+    def test_every_option_outside_the_window_falls_back(self):
+        # nothing to score: there is no option to compare
+        self.assertIsNone(lft.first_token_probs(self.qs, {999: 2.0}, self.tok, PREFIX))
 
     def test_the_fallback_reason_says_which_way_it_fell_back(self):
-        # the two failures mean different things: a collision is what the chain rule
-        # would fix, a missing token is not
+        # the failures mean different things: a collision is what the trie walk
+        # answers, an option outside the window is not a failure at all, and the model
+        # wanting something else is
         _, qs = sysone.validate_request({"state": "x", "questions": {
             "q": {"type": "choice", "instructions": "Pick", "criteria": {"rule_1": None, "rule_2": None}}}})
         self.assertIn("collision", lft.fallback_reason(qs, {1: 2.0}, self.tok, PREFIX))
         self.assertIn("outside the window",
-                      lft.fallback_reason(self.qs, self._logits({"a": 2.0}), self.tok, PREFIX))
+                      lft.fallback_reason(self.qs, {999: 2.0}, self.tok, PREFIX))
         stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
         logits = self._logits({"a": 2.0, "b": 1.0})
         logits[stop_id] = 5.0
@@ -306,7 +325,14 @@ class TrieWalk(unittest.TestCase):
         rows = {(): ({ids["rule_1"][0]: 3.0}, 3.0),
                 tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
                 tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0}, 3.0)}   # rule_2 missing
-        self.assertIsNone(lft.trie_probs(plan, rows))
+        probs = lft.trie_probs(plan, rows)
+        # rule_2's token is below the window's tail: it carries no probability, and
+        # rule_1 - which is in the window - is the answer
+        self.assertEqual(probs["rule_2"], 0.0)
+        self.assertGreater(probs["rule_1"], 0.0)
+        r = lft.trie_readings(self.collide[0][1], plan, rows)
+        self.assertIsNotNone(r)
+        self.assertEqual(max(r["closed"], key=r["closed"].get), "rule_1")
 
     def test_the_shorter_option_needs_the_turn_to_end(self):
         # "bill" and "bill now": the end-of-turn token is what makes "bill" the answer
@@ -436,9 +462,11 @@ class ServiceLogitsPath(unittest.TestCase):
                                body["answers"]["q"]["probabilities"]["b"], 1.0)
 
     def test_missing_token_falls_back_to_the_generated_tokens(self):
-        # the fast path cannot score the options, but THIS request generated the answer
+        # the fast path cannot score the options - the model's top token is not one of
+        # them, it was going to say something else - but THIS request generated the
+        # answer
         svc = svc_with("q: b\n")
-        svc.engine.logits_topk = {1000: 2.0}                       # 1001 missing
+        svc.engine.logits_topk = {1000: 2.0, 1001: 1.0, 1002: 9.0}    # 1002 is not an option
         svc.engine.logits_tokens = svc.tok.encode("q: b")
         with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
             code, body = svc.systemone(req(), threading.Event())
@@ -446,12 +474,24 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertEqual(body["answers"]["q"]["choice"], "b")
         self.assertFalse(body["calibrated"])
 
+    def test_an_option_outside_the_window_is_still_answered(self):
+        # the engine sends the top k logits: an option below the window cannot be the
+        # pick (it is below every option inside it), so the question is still answered
+        svc = svc_with("q: b\n")
+        svc.engine.logits_topk = {1000: 2.0}                       # 1001 missing
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
+            code, body = svc.systemone(req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q"]["choice"], "a")
+        self.assertEqual(body["answers"]["q"]["probabilities"]["b"], 0.0)
+
     def test_the_end_of_turn_token_is_not_part_of_the_answer(self):
         # the model wrote the answer and then ended its turn.  The end token must not
         # be decoded into the answer: "rule_2<|im_end|>" is not one of the options, so
         # the request failed with a 502 (measured, on the collision case).
         svc = svc_with("q: b\n")
-        svc.engine.logits_topk = {1000: 2.0}                       # 1001 missing
+        svc.engine.logits_topk = {1000: 2.0, 1001: 1.0, 1002: 9.0}    # 1002 is not an option
         svc.engine.logits_tokens = svc.tok.encode("q: b") + [next(iter(svc.stop_ids))]
         with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
             code, body = svc.systemone(req(), threading.Event())
@@ -525,7 +565,7 @@ class ServiceLogitsPath(unittest.TestCase):
         # the model wanted to end the turn at the answer position: the classic prompt,
         # where it writes the whole line, answers it instead of erroring
         svc = svc_with("q: a\n")
-        svc.engine.logits_topk = {1000: 2.0}                       # 1001 missing
+        svc.engine.logits_topk = {1000: 2.0, 1001: 1.0, 1002: 9.0}    # 1002 is not an option
         with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
             code, body = svc.systemone(req(), threading.Event())
         self.assertEqual(code, 200)
