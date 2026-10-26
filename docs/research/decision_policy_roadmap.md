@@ -359,15 +359,26 @@ exactly, as it must be).
   235's score competence does not fall; if the per-config map does not transfer
   either, the score's location is a task property, not a calibration one, and this
   line of work closes with that finding.
-- **Depends on:** 1.4's fit tooling (`tools/decision_policy/affine.py`), the
-  pool's stored run (its score items carry both the human distribution and the
-  config), and the 235's stored score items — all in hand.
+- **Depends on:** 1.4's fit tooling (`tools/decision_policy/affine.py`), the pool's
+  stored run (`p1b_pool_T1.jsonl`), and the 235's stored score items. **Checked
+  before starting, 2026-10-22, and the data is weaker than this entry first said:**
+  of the pool's three score configs only **measuring_hate_speech** (K = 3, 250
+  items) carries a human distribution; the pool's `helpsteer2_helpfulness` and
+  `helpsteer2_verbosity` items (125 each, K = 5) carry a **gold level only**
+  (`target_probs` is null), and the jev-bench sample's distributions cover
+  civil_comments, go_emotions, chaosnli and measuring_hate_speech - **no
+  helpsteer2 at all**. So 1.4's "0.39 levels below / 0.51 above" was measured
+  against the **gold level**, not against people: there is no human distribution
+  for a 5-level score question anywhere on this machine.
 - **Work:** swap the raw level index for `k/(K−1)` in the tilt, fit one location
-  per config on the pool, and evaluate paired without a second engine
-  (`retemperature.py`'s re-scaling), reporting both populations as 1.4 did. The
-  pre-registered rule has to name, before the numbers are read, what happens if the
-  two configs' locations disagree again — because that is the outcome 1.4 makes
-  likely.
+  per config, and evaluate paired without a second engine (`retemperature.py`'s
+  re-scaling), reporting both populations as 1.4 did. Two arms, and they are not
+  equal: **measuring_hate_speech** is fitted against the human distribution (the
+  soft objective, the 1.1b rule applies in full); **the two 5-level configs** can
+  only be fitted against the gold level, so their arm is a location toward the gold
+  and the rule has to say so before the numbers are read. The pre-registered rule
+  also has to name what happens if the two configs' locations disagree again -
+  because that is the outcome 1.4 makes likely.
 
 ### 1.5 Per-type instructions — a pre-registered ablation, not a hill-climb (added 2026-10-21)
 
