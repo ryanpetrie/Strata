@@ -290,6 +290,55 @@ measurement that would settle it.
 
 ### 1.4 Fit an AFFINE calibration per type, not a temperature (added 2026-10-21)
 
+**Status: DONE (2026-10-22). No constant ships, and the noul's bias is proved
+movable and population-specific.** The map is one invertible exponential-family
+step on the closed distribution, `p'_l = normalize(p_l**(1/T) · exp(b·s_l))`, with
+`s_l` the type's own axis: for the noul, 0/1 for no/yes (so `b` is a shift in
+log-odds — a scale *and* a shift); for the score, the level's index (a tilt along
+the ordinal axis); for the **choice, there is no second parameter** — a shift that
+is the same for every option is cancelled by the normaliser, so its map is the
+scale-only temperature again. Fitted on the licence-clean pool against the **human
+distribution** (the same `soft` objective as 1.1b), leak-free 5-fold CV, seed 42:
+noul **T 2.63, b −2.29** (pool mean P(yes) 0.4142 → 0.1080, against the humans'
+0.1096); score T 3.73, b −0.54; choice T 3.65 (which is 1.1b's soft temperature
+exactly, as it must be).
+
+**What it found:**
+- **The noul's bias is real and the shift closes it out of sample** — the jev-bench
+  test's noul TVD falls **0.3836 → 0.1234** (bias +0.356 → +0.033), the **AUC is
+  unchanged (0.8577)**, and only one net answer of 222 moves. This is the thing a
+  temperature could not do (1.1b moved the same TVD by 0.0025).
+- **And the 235 rejects the same shift in sign**: there the model is already
+  *under*-eager (bias −0.111), so the shift moves 26 of 69 noul answers and takes
+  Capability **78.9 → 41.5**. Every type loses alone (choice 72.9, noul 57.8, score
+  68.5). So the rule's (c) fails by a wide margin and **no constant ships** — the
+  bias is real, movable, and **population-specific**; one per-type number cannot
+  serve both. The form of a per-workload noul calibration is a **shift, not a
+  scale**.
+- **The score's "location error" is per config, not per type** — the brief's premise
+  was wrong: at T = 1 `helpsteer2_helpfulness` sits 0.39 levels *below* the gold and
+  `helpsteer2_verbosity` 0.51 *above* it, so the aggregate +0.14 is two opposite
+  errors cancelling; and the raw level index is not commensurable across K (a tilt
+  fitted on a 3-level config moves a 5-level question three times as far). A
+  corrected map — a location on the normalised position `k/(K−1)`, per config — is
+  **not run** (see 1.4b).
+- **Beside 1.5**: `criteria-first` cuts the same half-A bias 0.3047 → 0.2268 with no
+  235 cost; the affine shift cuts it to ~0.00 and costs the 235 21 points. **The
+  prompt is the cheaper, shippable lever; the affine fit proves the level can be
+  moved and that a constant fitted on one population is not the way.**
+
+### 1.4b The score's location, per config, on the normalised level (added 2026-10-22)
+
+- **Effort:** 1–2 days, offline (the fit harness and the arms exist).
+- **Why:** 1.4 showed the score's error is opposite in sign between its 5-level
+  configs at T = 1, and that the level index is the wrong unit across K. The map to
+  try is a location on the normalised position `k/(K−1)`, fitted **per config**,
+  with its own pre-registration (the 1.1b/1.5 rule).
+- **Exit criterion:** the score's TVD falls out-of-sample on the pool **and** the
+  235's score competence does not fall; if the per-config map does not transfer
+  either, the score's location is a task property, not a calibration one, and this
+  line of work closes with that finding.
+
 - **Effort:** 2–4 days (mostly compute; the mechanism is a small change to the
   probability module).
 - **Gain:** targets the failure the temperature could not fix. The noul's error on
@@ -300,16 +349,12 @@ measurement that would settle it.
   a scale and a shift per question type.
 - **Depends on:** 1.1 (the knob and the fit tooling exist), and a fitting set with
   human distributions — the jev-bench validation pool from 1.1b.
-- **Work:** extend the fit to two parameters per type; fit on the pool; evaluate on
-  **both** the OpenDecisions 235 and the jev-bench test sample, paired (the
-  `retemperature.py` trick generalizes to an affine map). Report the shift `b`
-  per type and say what it means: a large positive shift on the noul says the
-  model is systematically too eager to say "yes", which is a **prompt** problem
-  as much as a calibration one, and the prompt is the cheaper fix.
-- **Exit criterion:** the noul's TVD to the human distribution falls out-of-sample,
-  and nothing else regresses on either population. If the shift does not
-  generalize, the bias is in the prompt or in the task, not in the readout — say
-  so and stop there.
+- **What the plan asked:** extend the fit to two parameters per type, fit on the
+  pool, and evaluate paired on **both** the OpenDecisions 235 and the jev-bench test
+  sample (`retemperature.py` generalises to an affine map); the exit criterion was
+  the noul's TVD falling out-of-sample with nothing else regressing. *The result is
+  the status above: the first half passes, the second fails, and the reason is a
+  sign reversal between the two populations.*
 
 ### 1.5 Per-type instructions — a pre-registered ablation, not a hill-climb (added 2026-10-21)
 
@@ -799,7 +844,8 @@ decisive ones, which is why 1.1b and 1.5 are built that way.
 | 1.1b | Capability on the 235 (out-of-sample constants) | Beat the **T = 1** arm on both populations, per the three pre-registered tests | **No constant ships.** (a) and (b) pass for every candidate; (c) fails by 9.9 to 19.3 Capability points on the 235 |
 | 1.2 | jev-bench TVD to the human distribution | Lower than 0.4432 | **NOT met**: 0.4439 -> 0.4678; Capability 55.1 -> 52.0 |
 | 1.3 | The letter readout ships | Wins on two of three without losing the other | **Does not ship.** Met on OpenDecisions (82.7 vs 79.3, 0 extra requests); loses on jev-bench (48.3 vs 55.1). Opt-in flag stays |
-| 1.4 | The noul's TVD to the human distribution | Lower than **0.3844** (the shipping T = 1 arm; not 0.3897, which was the failed T = 0.67 arm) | not run |
+| 1.4 | The noul's TVD to the human distribution | Lower than **0.3844** (the shipping T = 1 arm; not 0.3897, which was the failed T = 0.67 arm) | **0.1234 out-of-sample** on the jev-bench test — and the same shift takes the 235 from 78.9 to 41.5 (wrong in sign there). **No constant ships** |
+| 1.4b | The score's TVD / the 235's score competence | Per-config location on `k/(K−1)`; TVD down and competence not down | not run |
 | 1.5 | A prompt variant ships | The pre-registered rule's (a)-(f) | **N4 `criteria-first` clears all six** (TVD −0.0687, AUC −0.0013, 2 items on half B, 235 = a base re-run, jev noul −0.0623). Not applied; one config key away |
 | 2.3 | Capability | Beat 79.8; stretch toward 84 | not run |
 | 2.3b | Capability | Beat the self-distilled adapter (2.3) | not run |
