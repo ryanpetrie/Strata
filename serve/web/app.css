@@ -100,7 +100,9 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
-.monitor-row { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
+/* The request table has nine columns; the card gets the wider share of the row so
+   they all fit (a scrollbar here hides the duration). */
+.monitor-row { display: grid; grid-template-columns: minmax(250px, 0.9fr) minmax(0, 2.9fr); gap: var(--st-s-4); }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
 .ctx-gauge { position: relative; width: 150px; height: 150px; margin: var(--st-s-2) auto var(--st-s-3); }
 .ctx-gauge .st-gauge { width: 150px; height: 150px; }
@@ -112,11 +114,12 @@ main { flex: 1; min-height: 0; display: flex; }
            margin-top: var(--st-s-2); font-variant-numeric: tabular-nums; }
 .req-card { display: flex; flex-direction: column; gap: var(--st-s-3); min-width: 0; }
 .table-wrap { overflow-x: auto; }
-/* Recent requests: keep headings, values and status badges on one line. */
+/* Recent requests: keep headings, values and status badges on one line, and keep the
+   nine columns inside the card (a scrollbar here hides the duration). */
 #req-wrap .st-table th,
 #req-wrap .st-table td {
   white-space: nowrap;
-  padding-inline: 8px;
+  padding-inline: 6px;
 }
 .req-head { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-2); }
 .table-wrap.all { max-height: 420px; overflow-y: auto; }
@@ -169,6 +172,51 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-toast { animation: toast-in 180ms var(--st-ease); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
+/* ---------------------------------------------------------------- decide */
+.view--decide { overflow-y: auto; }
+.decide { max-width: 980px; width: 100%; margin: 0 auto; padding: var(--st-s-6); display: flex; flex-direction: column;
+          gap: var(--st-s-5); }
+.decide-card { display: flex; flex-direction: column; gap: var(--st-s-4); }
+.decide-card p { margin: 0; }
+.decide-card code { font: 400 13px var(--st-font-mono); }
+.dec-state, .dec-instructions { height: auto; padding: 10px 14px; resize: vertical; }
+.dec-state { font: 400 13px/1.6 var(--st-font-mono); }
+.dec-questions { display: flex; flex-direction: column; gap: var(--st-s-4); }
+.dec-question { display: flex; flex-direction: column; gap: var(--st-s-3); padding: var(--st-s-4);
+                border: 1px solid var(--st-line); border-radius: var(--st-r-md); background: var(--st-surface-2); }
+.dec-question__head { display: flex; align-items: center; justify-content: space-between; gap: var(--st-s-2); }
+.dec-question__title { font-size: var(--st-fs-sm); color: var(--st-ink-muted); }
+.dec-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--st-s-3); }
+.dec-hint { font-size: var(--st-fs-xs); color: var(--st-ink-muted); }
+.dec-rows { display: flex; flex-direction: column; gap: var(--st-s-2); margin: var(--st-s-2) 0; }
+.dec-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(140px, 2fr) 36px; gap: var(--st-s-2);
+           align-items: center; }
+.dec-row .st-input { height: 38px; }
+.dec-addrow { display: flex; align-items: center; gap: var(--st-s-3); flex-wrap: wrap; }
+.dec-actions { display: flex; align-items: center; gap: var(--st-s-3); }
+.dec-error { margin: 0; padding: 10px 14px; border-radius: var(--st-r-md); background: var(--st-danger-tint);
+             color: var(--st-danger-text); font-size: var(--st-fs-md); }
+.dec-json { margin: 0; padding: 12px 14px; max-height: 340px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+            font: 400 12.5px/1.6 var(--st-font-mono); color: var(--st-ink-soft); background: var(--st-surface);
+            border: 1px solid var(--st-line-soft); border-radius: var(--st-r-sm); }
+.dec-results { display: flex; flex-direction: column; gap: var(--st-s-4); }
+.dec-answer { display: flex; flex-direction: column; gap: var(--st-s-3); }
+.dec-answer__head { display: flex; align-items: center; gap: var(--st-s-3); }
+.dec-pick { font-weight: var(--st-fw-black); font-size: var(--st-fs-xl); line-height: 1.2; }
+.dec-pick__note { margin-left: 10px; font-weight: var(--st-fw-medium); font-size: var(--st-fs-md); color: var(--st-ink-muted); }
+.dec-bars { display: flex; flex-direction: column; gap: 6px; }
+.dec-bar { display: grid; grid-template-columns: minmax(90px, 170px) 1fr 62px; gap: var(--st-s-3); align-items: center;
+           font-size: var(--st-fs-sm); }
+.dec-bar__name { color: var(--st-ink-muted); overflow-wrap: anywhere; }
+.dec-bar--pick .dec-bar__name { color: var(--st-ink); font-weight: var(--st-fw-bold); }
+.dec-bar .st-progress__bar { background: color-mix(in srgb, var(--st-ink-muted) 50%, transparent); }
+.dec-bar--pick .st-progress__bar { background: var(--st-accent); }
+.dec-bar__pct { text-align: right; color: var(--st-ink-soft); font-variant-numeric: tabular-nums; }
+.dec-line { margin: 0; font-size: var(--st-fs-md); color: var(--st-ink-soft); }
+.dec-open dd { flex-wrap: wrap; }
+.dec-answer .st-collapse__body ul { margin: 0; padding-left: var(--st-s-5); }
+.dec-answer .st-collapse__body li { margin-bottom: 4px; }
+
 /* ---------------------------------------------------------------- narrow screens */
 @media (max-width: 1000px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -185,9 +233,11 @@ main { flex: 1; min-height: 0; display: flex; }
   #pill-text { display: none; }
   .chat { padding: var(--st-s-5) var(--st-s-4); }
   .composer-wrap { padding: 0 var(--st-s-3) var(--st-s-3); }
-  .monitor, .about { padding: var(--st-s-4); }
+  .monitor, .about, .decide { padding: var(--st-s-4); }
   .facts { grid-template-columns: 1fr; gap: 2px; }
   .facts dd { margin-bottom: var(--st-s-2); }
+  .dec-row { grid-template-columns: 1fr 36px; }
+  .dec-row .dec-row__desc { grid-column: 1 / 2; }
 }
 /* Images tab (POST /v1/images/generations) */
 .img-form{display:flex;flex-direction:column;gap:12px}

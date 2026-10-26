@@ -27,6 +27,8 @@
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-image"/></svg>Images</button>
     <button class="st-tab" role="tab" id="tab-btn-monitor" aria-controls="view-monitor" aria-selected="false" data-tab="monitor">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-activity"/></svg>Monitor</button>
+    <button class="st-tab" role="tab" id="tab-btn-decide" aria-controls="view-decide" aria-selected="false" data-tab="decide" hidden>
+      <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-check"/></svg>Decide</button>
     <button class="st-tab" role="tab" id="tab-btn-about" aria-controls="view-about" aria-selected="false" data-tab="about">
       <svg class="st-icon st-icon--sm"><use href="web/sprite.svg#i-info"/></svg>About</button>
   </nav>
@@ -170,6 +172,47 @@
     </div>
   </section>
 
+  <!-- ============================ Decide ============================ -->
+  <section class="view view--decide" id="view-decide" role="tabpanel" aria-labelledby="tab-btn-decide" hidden>
+    <div class="decide">
+      <div class="st-card decide-card">
+        <span class="card-title">Decide</span>
+        <p class="muted small">A state is what the model reads. A question is what it answers about that state.
+          The model does not write an answer: it reads the state and the instructions, and the weight it gave the
+          answer becomes the answer's probability. Nothing leaves this PC.</p>
+        <p class="muted small dec-off" id="dec-off" hidden>The decision endpoint is off on this server. Turn it on
+          with <code>"systemone": {"enabled": true}</code> in the run config and start the server again.</p>
+        <p class="muted small" id="dec-flags"></p>
+        <div class="st-field">
+          <label class="st-label" for="dec-state">State</label>
+          <textarea class="st-input dec-state" id="dec-state" rows="3" placeholder="The service on port 8080 answered every request." aria-label="The state the model reads"></textarea>
+          <div class="toggle-row"><span>The state is JSON<br><span class="muted small">an object or an array, read as it is</span></span>
+            <button type="button" class="st-toggle" id="dec-state-json" role="switch" aria-checked="false" aria-label="The state is JSON"></button></div>
+        </div>
+        <div class="dec-questions" id="dec-questions"></div>
+        <div class="dec-addrow">
+          <button type="button" class="st-btn st-btn--secondary" id="dec-add">Add a question</button>
+          <button type="button" class="st-btn st-btn--secondary" id="dec-example">Use an example</button>
+          <span class="muted small" id="dec-count"></span>
+        </div>
+        <div class="dec-actions">
+          <button type="button" class="st-btn st-btn--primary" id="dec-send">Decide</button>
+          <span class="composer-hint" id="dec-hint" role="status"></span>
+        </div>
+        <p class="dec-error" id="dec-error" role="alert" hidden></p>
+      </div>
+
+      <div class="st-card">
+        <div class="req-head"><span class="card-title">The request</span>
+          <button type="button" class="st-btn st-btn--icon" id="dec-copy" title="Copy the request" aria-label="Copy the request">
+            <svg class="st-icon"><use href="web/sprite.svg#i-copy"/></svg></button></div>
+        <pre class="dec-json" id="dec-preview"></pre>
+      </div>
+
+      <div class="dec-results" id="dec-result"></div>
+    </div>
+  </section>
+
   <!-- ============================ About ============================ -->
   <section class="view view--about" id="view-about" role="tabpanel" aria-labelledby="tab-btn-about" hidden>
     <div class="about">
@@ -263,5 +306,6 @@
 <div class="scrim" id="scrim" hidden></div>
 <div class="st-toasts" id="toasts" aria-live="polite"></div>
 <script src="web/app.js"></script>
+<script src="web/decide.js"></script>
 </body>
 </html>
