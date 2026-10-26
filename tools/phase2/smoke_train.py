@@ -60,9 +60,9 @@ def main(argv=None) -> int:
     trainer = Trainer(model=model, args=args, train_dataset=rows(8))
     trainer.train()
     model.save_pretrained(a.out)
-    loss = trainer.state.log_history[-1].get("loss")
-    print("[smoke] trained 3 steps on %s; last loss %s; adapter written to %s"
-          % (device, ("%.4f" % loss) if loss is not None else "n/a", a.out))
+    losses = [row["loss"] for row in trainer.state.log_history if "loss" in row]
+    print("[smoke] trained 3 steps on %s; losses %s; adapter written to %s"
+          % (device, ", ".join("%.3f" % x for x in losses) or "n/a", a.out))
     return 0
 
 
