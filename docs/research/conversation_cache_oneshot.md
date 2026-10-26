@@ -1,12 +1,12 @@
 # The conversation cache and a decision request's parked state
 
-**2026-10-22.** Status: the plan's steps 3 and 4 are built (the engine's `park=0` key and
-the server's switch); step 5 waits for the engine. The engine was not run, the server was
-not restarted and no request went to the live engine. Every number in §1-§6 is from the
-user's engine log (`strata-unsloth-ud-iq4_xs.log`, 211,642 lines, 64 engine lifetimes, last
-start 2026-10-22 02:37) or from a named line of the code. Anything read from the code and
-not run is marked **static analysis**. §10 is the as-built record: what changed, the line
-map, the tests, the build and what the code does when the key is absent.
+**2026-10-22.** Status: the plan's steps 3 and 4 are built and step 5's measurement has been
+run (§11): the fix passes its pre-registered rule on three runs an arm. The engine was not
+touched on disk; `C:\tools\strata\engine\strata.exe` and the live config are as they were.
+Every number in §1-§6 is from the user's engine log (`strata-unsloth-ud-iq4_xs.log`, 211,642
+lines, 64 engine lifetimes, last start 2026-10-22 02:37) or from a named line of the code;
+the numbers in §10-§11 are from the runs named there. Anything read from the code and not
+run is marked **static analysis**.
 
 ## 1. The problem
 
@@ -362,9 +362,9 @@ not depend on it. Step 6 must not happen before step 5.
 
 ## 10. As built
 
-**2026-10-22, `feat/cache-oneshot`.** Steps 3 and 4 of §8. The engine was not run, the
-server was not restarted and nothing was sent to the live engine or the live API. The
-default path is unchanged, byte for byte (§10.4), and the tests that say so are in §10.3.
+**2026-10-22, `feat/cache-oneshot`.** Steps 3 and 4 of §8. At the time of this record the
+engine had not been run; §11 is the run that followed. The default path is unchanged, byte
+for byte (§10.4), and the tests that say so are in §10.3.
 
 ### 10.1 What changed, and where it is
 
@@ -472,7 +472,8 @@ The four new server cases:
    `GEN 8 1,2,3`, byte for byte.
 
 The smoke test the plan's step 3 asked for (a manual `park=0`, then another request) needs
-the engine; §10.6 names the log lines it looks for. It has not been run.
+the engine; §11's runs are the equivalent with the real endpoint, and their logs carry
+exactly the lines §10.6 names.
 
 ### 10.4 When the key is absent
 
@@ -513,6 +514,9 @@ A new engine with any server parks as before.
    variable, arm B with it (a launch config can carry it as `env`).
 
 ### 10.6 The measurement, ready to paste
+
+**Run:** §11 is the measurement that followed these commands, with the differences (the
+resident copy, the decision size, no latency) said there.
 
 The engine has to be free first. Build and stage the new binary from the worktree (this is
 the step this record did **not** do, because the user's engine is serving):
@@ -576,4 +580,112 @@ done by hand.
 `conversation cache: skip parking (the request that read it said park=0; parked=P)` once per
 decision switch, and the decision's `LOGITS` requests leave no `conversation cache: parked`
 line. Neither line exists in arm A.
+
+## 11. The measurement, run (2026-10-22)
+
+**What was run.** §6.1's recipe, on the engine §10 built: `build-cache-cuda\strata.exe`
+(75,546,112 bytes, 13:46), a copy of the live config whose `exe` is that binary, arm A with
+`STRATA_DECISION_PARK` unset and arm B with it set to `1`, three runs each alternating
+A B A B A B, a fresh server and engine per run. Each run: four chat turns that build the
+conversation to **7,258 tokens** (turn 1; turns 2-4 add 30-60), **20 decisions** with fresh
+state text, then chat turn 5. The server is the branch's `serve/server.py`; the scripts are
+`C:\Users\ryanp\AppData\Local\Temp\opencode\cache_measure\` (`run_cache.py`, `cache_arm.py`,
+`analyze.py`), and each run's engine log is beside them under `runs\A1` ... `runs\B3`.
+
+**The host, as it was.** An RTX 4090 with **9,890 MiB in use by other work** (14,249 MiB
+free) and 63.7 GB of RAM, of which another session held 9.6 GB. Two consequences, both
+recorded rather than hidden:
+
+* **The RAM copy had to come down.** With the live config's `--resident-budget-gib 36` the
+  engine held 34.5 GB and the host had **261 MiB** available; the engine's own admission
+  then refused every park - `skip parking (physical RAM admission; need 671 MiB plus 2560
+  MiB floor, 261 MiB available)`, measured in the first attempt - so arm A could not park,
+  which is not today's behaviour and cannot measure the fix. Every arm's config copy
+  therefore sets **`--resident-budget-gib 20`** and nothing else. The 20 GiB copy leaves
+  ≈7 GB and the floor is met: the chat's snapshot is 704 MiB at 7,258 tokens and a
+  decision's 263 MiB at 1,822.
+* **Latency is not a result here.** The card is shared and the arms are not interleaved for
+  speed; the readouts below are the cache's own (tokens reused, evictions, parks), which do
+  not depend on the clock. §6.2's latency margin is **not run**.
+
+**One change from §6.1's decision prompts.** The 20 decisions are **1,815-1,881 tokens**,
+not "under 500". The live config keeps `--conversation-cache-min-tokens 1024` (the shipping
+state, as asked), and a 300-token decision is already skipped by that minimum: arm A would
+not evict the chat and the two arms would differ in nothing. The decisions are over the
+minimum so that the shipping config parks them. Five of the 20 are choice questions whose
+options (`rule_1`, `rule_2`) share their first token, so the trie walk runs and its reuse
+can be read in both arms.
+
+### 11.1 The six runs
+
+| run | arm | chat 5: prompt = reused + read | M5 / N5 | evictions | parked | `skip parking (park=0)` |
+|---|---|---|---:|---:|---:|---:|
+| A1 | A | 7,467 = **0** + 7,467 | 0.0% | **19** | 2 | 0 |
+| A2 | A | 7,477 = **0** + 7,477 | 0.0% | **19** | 2 | 0 |
+| A3 | A | 7,458 = **0** + 7,458 | 0.0% | **19** | 2 | 0 |
+| B1 | B | 7,453 = **7,423** + 30 | **99.6%** | **0** | 1 | 25 |
+| B2 | B | 7,459 = **7,429** + 30 | **99.6%** | **0** | 1 | 25 |
+| B3 | B | 7,461 = **7,430** + 31 | **99.6%** | **0** | 1 | 25 |
+
+The engine's line, not the client's usage: `strata serve: prompt N tokens = M reused + K
+read` (the server's `cached_tokens` agrees on all six). Every run answered all 25 requests.
+
+* **Arm A is the plan's `before`, exactly.** The four chat turns reuse 7,281-7,394 tokens
+  each; the 20 decisions each read their whole prompt (`0 reused`), park, and by the third
+  the oldest entry goes: **19 evictions**, 26 park lines, 2 left. Chat turn 5 then finds
+  nothing and reads all 7,467 tokens: **M5 = 0**.
+* **Arm B is the plan's `after`.** The decisions still read their whole prompt (the key
+  does not make a fresh conversation reusable) but they are not parked: **0 evictions** in
+  every run, the chat's entry stays the only one (`parked=1`), and turn 5 resumes it:
+  **99.6% reused**. The parks that remain are the chat's own: the chat path parks and
+  restores its own conversation between turns (1, 2 and 3 parks in the three runs), which is
+  today's behaviour and is not the key's doing.
+* **The skip count is 25, not 20.** The 20 decision switches, plus 5 more: each trie-walk
+  step resumes from a checkpoint 10 tokens back rather than from the live session, so it
+  tries to park the base request's conversation too, and the key suppresses that as well.
+  That is the fix working on the walk, not a fault.
+* **The walk is untouched.** Every run's walk steps read
+  `1,877 = 1,867 reused + 10 read` and `1,879 = 1,878 reused + 1 read` (99.5% and 99.9%),
+  identical in both arms. `ckpt` stays 1 throughout, so the walk's fast path is what it was.
+
+### 11.2 The 235, on one run per arm
+
+| run | items | fast path | Capability | Intelligence | Calibration | answers moved vs `fix_serial.jsonl` |
+|---|---:|---|---:|---:|---:|---:|
+| stored `fix_serial.jsonl` | 235 | 235/235 | 79.8 | 78.0 | 81.7 | - |
+| arm A (`q235\A1`) | 235 | 235/235 | **79.8** | 78.1 | 81.4 | 2 (choice 1, score 1) |
+| arm B (`q235\B1`) | 235 | 235/235 | **78.3** | 76.4 | 80.3 | 6 (choice 2, noul 2, score 2) |
+
+Both arms answered every item and both are inside the sample's measured **1.8-point**
+run-to-run spread (A is equal, B is 1.5 below). The 6 moves in B against a stored run of a
+different engine state are the engine's own wobble (the two stored base runs span 1.8
+Capability points and differ in 2 noul items, §23); the key changes no arithmetic, and the
+235's answers are produced by the same rows either way.
+
+### 11.3 The verdict, against §6's pre-registered rule
+
+* **The fix works.** Arm B: `M5 >= 0.9 x N5` (99.6% in all three) **and** `evictions = 0`
+  (0 in all three). Arm A: `M5 = 0` (0 in all three) **and** `evictions >= 18` (19 in all
+  three). The walk's reuse is intact in both arms (99.5% / 99.9%).
+* **Not "not worth it"** by §6.4: arm A's `M5` is 0 *because the chat was evicted* - its
+  entry was the one the decisions pushed out, and arm B keeps it - not for a changed system
+  prompt or a cvec mismatch, and `M5` does rise in B on the same conversation.
+* **The cost** §6.2 would measure is not measured (shared card). What the run does say is
+  that the decisions pay the same read they paid before (`0 reused` in both arms) and the
+  key only removes the park and the eviction; it cannot slow their arithmetic.
+
+### 11.4 The limits, and what was not run
+
+* One model, one card, one engine build; 3 runs per arm; 2 cache slots and
+  `--conversation-cache-min-tokens 1024`, the shipping values. Another slot count or no
+  minimum changes which requests park, not what `park=0` does.
+* The decisions are 1,815-1,881 tokens. The plan's 300-token decisions would not park at
+  all under the shipping minimum, so they cannot show a difference between the arms; with
+  the minimum set back to 0 (the plan's step 2 revert) they would, and that arm was not run.
+* The `--resident-budget-gib 20` change is the one departure from the live config, forced by
+  the host's RAM (above). It changes what the engine keeps in RAM, not the cache's rules.
+* Not run: the §6.2 latency comparison; the §6.3 three runs per arm (one each); a live
+  default-on arm (§8's step 6); any AMD or Mac engine; a second model. The 235's own
+  run-to-run spread is quoted from §23, not re-measured here.
+
 
