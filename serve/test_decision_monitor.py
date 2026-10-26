@@ -183,7 +183,7 @@ class DecisionLiveState(unittest.TestCase):
         fast_path(svc)
         seen = {}
 
-        def logits(ids, k, max_new, cancel):
+        def logits(ids, k, max_new, cancel, park=True):
             seen.update(svc.status)                  # the status while the engine works
             return svc.engine.logits_topk, svc.engine.logits_logz, []
 
@@ -203,7 +203,7 @@ class DecisionLiveState(unittest.TestCase):
         fast_path(svc)
         live = {}
 
-        def logits(ids, k, max_new, cancel):
+        def logits(ids, k, max_new, cancel, park=True):
             live.update(svc.metrics()["live"])
             return svc.engine.logits_topk, svc.engine.logits_logz, []
 
