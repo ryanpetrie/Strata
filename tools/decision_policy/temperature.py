@@ -194,6 +194,43 @@ def brier(closed: dict[str, float], gold: str, labels: list[str], temperature: f
     return sum((dist.get(lab, 0.0) - (1.0 if lab == gold else 0.0)) ** 2 for lab in labels)
 
 
+def undo_temperature(closed: dict[str, float], temperature: float) -> dict[str, float]:
+    """-> the closed distribution at T = 1, given the one at T.
+
+    closed_T = normalize(closed_1 ** (1/T)), so closed_1 = normalize(closed_T ** T).
+    This is the PAIRED CONTROL: the same run, the same engine, the same picks, with
+    the temperature's arithmetic removed from the distributions.
+    """
+    if temperature == 1.0:
+        return dict(closed)
+    weights = {k: (v ** temperature if v > 0.0 else 0.0) for k, v in closed.items()}
+    total = sum(weights.values())
+    if total <= 0.0:
+        return dict(closed)
+    return {k: v / total for k, v in weights.items()}
+
+
+def closed_from_runlog(task: dict, rec: dict) -> dict | None:
+    """-> the closed distribution the endpoint reported for an item, from a run log.
+
+    The choice and score readings are the run log's own "probabilities"; a noul's is
+    the open reading renormalized over its two answers, which is the same number the
+    endpoint reported as the noul's value.
+    """
+    qtype = task["question"]["type"]
+    if qtype == "noul":
+        op = rec.get("open_probs") or {}
+        yes, no = op.get("yes"), op.get("no")
+        if yes is None or no is None or yes + no <= 0:
+            return None
+        p = yes / (yes + no)
+        return {"yes": p, "no": 1.0 - p}
+    probs = rec.get("probabilities") or {}
+    if not probs:
+        return None
+    return {lab: float(probs.get(lab, 0.0)) for lab in task["labels"]}
+
+
 def mean_nll(records: list[dict], temperature: float) -> float:
     if not records:
         return float("inf")
@@ -284,11 +321,16 @@ def bootstrap_ece(scorer, records: list[dict], qtype: str, objective: str,
                   t_min: float = T_MIN, t_max: float = T_MAX) -> dict:
     """-> how sure the temperature is, measured by resampling the items of the type.
 
-    For every resample (the items of the type, drawn with replacement) the
-    temperature is fitted again on the resample and the ECE is measured on it, at
-    T = 1 and at the fitted temperature.  The result is the share of resamples where
-    the temperature lowers the ECE, and the spread of the difference.  A share near
-    0.5 means the difference is inside the noise of the sample.
+    OUT OF BAG.  Every resample draws TWO independent samples of the type's items:
+    the temperature is fitted on the first and the ECE is measured on the second, so
+    the ECE that is compared is not the one the fit produced.  (Measuring both on the
+    same resample - which an earlier version of this did - is IN-SAMPLE and
+    optimistic: it reports a share of resamples the temperature wins that the honest
+    out-of-fold number does not support.)
+
+    The result is the share of resamples where the temperature lowers the ECE, and
+    the spread of the difference.  A share near 0.5 means the difference is inside the
+    noise of the sample.
 
     The grid of the refit is the fitted temperature's neighborhood (plus or minus
     0.5, step 0.01), so the resample's own minimum is found without paying for the
@@ -304,11 +346,11 @@ def bootstrap_ece(scorer, records: list[dict], qtype: str, objective: str,
     better = 0
     diffs: list[float] = []
     for _ in range(resamples):
-        sample = [records[rng.randrange(len(records))] for _ in range(len(records))]
-        best_t, _ = fit_temperature(scorer, sample, qtype, objective,
-                                    min(grid), max(grid))
-        before = ece_by_type(scorer, outcomes(scorer, sample, 1.0)).get(qtype)
-        after = ece_by_type(scorer, outcomes(scorer, sample, best_t)).get(qtype)
+        fit_on = [records[rng.randrange(len(records))] for _ in range(len(records))]
+        test_on = [records[rng.randrange(len(records))] for _ in range(len(records))]
+        best_t, _ = fit_temperature(scorer, fit_on, qtype, objective, min(grid), max(grid))
+        before = ece_by_type(scorer, outcomes(scorer, test_on, 1.0)).get(qtype)
+        after = ece_by_type(scorer, outcomes(scorer, test_on, best_t)).get(qtype)
         if before is None or after is None:
             continue
         diffs.append(before - after)
@@ -319,7 +361,60 @@ def bootstrap_ece(scorer, records: list[dict], qtype: str, objective: str,
     diffs.sort()
     return {"resamples": len(diffs), "share_better": better / len(diffs),
             "difference_p05": diffs[int(0.05 * (len(diffs) - 1))],
-            "difference_p95": diffs[int(0.95 * (len(diffs) - 1))]}
+            "difference_p95": diffs[int(0.95 * (len(diffs) - 1))],
+            "method": "out of bag: the temperature is fitted on one resample and the "
+                      "ECE is measured on another"}
+
+
+def summary_for(scorer, records: list[dict], distributions: dict[str, dict[str, float]]) -> dict:
+    """-> the official scorer's summary for a set of records under given distributions."""
+    outs = []
+    for rec in records:
+        probs = distributions[rec["id"]]
+        outs.append(scorer.item_outcome(rec["task"], scorer.normalized(rec["task"], probs)))
+    return scorer.summary(outs)
+
+
+def paired_bootstrap(scorer, records: list[dict], arm_a: dict[str, dict[str, float]],
+                      arm_b: dict[str, dict[str, float]], resamples: int = 1000,
+                      seed: int = SEED) -> dict:
+    """-> how sure the difference between two arms is, over a PAIRED item bootstrap.
+
+    The items are resampled with replacement and BOTH arms are scored on the same
+    resample, so the difference is paired: an item's own run-to-run wobble cancels
+    and what is left is the temperature's effect.  The interval is the 2.5% and 97.5%
+    percentiles of the differences, and the share is the resamples where the second
+    arm is better.
+
+    Both arms are the same items with the same picks; what differs is the
+    distribution that is reported for them.
+    """
+    if not records or resamples <= 0:
+        return {}
+    outs_a = [scorer.item_outcome(rec["task"], scorer.normalized(rec["task"], arm_a[rec["id"]]))
+              for rec in records]
+    outs_b = [scorer.item_outcome(rec["task"], scorer.normalized(rec["task"], arm_b[rec["id"]]))
+              for rec in records]
+    rng = random.Random(seed)
+    diffs: dict[str, list[float]] = {"capability": [], "intelligence": [], "calibration": []}
+    n = len(records)
+    for _ in range(resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        a = scorer.summary([outs_a[i] for i in idx])
+        b = scorer.summary([outs_b[i] for i in idx])
+        for key in diffs:
+            if a.get(key) is not None and b.get(key) is not None:
+                diffs[key].append(b[key] - a[key])
+    out = {"resamples": resamples}
+    for key, vals in diffs.items():
+        if not vals:
+            continue
+        vals = sorted(vals)
+        out[key] = {"mean": sum(vals) / len(vals),
+                    "p025": vals[int(0.025 * (len(vals) - 1))],
+                    "p975": vals[int(0.975 * (len(vals) - 1))],
+                    "share_better": sum(1 for v in vals if v > 0) / len(vals)}
+    return out
 
 
 def stratified_folds(records: list[dict], folds: int = FOLDS, seed: int = SEED) -> dict[int, list[dict]]:
@@ -418,6 +513,8 @@ def main() -> int:
     ap.add_argument("--items", type=Path, required=True, help="the scorer-shaped items file")
     ap.add_argument("--runlog", type=Path, required=True, help="the run log of the baseline arm")
     ap.add_argument("--predictions", type=Path, required=True, help="the baseline arm's predictions")
+    ap.add_argument("--temp-runlog", type=Path, default=None,
+                    help="the run log of the arm that ran WITH the temperature (for the paired control)")
     ap.add_argument("--scorer", type=Path, default=DEFAULT_SCORER, help="the official score.py")
     ap.add_argument("--out-json", type=Path, default=Path("tools/decision_policy/temperature_calibration.json"))
     ap.add_argument("--out-report", type=Path, default=Path("tools/decision_policy/temperature_report.md"))
@@ -508,6 +605,35 @@ def main() -> int:
     in_sample = score_with_official_scorer(
         args.scorer, allrecs, {r["id"]: scale(r["closed"], fitted[r["type"]]) for r in allrecs})
 
+    # ---- how sure is the EFFECT?  a paired item bootstrap between two arms.
+    # The out-of-fold arm against the baseline: the fit never saw the item it is
+    # scored on, and the difference is paired over the items.
+    oof_arm = {r["id"]: scale(r["closed"], cv[args.objective]["per_item"][r["id"]]) for r in allrecs}
+    boot_oof = paired_bootstrap(scorer, allrecs, {r["id"]: r["closed"] for r in allrecs},
+                                oof_arm, args.bootstrap, args.seed)
+
+    # The arm that RAN with the temperature against the same run with the temperature
+    # undone: the same engine, the same picks, the temperature's arithmetic removed.
+    # This is the paired control the companion doc quotes.
+    paired = {}
+    if args.temp_runlog:
+        temp_log = {r["id"]: r for r in read_jsonl(args.temp_runlog)}
+        temp_arm, control_arm = {}, {}
+        for rec in allrecs:
+            got = closed_from_runlog(rec["task"], temp_log.get(rec["id"], {}))
+            if got is None:
+                continue
+            temp_arm[rec["id"]] = got
+            control_arm[rec["id"]] = undo_temperature(got, fitted[rec["type"]])
+        if len(temp_arm) == len(allrecs):
+            paired = {"arm": summary_for(scorer, allrecs, temp_arm),
+                      "control": summary_for(scorer, allrecs, control_arm),
+                      "bootstrap": paired_bootstrap(scorer, allrecs, control_arm, temp_arm,
+                                                   args.bootstrap, args.seed)}
+        else:
+            print(f"[temperature] the temperature run has {len(temp_arm)} of {len(allrecs)} "
+                  "items with a distribution; the paired control is skipped")
+
     print(f"\n[temperature] the baseline arm:        Capability {base_summary.get('capability'):.2f} "
           f"(Intelligence {base_summary.get('intelligence'):.2f}, Calibration {base_summary.get('calibration'):.2f})")
     print(f"[temperature] the out-of-fold fit:      Capability {cv[args.objective]['scorer'].get('capability'):.2f} "
@@ -551,6 +677,8 @@ def main() -> int:
                            "train_items": {q: sum(1 for r in train30 if r["type"] == q) for q in TYPES},
                            "test_items": {q: sum(1 for r in test30 if r["type"] == q) for q in TYPES}},
             "bootstrap": boot,
+            "paired_bootstrap_out_of_fold": boot_oof,
+            "paired_control": paired,
             "official_scorer_baseline": base_summary,
             "official_scorer_in_sample_fitted": in_sample,
         },
@@ -572,7 +700,10 @@ def main() -> int:
     A("")
     A("One scalar per question type.  The temperature divides the logits before the")
     A("softmax, so the reported distribution is flattened (T > 1) or sharpened (T < 1).")
-    A("The PICK cannot change - the map is monotone - so only the calibration moves.")
+    A("The PICK cannot change - the map is monotone, so the argmax is the same and a")
+    A("yes/no never crosses the 0.5 threshold.  The score type's EXPECTED LEVEL does")
+    A("move (the probability-weighted mean the scorer reads), and with it the scorer's")
+    A("Intelligence for that type: that is where the gain is, not only the calibration.")
     A("")
     A("The exact identity the endpoint applies:")
     A("")
@@ -644,10 +775,12 @@ def main() -> int:
           f"{row['temperatures']['noul']} | {row['temperatures']['score']} | "
           f"{row['hard_choice_items']} | {', '.join(f'{k} {v}' for k, v in row['tiers'].items())} |")
     A("")
-    A("How sure is the fit?  The items of the type resampled with replacement, the")
-    A("temperature fitted again on each resample, the ECE measured on it at T = 1 and")
-    A("at the fitted temperature.  The share is the resamples where the temperature")
-    A("lowers the ECE; near 50% means the difference is inside the sample's noise.")
+    A("How sure is the fit?  The items of the type resampled with replacement, TWICE per")
+    A("resample: the temperature is fitted on one sample and the ECE is measured on the")
+    A("other, so the ECE that is compared is not the one the fit produced (measuring")
+    A("both on the same resample is in-sample and optimistic).  The share is the")
+    A("resamples where the temperature lowers the ECE; near 50% means the difference is")
+    A("inside the sample's noise.")
     A("")
     A("| type | resamples | the temperature lowers the ECE | the ECE difference (5%, 95%) |")
     A("|---|---:|---:|---|")
@@ -657,6 +790,47 @@ def main() -> int:
             A(f"| {q} | {b['resamples']} | {b['share_better'] * 100:.0f}% | "
               f"{b['difference_p05']:+.4f}, {b['difference_p95']:+.4f} |")
     A("")
+    A("**A share is not an effect size.**  It says how often the temperature wins on a")
+    A("resample of 235 items; it does not say by how much, and it does not carry the")
+    A("uncertainty of the size.  For that, the paired item bootstrap below.")
+    A("")
+    A("## How sure is the EFFECT?  A paired item bootstrap")
+    A("")
+    A("The items are resampled with replacement and BOTH arms are scored on the same")
+    A("resample, so the difference is paired: an item's own run-to-run wobble cancels")
+    A("and what is left is the temperature's effect.  The interval is the 2.5% and")
+    A("97.5% percentiles of the differences, and the share is the resamples where the")
+    A("second arm is better.")
+    A("")
+    A("| comparison | Capability | Intelligence | Calibration |")
+    A("|---|---|---|---|")
+    def boot_row(label, boot_data):
+        cells = []
+        for key in ("capability", "intelligence", "calibration"):
+            d = (boot_data or {}).get(key)
+            cells.append("n/a" if not d else
+                         f"{d['mean']:+.2f} [{d['p025']:+.2f}, {d['p975']:+.2f}] "
+                         f"({d['share_better'] * 100:.0f}% > 0)")
+        A(f"| {label} | {cells[0]} | {cells[1]} | {cells[2]} |")
+    boot_row("the out-of-fold fit against the baseline arm", boot_oof)
+    if paired.get("bootstrap"):
+        boot_row("the temperature run against the same run with the temperature undone",
+                 paired["bootstrap"])
+    A("")
+    if paired.get("arm"):
+        A("The paired control: the arm that ran with the temperature, and the SAME run")
+        A("with the temperature undone (the closed reading put back through")
+        A("`normalize(closed_T ** T)`) - the same engine, the same picks, the same")
+        A("logits, the temperature's arithmetic removed.  The difference between the two")
+        A("is the temperature and nothing else.")
+        A("")
+        A("| run | Capability | Intelligence | Calibration |")
+        A("|---|---:|---:|---:|")
+        for label, summary in (("the same run with the temperature undone", paired["control"]),
+                                ("the run with the temperature", paired["arm"])):
+            A(f"| {label} | {fmt(summary.get('capability'), 1)} | "
+              f"{fmt(summary.get('intelligence'), 1)} | {fmt(summary.get('calibration'), 1)} |")
+        A("")
     A("## The official scorer")
     A("")
     A("The out-of-fold predictions (all the items, each scaled by the temperature of the")
@@ -720,6 +894,10 @@ def main() -> int:
     A("  the engine's top-k window and the T = 1 normalizer, not the full-vocabulary")
     A("  normalizer at T, so the confidence is the closed reading at T scaled by the mass")
     A("  the model put on the options (measured at T = 1).  See the serving side.")
+    A("- **The size of the effect is not established on 235 items.**  The paired item")
+    A("  bootstrap puts an interval on it, and that interval is wide: the direction is")
+    A("  right, the size is not known.  The Intelligence gain is the part that holds up;")
+    A("  the Calibration gain is the least certain of the three.")
     A("")
     args.out_report.parent.mkdir(parents=True, exist_ok=True)
     args.out_report.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -537,21 +537,116 @@
     "bootstrap": {
       "choice": {
         "resamples": 1000,
-        "share_better": 0.717,
-        "difference_p05": -0.029321612911744482,
-        "difference_p95": 0.07373540518775985
+        "share_better": 0.638,
+        "difference_p05": -0.032657803670891924,
+        "difference_p95": 0.06249876600182336,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
       },
       "noul": {
         "resamples": 1000,
-        "share_better": 0.754,
-        "difference_p05": -0.017460597971714648,
-        "difference_p95": 0.035707658044023566
+        "share_better": 0.672,
+        "difference_p05": -0.01798956758981464,
+        "difference_p95": 0.031996412628403886,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
       },
       "score": {
         "resamples": 1000,
-        "share_better": 0.782,
-        "difference_p05": -0.0343029813449765,
-        "difference_p95": 0.09671683256961283
+        "share_better": 0.678,
+        "difference_p05": -0.0446636979066471,
+        "difference_p95": 0.07690024975472222,
+        "method": "out of bag: the temperature is fitted on one resample and the ECE is measured on another"
+      }
+    },
+    "paired_bootstrap_out_of_fold": {
+      "resamples": 1000,
+      "capability": {
+        "mean": 1.6613727738486883,
+        "p025": -1.00900755232459,
+        "p975": 4.409975961743285,
+        "share_better": 0.893
+      },
+      "intelligence": {
+        "mean": 1.4559288153325125,
+        "p025": 0.7201640749650835,
+        "p975": 2.4575801751185082,
+        "share_better": 1.0
+      },
+      "calibration": {
+        "mean": 1.8668167323648643,
+        "p025": -3.252089606291918,
+        "p975": 7.058987196010193,
+        "share_better": 0.772
+      }
+    },
+    "paired_control": {
+      "arm": {
+        "capability": 80.05457125636889,
+        "intelligence": 76.98251223508842,
+        "calibration": 83.12663027764934,
+        "competence_per_type": {
+          "choice": 85.72098005087697,
+          "noul": 76.32034632034632,
+          "score": 68.90621033404199
+        },
+        "calibration_per_type": {
+          "choice": 80.82610886865864,
+          "noul": 81.80646454699814,
+          "score": 86.74731741729124
+        },
+        "accuracy_per_type": {
+          "choice": 88.78504672897196,
+          "noul": 88.40579710144928,
+          "score": 77.96610169491525
+        },
+        "items": 235,
+        "predicted": 235,
+        "calibration_items_tvd": 0.24950643667334266,
+        "calibration_items": 13
+      },
+      "control": {
+        "capability": 78.86947758080379,
+        "intelligence": 75.90050636971694,
+        "calibration": 81.83844879189063,
+        "competence_per_type": {
+          "choice": 85.72098005087697,
+          "noul": 76.32034632034632,
+          "score": 65.66019273792755
+        },
+        "calibration_per_type": {
+          "choice": 78.94673081463363,
+          "noul": 79.15929433286118,
+          "score": 87.40932122817708
+        },
+        "accuracy_per_type": {
+          "choice": 88.78504672897196,
+          "noul": 88.40579710144928,
+          "score": 77.96610169491525
+        },
+        "items": 235,
+        "predicted": 235,
+        "calibration_items_tvd": 0.2288080316664962,
+        "calibration_items": 13
+      },
+      "bootstrap": {
+        "resamples": 1000,
+        "capability": {
+          "mean": 1.3575657277724664,
+          "p025": -1.102288473606265,
+          "p975": 3.7889760849009235,
+          "share_better": 0.867
+        },
+        "intelligence": {
+          "mean": 1.0739955382098931,
+          "p025": 0.4408904911783935,
+          "p975": 1.7194477636904821,
+          "share_better": 0.998
+        },
+        "calibration": {
+          "mean": 1.6411359173350397,
+          "p025": -3.1601361670479946,
+          "p975": 6.463366599324601,
+          "share_better": 0.753
+        }
       }
     },
     "official_scorer_baseline": {

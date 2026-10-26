@@ -8,7 +8,10 @@ launch config (`"systemone": {"temperature": {...}}`).
 
 One scalar per question type.  The temperature divides the logits before the
 softmax, so the reported distribution is flattened (T > 1) or sharpened (T < 1).
-The PICK cannot change - the map is monotone - so only the calibration moves.
+The PICK cannot change - the map is monotone, so the argmax is the same and a
+yes/no never crosses the 0.5 threshold.  The score type's EXPECTED LEVEL does
+move (the probability-weighted mean the scorer reads), and with it the scorer's
+Intelligence for that type: that is where the gain is, not only the calibration.
 
 The exact identity the endpoint applies:
 
@@ -82,16 +85,46 @@ so a thin slice matters):
 | 3 | 47 | 0.5 | 0.7 | 0.57 | 6 | choice/easy 7, choice/hard 6, choice/judge 5, choice/standard 3, noul/easy 4, noul/hard 3, noul/judge 4, noul/standard 3, score/easy 2, score/hard 6, score/judge 2, score/standard 2 |
 | 4 | 45 | 0.5 | 0.62 | 0.7 | 10 | choice/easy 6, choice/hard 10, choice/judge 5, noul/easy 3, noul/hard 5, noul/judge 5, score/easy 2, score/hard 6, score/judge 3 |
 
-How sure is the fit?  The items of the type resampled with replacement, the
-temperature fitted again on each resample, the ECE measured on it at T = 1 and
-at the fitted temperature.  The share is the resamples where the temperature
-lowers the ECE; near 50% means the difference is inside the sample's noise.
+How sure is the fit?  The items of the type resampled with replacement, TWICE per
+resample: the temperature is fitted on one sample and the ECE is measured on the
+other, so the ECE that is compared is not the one the fit produced (measuring
+both on the same resample is in-sample and optimistic).  The share is the
+resamples where the temperature lowers the ECE; near 50% means the difference is
+inside the sample's noise.
 
 | type | resamples | the temperature lowers the ECE | the ECE difference (5%, 95%) |
 |---|---:|---:|---|
-| choice | 1000 | 72% | -0.0293, +0.0737 |
-| noul | 1000 | 75% | -0.0175, +0.0357 |
-| score | 1000 | 78% | -0.0343, +0.0967 |
+| choice | 1000 | 64% | -0.0327, +0.0625 |
+| noul | 1000 | 67% | -0.0180, +0.0320 |
+| score | 1000 | 68% | -0.0447, +0.0769 |
+
+**A share is not an effect size.**  It says how often the temperature wins on a
+resample of 235 items; it does not say by how much, and it does not carry the
+uncertainty of the size.  For that, the paired item bootstrap below.
+
+## How sure is the EFFECT?  A paired item bootstrap
+
+The items are resampled with replacement and BOTH arms are scored on the same
+resample, so the difference is paired: an item's own run-to-run wobble cancels
+and what is left is the temperature's effect.  The interval is the 2.5% and
+97.5% percentiles of the differences, and the share is the resamples where the
+second arm is better.
+
+| comparison | Capability | Intelligence | Calibration |
+|---|---|---|---|
+| the out-of-fold fit against the baseline arm | +1.66 [-1.01, +4.41] (89% > 0) | +1.46 [+0.72, +2.46] (100% > 0) | +1.87 [-3.25, +7.06] (77% > 0) |
+| the temperature run against the same run with the temperature undone | +1.36 [-1.10, +3.79] (87% > 0) | +1.07 [+0.44, +1.72] (100% > 0) | +1.64 [-3.16, +6.46] (75% > 0) |
+
+The paired control: the arm that ran with the temperature, and the SAME run
+with the temperature undone (the closed reading put back through
+`normalize(closed_T ** T)`) - the same engine, the same picks, the same
+logits, the temperature's arithmetic removed.  The difference between the two
+is the temperature and nothing else.
+
+| run | Capability | Intelligence | Calibration |
+|---|---:|---:|---:|
+| the same run with the temperature undone | 78.9 | 75.9 | 81.8 |
+| the run with the temperature | 80.1 | 77.0 | 83.1 |
 
 ## The official scorer
 
@@ -146,4 +179,8 @@ so its Intelligence is not fixed):
   the engine's top-k window and the T = 1 normalizer, not the full-vocabulary
   normalizer at T, so the confidence is the closed reading at T scaled by the mass
   the model put on the options (measured at T = 1).  See the serving side.
+- **The size of the effect is not established on 235 items.**  The paired item
+  bootstrap puts an interval on it, and that interval is wide: the direction is
+  right, the size is not known.  The Intelligence gain is the part that holds up;
+  the Calibration gain is the least certain of the three.
 
