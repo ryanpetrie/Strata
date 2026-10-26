@@ -32,6 +32,13 @@ structured generation - a bad answer is an error, never a fabricated distributio
 
 This module is pure: no Service, no engine, no I/O. server.py's Service.systemone
 wires it to the model; serve/test_systemone.py covers it without a GPU.
+
+THE READOUT.  This module is the direct readout: the options are shown by their own
+names and the model answers with the option's own tokens.  The letter readout
+(serve/systemone_letters.py) shows the options as A, B, C ... and reads the letter -
+one token, no collision, so no trie walk.  Both have the same shape, so the caller
+does not have to know which one it has; the config's "systemone": {"readout": ...}
+says which one the server uses.
 """
 from __future__ import annotations
 
@@ -54,11 +61,43 @@ MAX_TOKENS_CAP = 320
 
 TYPES = ("noul", "choice", "score")
 
+# The options are read as their OWN tokens, and two options can share their first
+# token ("rule_1" and "rule_2" both start with " rule"), so the trie walk answers
+# that case.  The letter path reads the letters, which cannot collide
+# (serve/systemone_letters.py).
+TRIE = True
+
 SYSTEM = """You are a classification module. Read the state, then answer every question on its own line as `name: answer`, with no other text.
 Copy each question name exactly. Do not repeat the question, the type, or the instructions.
 - A yes/no question takes exactly `yes` or `no`.
 - A choice question takes exactly one option name, copied exactly.
 - A score question takes exactly one level name, copied exactly."""
+
+
+def system_message(questions) -> str:
+    """The system message of the direct path.  The letter path has its own
+    (serve/systemone_letters.py); both are asked for the same shape, so the caller
+    does not have to know which one it has."""
+    return SYSTEM
+
+
+def readings(questions: list[tuple[str, dict]], logits: dict[int, float], tok,
+             prefix: str = "", logz: float | None = None,
+             temperature: float = 1.0) -> dict | None:
+    """The reading of the answer position: the options' OWN tokens.  See
+    serve/logits_first_token.py; the letter path reads the letters instead
+    (serve/systemone_letters.py)."""
+    from serve import logits_first_token as lft
+    return lft.first_token_probs(questions, logits, tok, prefix, logz, temperature)
+
+
+def fallback_reason(questions: list[tuple[str, dict]], logits: dict[int, float], tok,
+                    prefix: str = "", logz: float | None = None,
+                    trie_reason: str | None = None) -> str:
+    """Why the probabilities could not be read, in a few words.  A diagnostic: it
+    never changes the answer."""
+    from serve import logits_first_token as lft
+    return lft.fallback_reason(questions, logits, tok, prefix, logz, trie_reason)
 
 
 def _is_str(x) -> bool:
@@ -200,7 +239,7 @@ def score_descs(q: dict) -> dict:
     return q["criteria"]["descriptions"] or {}
 
 
-def _question_lines(name: str, q: dict) -> list[str]:
+def question_lines(name: str, q: dict) -> list[str]:
     """One question's lines: header, criteria, and the `name:` answer prefix."""
     lines = [f'[{name} | {q["type"]}] {q["instructions"]}']
     crit, qtype = q["criteria"], q["type"]
@@ -240,7 +279,7 @@ def render_prompt(state_text: str, questions: list[tuple[str, dict]]) -> str:
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
              "\nQuestions:"]
     for name, q in questions:
-        parts.extend(_question_lines(name, q))
+        parts.extend(question_lines(name, q))
     parts.append("\nValid line starts: " + ", ".join(n for n, _ in questions)
                 + ". Reply with exactly one line per question and nothing else.")
     return "\n".join(parts)
@@ -260,7 +299,7 @@ def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
              "\nAnswer the question on its own line as `name: answer`, and nothing else. "
              "Copy each question name exactly. Do not repeat the question, the type, or the instructions.\n",
              "\nQuestions:"]
-    parts.extend(_question_lines(name, q))
+    parts.extend(question_lines(name, q))
     return "\n".join(parts)
 
 
