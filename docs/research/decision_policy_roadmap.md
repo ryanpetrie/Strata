@@ -399,6 +399,14 @@ companion doc **26.2** (the rule was 26.1, committed before the run); the tool i
   also has to name what happens if the two configs' locations disagree again -
   because that is the outcome 1.4 makes likely.
 
+**The one direction 1.4b leaves open is backlogged (2026-10-23, the product owner's
+decision).** Per-workload calibration - the endpoint told which kind of task it serves and
+carrying a fitted correction for that workload - is the only version of this work that
+could ship a constant, and it needs **people's answer distributions per workload**. The
+machine has one score config and the noul; producing the rest is a labelling project, not a
+code one. It is in **Maybe / someday** below, and nothing is built for it until that
+question is answered.
+
 ### 1.5 Per-type instructions — a pre-registered ablation, not a hill-climb (added 2026-10-21)
 
 - **Effort:** 3–5 days, mostly compute. The design is small (the server's per-type
@@ -909,6 +917,17 @@ have unclear ROI. Revisit when Phases 1–3 are measured.
 - **Coherence as a published benchmark contribution.** If Strata's readout scores
   well on JevBench coherence, that is a publishable result. Not required for the
   product.
+- **Per-workload calibration (backlogged 2026-10-23, the product owner's decision).**
+  The endpoint is told which **kind of task** it serves (a workload tag), and each
+  workload carries its own fitted correction - a shift for the noul, a location for the
+  score. It is the only version of 1.4/1.4b that could ship a constant, because it stops
+  one population's correction being applied to another's (the reason no global constant
+  ships: companion doc §24-§26). **What blocks it is labels, not code:** it needs
+  **people's answer distributions per workload**, and this machine has one score config
+  (`measuring_hate_speech`, 3 levels) and the noul. It also needs a product answer - who
+  assigns the workload tag, and whether the caller can be trusted to declare it - before
+  any code is written. Revisit when a labelled workload or two exists, or when the
+  endpoint has real traffic whose workload can be inferred.
 
 ---
 
