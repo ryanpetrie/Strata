@@ -88,7 +88,7 @@ FOLDS = 5
 # below it or the fit cannot find it.  The report says where the optimum is.
 T_MIN, T_MAX = 0.5, 10.0
 COARSE_STEP = 0.01            # the grid step
-DEFAULT_SCORER = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
+DEFAULT_SCORER = Path(tempfile.gettempdir()) / "opencode" / "opendecisions" / "score.py"
 DEFAULT_CONFIG = Path(r"C:\tools\strata\strata-unsloth-ud-iq4_xs.json")
 OBJECTIVES = ("nll", "brier", "ece")
 

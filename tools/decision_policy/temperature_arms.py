@@ -41,7 +41,7 @@ import temperature as tp  # noqa: E402  (the one place that knows the transform)
 import jevbench_paired as jp  # noqa: E402  (the harness's own rules for a run log record)
 
 TYPES = ("choice", "noul", "score")
-DEFAULT_SCORER = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
+DEFAULT_SCORER = Path(tempfile.gettempdir()) / "opencode" / "opendecisions" / "score.py"
 
 
 def read_jsonl(path) -> list[dict]:

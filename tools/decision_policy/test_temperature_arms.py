@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from tools.decision_policy import temperature_arms as ta  # noqa: E402
 
-SCORER = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\score.py")
+SCORER = Path(tempfile.gettempdir()) / "opencode" / "opendecisions" / "score.py"
 
 
 class ParseTests(unittest.TestCase):

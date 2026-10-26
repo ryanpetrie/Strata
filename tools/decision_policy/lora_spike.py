@@ -30,10 +30,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import queue
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -47,7 +47,7 @@ from serve.frontend import ChatTemplate  # noqa: E402
 from serve.server import StrataEngine, child_env  # noqa: E402
 
 DEFAULT_CONFIG = Path(r"C:\tools\strata\strata-unsloth-ud-iq4_xs.json")
-DEFAULT_WORK = Path(os.environ.get("TEMP", r"C:\Users\ryanp\AppData\Local\Temp")) / "opencode" / "lora_spike"
+DEFAULT_WORK = Path(tempfile.gettempdir()) / "opencode" / "lora_spike"
 
 # The two prompts.  They are fixed text, so the ids are the same in every run.  The first is the
 # request under test; the second is the unrelated request that goes between two identical ones.
