@@ -30,6 +30,14 @@ The hard constraints from the handoff still hold:
 
 ### 2.1 Two clones, and the running one is not this workspace
 
+**2026-10-20: resolved.** The directories were renamed and the workspace *is* the
+running instance now (`C:\tools\strata`, port 8080, the config with the API key);
+the table below is the Phase-0 snapshot of 2026-10-19, kept as it was read then.
+The practical consequence of the snapshot - "any engine change made here has to be
+built and run before it can be measured, and that cannot happen while the current
+server holds the GPU" - still holds, and §10's measurements were taken by restarting
+the server with the new code.
+
 | | This workspace | The running server |
 | --- | --- | --- |
 | Path | `C:\tools\strata-dev` | `C:\tools\Strata` |
@@ -222,6 +230,15 @@ part for a new decision state.
 
 ## 4. Phases 2-6 - not started
 
+**2026-10-20: the head track was dropped by the user, and the work took another
+road.** The phases below are the original plan for a *learned* policy: capture the
+backbone's hidden state, train a small classifier on it, and serve the decision
+without generating text. That plan is parked, not abandoned - §5 explains why the
+head was not worth it for speed, and the same capture point (§2.5, §2.6) is what a
+*quality* play would use, if the user wants one. What shipped instead is the
+endpoint itself (§6) and, from 2026-10-20, the confidence read from the model's own
+next-token distribution (§10). The phases as written:
+
 * **Phase 2 (data):** the blocker is real. There is no labelled decision dataset from the user's agent workflow in
   this workspace, and no way to obtain one without running the user's agent and recording trajectories. The 60
   examples here are synthetic and rule-based and must not be read as real labels. Before any learned-policy claim,
@@ -261,8 +278,22 @@ make. Neither can be acted on until Phase 2 produces real labels.
 
 The deliverable is the reference contract served by Strata's own resources: the loaded
 model, the prompt cache, the existing server path. No second model, no heads, no training,
-no engine changes. One greedy decode per request yields the argmax, so the distributions
-are honestly degenerate and every response says `"calibrated": false`.
+no engine changes.
+
+**§10 is the current state of this work.** This section and the ones before it are the
+record of how it got there, written on 2026-10-19 and kept as it was then: the endpoint
+that answered with a greedy decode and a degenerate distribution, the design decisions
+that led to it, and the measurements behind them. Where they disagree with §10, §10 is
+right. The three things that changed after this section was written:
+
+- The confidence is no longer degenerate. §10.1: the endpoint reads the model's own
+  next-token distribution instead of sampling it, so a response carries a real
+  probability and says `"calibrated": true`.
+- The first-token path is no longer the whole story. §10.6: the options that share a
+  first token are separated by a trie walk, and the fast path now carries 233 of the
+  235 sample items.
+- The end-to-end numbers moved: Capability 65.6 → 79.5 on the 235-item sample
+  (§10.8).
 
 ### 6.0 Final design (IMPLEMENTED in the workspace, 2026-10-19)
 
@@ -291,8 +322,10 @@ Contract points, all measured or tested:
   forces temperature 0 and thinking off whatever the web Chat settings say.
 - Live check against the running model: a 3-question prompt (choice + noul + score)
   was obeyed exactly and parsed into the reference shape on the first try.
-- Tests: `serve/test_systemone.py`, 14 tests, all passing with MockEngine (no GPU);
-  `serve/test_server.py` still passes whole (341 tests), so no existing route changed.
+- Tests: `serve/test_systemone.py`, all passing with MockEngine (no GPU);
+  `serve/test_server.py` still passes whole, so no existing route changed.
+  (The counts in this section are the 2026-10-19 ones; the suite has grown since -
+  `serve/` is 945 tests today.)
 
 ### 6.1 What the goal actually needs
 
@@ -341,13 +374,15 @@ the existing model:
 
 - `serve/systemone.py` (new, pure): limits, request validation, one-prompt rendering
   for all batched questions, strict per-type answer parsing, reference-shaped response
-  building with `"calibrated": false`.
+  building. (On 2026-10-19 every response said `"calibrated": false`; §10.1 replaced
+  that with the model's own probability.)
 - `serve/server.py` (wired, +~70 lines): `systemone_enabled` flag (default off),
   config `"systemone": {"enabled": true}`, admission + `begin_request` + dispatch,
   `Service.systemone` (validate → prepare → `openai_chunks` → `openai_collect` →
   parse → respond), `/v1/systemone` in the `dialects` list.
-- `serve/test_systemone.py` (new): 14 tests, all passing with MockEngine; the whole
-  existing `serve/test_server.py` suite still passes (341 tests), so no route changed.
+- `serve/test_systemone.py` (new): all passing with MockEngine; the whole
+  existing `serve/test_server.py` suite still passes, so no route changed.
+  (The counts here are the 2026-10-19 ones.)
 - Live check: a 3-question prompt (choice + noul + score) against the running model
   was obeyed exactly and parsed into the reference shape on the first try.
 - Live failure that proved the contract: the first render put the name in a colon
@@ -382,24 +417,35 @@ install to `strata-old`) and the workspace tree itself now serves on port 8080 w
 both 401s, chat regression), and a 5-question mixed batch answers correctly
 (3.2 s cold, 0 cached). Rollback is the old tree at `strata-old` with its config.
 
-### 6.5 Real data (the only remaining research)
+### 6.5 Real data
 
 The synthetic 1.0 is rule-agreement, not quality. The next step, whenever the user
 wants it, is logging real decisions as `(state, questions, answers, outcome,
 trajectory_id)` JSONL and freezing a trajectory-split eval set - the same pipeline
 validates the endpoint as-is, no architecture change needed for it.
 
+**2026-10-20: the user put this last.** A published dataset (the OpenDecisions set,
+§9) is the reference for the endpoint's quality, and it is what the measurements
+use; what the trajectories would add is the right answer in the *user's own*
+workflow, which needs the user's notion of a good decision. Two other ways to use
+the user's own data exist and cost less: the examples can live in the cached prompt
+preamble (§6.2), and a policy head over the backbone's hidden state is the
+architecture's training path (§2.5, §2.6).
+
 ### 6.6 What each step needs from the user
 
 | Step | Status | Needs |
 | --- | --- | --- |
 | Prompt research (Phase 1 + Stage A) | Measured. Compact preamble: 532 ms new-state, 1.0 synthetic accuracy. | Nothing further. |
-| `/v1/systemone` implementation | Done in the workspace, tested (14 new + 341 existing green). | Approval to port + one server restart (§6.4). |
-| Real-data validation | Not started. | Access to real agent trajectories, or a decision to build the collection path. |
+| `/v1/systemone` implementation | Deployed and serving (§6.4); the confidence came from the model's own distribution afterwards (§10.1). | Nothing further. |
+| Real-data validation | Not started, and last in the user's priority order. | Access to real agent trajectories, or a decision to build the collection path. |
 
 ---
 
 ## 7. Reproducing
+
+The early phases (the synthetic example set, the API-only baseline, the fixed-preamble
+experiment):
 
 ```sh
 # 1. build the frozen example set (asserts the rule matches every stated target)
@@ -410,13 +456,40 @@ python tools/decision_policy/baseline.py --warmup 2 --runs 3 --out-dir tools/dec
 
 # 3. run the fixed-preamble experiment (verbose + compact arms)
 python tools/decision_policy/stage_a.py --runs 2 --with-compact-arm --out-dir tools/decision_policy
-
-# 4. the endpoint's own tests (venv python: system python lacks jinja2)
-C:\tools\Strata\.venv\Scripts\python.exe -m unittest serve.test_systemone -v
 ```
 
+The endpoint and its measurements (the server must be up, with `"systemone":
+{"enabled": true, "diagnostics": true}` in the launch config):
+
+```sh
+# 4. the probe: the fast path fires or it does not, per case
+python tools/decision_policy/logits_check.py
+
+# 5. the evaluation: the OpenDecisions sample through the endpoint
+python tools/decision_policy/opendecisions.py --items <D>\opendecisions.jsonl \
+  --out <D>\sample10.jsonl --ids-file <D>\sample10.txt --batch-k 1
+
+# 6. the score (the official scorer) and the two readings against the outcome
+python <D>\score.py <D>\sample10.jsonl --data <D>\sample10_items.jsonl
+python tools/decision_policy/readings_compare.py --items <D>\sample10_items.jsonl \
+  --predictions <D>\sample10.jsonl --runlog <D>\sample10.runlog.jsonl
+python tools/decision_policy/readings_split.py --items <D>\sample10_items.jsonl \
+  --runlog <D>\sample10.runlog.jsonl
+
+# 7. the options' shape and the walk's cost
+python tools/decision_policy/trie_costs.py --items <D>\sample10_items.jsonl
+python tools/decision_policy/trie_examples.py --items <D>\sample10_items.jsonl
+
+# 8. the tests (venv python: system python lacks jinja2)
+C:\tools\strata\.venv\Scripts\python.exe -m unittest serve.test_systemone serve.test_logits_first_token -v
+```
+
+`<D>` = `C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions` - the data, the
+predictions and the run logs live outside the repo on purpose (the dataset's rules
+say do-not-train; keep it out of git).
+
 The harness reads the address, model id, and API key from the launch config
-(`C:\tools\Strata\strata-unsloth-ud-iq4_xs.json`) or from `--host/--port/--model/--api-key`/`STRATA_API_KEY`. It
+(`C:\tools\strata\strata-unsloth-ud-iq4_xs.json`) or from `--host/--port/--model/--api-key`/`STRATA_API_KEY`. It
 starts no server and loads no model. Outputs: `baseline_report.json` and `baseline_report.md`.
 
 Nothing here is committed by default: `baseline_report.json`, `examples.jsonl`, and any future artifacts are
@@ -429,24 +502,37 @@ generated data and should stay out of version control unless the user asks.
 | Path | What it is |
 | --- | --- |
 | `docs/research/shared_backbone_decision_policy.md` | this document |
+| `docs/research/strata_shared_backbone_decision_policy_handoff.md` | the original brief (historical) |
+| `docs/research/systemone_handoff.md` | the 2026-10-19 session handoff (historical) |
 | `tools/decision_policy/make_examples.py` | the schema, the label rule, and the frozen example generator |
 | `tools/decision_policy/examples.jsonl` | 60 synthetic, rule-labelled examples (generated) |
 | `tools/decision_policy/baseline.py` | the API-only baseline harness |
 | `tools/decision_policy/baseline_report.json` | the measured results (generated) |
 | `tools/decision_policy/baseline_report.md` | the same, as a table (generated) |
 | `serve/systemone.py` | the endpoint's pure module: validate, render, parse, respond |
-| `serve/test_systemone.py` | 14 tests, MockEngine, no GPU |
+| `serve/test_systemone.py` | the endpoint's tests, MockEngine, no GPU |
 | `serve/server.py` | wired: flag + config, admission, dispatch, `Service.systemone`, dialects |
 | `tools/decision_policy/opendecisions.py` | OpenDecisions harness: serial + batch arms, resume-safe, official predictions output |
-| `serve/logits_first_token.py` | the first-token lookup: both readings, the collision check, the top-1 rule |
+| `serve/logits_first_token.py` | the first-token lookup and the trie walk: both readings, the resolution, the end factor, the checks |
 | `serve/test_logits_first_token.py` | the logits path, the wire format and the fallback, MockEngine, no GPU |
-| `tools/decision_policy/logits_prob.py` | the probability module: log-space softmax, the chain rule, the response shape (28 tests) |
-| `tools/decision_policy/logits_check.py` | the probe: six cases, each with the verdict it must produce |
+| `tools/decision_policy/logits_prob.py` | the probability module: log-space softmax, the chain rule, the response shape |
+| `tools/decision_policy/logits_check.py` | the probe: eight cases, each with the verdict it must produce |
 | `tools/decision_policy/readings_compare.py` | the closed-vs-open comparison, with the official scorer's own correctness rule |
+| `tools/decision_policy/readings_split.py` | the same comparison, split by question type |
 | `tools/decision_policy/vram_headroom.py` | the minimum free VRAM during a run, from the engine's log |
 | `tools/decision_policy/first_token.py` | the tokenization analysis: how many option names are multi-token, and where they collide |
+| `tools/decision_policy/trie_costs.py` | the trie walk's cost per item, from the shipped code and the server's tokenizer |
+| `tools/decision_policy/trie_examples.py` | the colliding questions, as the tokens see them |
+| `tools/decision_policy/README.md` | the tools, what each one is for |
 
 ## 9. OpenDecisions validation (2026-10-19, validation only - the set says do not train)
+
+**2026-10-20: this section is the baseline the §10 work is measured against.** The
+numbers below are the decode-only path's; §10.8 has the same sample with the
+first-token path and the trie walk (65.6 → 73.4 → 79.5). The format-failure rate
+and the "Calibration is structurally capped" note below are historical: the endpoint
+now reports the model's own probability, so the calibration is no longer capped by
+design.
 
 jgeuter/OpenDecisions v1.0.1 (CC-BY-SA-4.0): 2,352 JevBench-format decisions
 (state + typed question + labels + expected; choice 1178, noul 586, score 588).
@@ -465,7 +551,7 @@ per the scorer's rules). Official `score.py` on the sample:
 | Latency median / p95 | 3.2 s / 5.4 s per item cold |
 
 Context: above the no-training baseline on their board (SemIf 58.9), below trained
-4B systems (67-77); Calibration is structurally capped by design
+4B systems (67-77); Calibration was structurally capped by design
 (`"calibrated": false`). Panel-labeled real requests: 92.6%; negation/perturb
 pairs and option-order: 100/100/91.7% (order-robust); weak on jaggedness 58.3%
 and composite computation 72.7% (arithmetic, as the reference docs warn).
@@ -723,12 +809,16 @@ as the 65.6 baseline), one question per request, the official `score.py` on
 | the first-token path + the chain rule | 73.4 | 70.8 | 76.1 | 228/235 | 0.292 |
 | **the first-token path + the trie walk** | **79.5** | **77.5** | **81.4** | **235/235** | **0.215** |
 | the trie walk, run again (the noise floor) | 78.9 | 77.3 | 80.6 | 235/235 | 0.222 |
+| + the answer position checked (§10.9) | 79.6 | 77.7 | 81.6 | 235/235 | 0.227 |
+| + an option outside the window scored (§10.10) | 80.4 | 77.4 | 83.4 | 235/235 | 0.241 |
+| + the gate softened, the noul's confidence (§10.11, §10.12) | 79.1 | 76.3 | 81.9 | 235/235 | 0.240 |
 
-Per type, the last run: choice 89.7% accurate, noul 91.3%, score 79.7% (the chain
-rule's run: 89.7%, 91.3%, 67.8%). The fast path carried **233 of the 235 items**
-(99%); the two that fell back did so because an option's token was outside the
-engine's top-k, and the seven that answered 502 before (the model's text did not
-parse) are now answered from the probabilities.
+Per type, the trie walk's run: choice 89.7% accurate, noul 91.3%, score 79.7% (the
+chain rule's run: 89.7%, 91.3%, 67.8%). The fast path carried **233 of the 235
+items** (99%); the two that fell back did so because an option's token was outside
+the engine's top-k, and the seven that answered 502 before (the model's text did
+not parse) are now answered from the probabilities. The last two rows close both:
+every item of the sample is on the fast path, and nothing answers 502.
 
 **The two rows that differ only in the probabilities are the honest part.** The
 second row sent the scorer a degenerate distribution (1.0 on the pick, 0.0
@@ -795,50 +885,146 @@ points, and the 6.1 points the trie walk is worth are ten times that.
 A repeat of the same request that hit the conversation cache gave exactly the same
 numbers, so the wobble is the cache's layout, not the endpoint.
 
-### 10.9 What is not done
+### 10.9 The answer position is checked too
+
+The trie walk's check ("the model's top token at this node must be one the options
+claim, or the model was going to say something else and the reading is about a choice
+it is not making") ran at the nodes where the options are **told apart**. When every
+option shares a first token, that node is deeper than the answer position, so the
+answer position was not checked: the reading was then computed for a context the
+model is not in. The model wanted to write something else at the answer position
+(a digit, a different word), and the walk went on to ask what it would write *after*
+the shared prefix - a sensible-looking answer to a question the model never got to.
+
+The root is now one of the checked nodes. The options claim their first tokens
+there, so the rule is the one the first-token path already states: the model's top
+token at the answer position must be one of the options' first tokens.
+
+Measured on the 235 items, the official scorer:
+
+| run | Capability | Intelligence | Calibration | predicted | fast path |
+|---|---:|---:|---:|---:|---:|
+| the trie walk | 79.5 | 77.5 | 81.4 | 235/235 | 233 items |
+| the trie walk, run again (the noise floor) | 78.9 | 77.3 | 80.6 | 235/235 | 233 items |
+| **the trie walk + the check** | **79.6** | **77.7** | **81.6** | **235/235** | **233 items** |
+
+The same 233 items on the fast path, the same two fallbacks, and the score is inside
+the run-to-run spread. The seven items that used to answer 502 - the score questions
+whose levels are long strings with a numeric head - still take the fast path with the
+same picks: their model's top token at the answer position is the shared one, so the
+check passes. The risk was that the check would drop them to the decode path (where
+the model's bare "0" does not parse) - it does not.
+
+### 10.10 An option outside the engine's window
+
+The engine sends the top k logits, not the whole 248,320-token vocabulary, so an
+option's token can be below the window. The endpoint used to give up on the whole
+question in that case and answer it from the decode path, with the degenerate 1.0/0.0
+distribution - two of the 235 items (`'creative_writing'` and `'escalate_human'`).
+
+That was unnecessary. The window holds the **highest** logits, so an option outside it
+is below every option inside it: it cannot be the pick, and its probability is below
+the window's tail. It is therefore scored as **zero** and the question is answered -
+the answer is provably the one the full vocabulary would give, and only the reported
+probability for that option changes, from "unknown" to "approximately zero, bounded by
+the window's tail".
+
+Measured on the 235 items: the two items move onto the fast path, and nothing else
+changes.
+
+### 10.11 The gate is a flag, not a refusal
+
+The first-token path used to refuse to use its own readings when the model's most
+likely token at the answer position was not one of the options: the model was going
+to write something else (a digit, a phrase, a rate), so the option distribution was
+"a choice the model is not making", and the endpoint read the model's text instead.
+
+That is the right instinct - the model did not answer with an option - but the
+refusal threw away the one thing the endpoint knows: **the model was not going to
+answer with an option, and how unlikely it is that it would.** The weight the model
+put on everything else is already missing from the open reading, so the confidence
+carries the doubt by itself. The gate is now a flag (`model_picked` in the
+diagnostics) and the answer is a fallback **order**:
+
+1. the model's top token at the answer position is one of the options -> the readings
+   are the answer, as before;
+2. else the model's own text is the answer when that text is a valid answer - a
+   yes/no may be given as a rate, and the rate is what the reference API's `noul`
+   wants;
+3. else the readings are the answer after all: the forced choice, with the
+   confidence carrying the doubt.
+
+Step 3 is what removes a **502**: before, a model that wrote something that did not
+parse (and was not going to write an option) produced no answer at all.
+
+**Measured on the 235 items: the gate never fires.** Every one of the 235 items has
+the model's top token at the answer position among the options' first tokens, so the
+run is unchanged (the score is inside the run-to-run spread) and the change is a
+safety net rather than a common path. The same is true of five cases tried by hand
+against the live model - a yes/no question with "true"/"false" options, a question
+with "TBD"/"N/A" options, numeric options, a question asking for a rate, and a
+question asking for a sentence: the prompt's "answer with exactly one of these
+option names" holds the model to the options, and it wrote one every time.
+
+### 10.12 The noul carries a confidence
+
+A `noul` answer is a float - the probability of yes - and it had no confidence
+field, unlike the other two types. The contract for those is "the distribution is
+the closed reading, the confidence is the open one", and a yes/no could not carry
+the second half of it: the mass the model put on writing something other than yes
+or no was invisible.
+
+It does now, with the same meaning as the other types: **the model's own
+probability of the side it picked**. The value stays the closed reading (the
+probability of yes among the two answers, which measured better: the expected
+calibration error 0.093 against 0.116), so a confident "no" reports a small value
+and a large confidence - `{"noul": 0.03, "confidence": 0.95}` means "the answer is
+no, and I am fairly sure of it". A consumer that does not know the field can
+ignore it; the shape's `noul` value is unchanged, so the score is unchanged.
+
+### 10.13 What is not done
 
 - **The real-trajectory data** (the 60-example synthetic set is rule-labelled, so it
-  measures agreement with a rule, not quality). Blocked on the user: log
-  `(state, questions, answers, outcome, trajectory_id)` JSONL from the agent, freeze
-  a trajectory-split evaluation set, and re-run.
+  measures agreement with a rule, not quality). **Last in the user's priority order
+  (2026-10-20)**: a published dataset is the reference for the endpoint's quality,
+  and the OpenDecisions set is it. What the trajectories would add is the right
+  answer in the *user's own* workflow, which needs the user's notion of a good
+  decision. Two cheaper ways to use the user's own data exist: the examples can live
+  in the cached prompt preamble (§6.2), and a policy head over the backbone's hidden
+  state is the architecture's training path (§2.5, §2.6).
 - **A contract question to state plainly.** The reference API's `noul` type returns a
   *float* (the probability of yes) and the scorer thresholds it at 0.5. The prompt
   now says "answer yes or no", which makes the model write a boolean while the
   endpoint reports the model's internal probability. That is the right shape for the
   API, but the *answer* and the *probability* then come from different places - the
-  argmax against the distribution.
+  argmax against the distribution. The noul now carries a confidence as well
+  (§10.12), so the doubt is visible even though the value is the closed reading.
 - **The chain rule for the options of different lengths** - **done** (§10.6): the trie
   walk tells the options apart wherever they separate and uses the end-of-turn
   probability where an option's text ends, so "frontier" and "frontier_reasoning" are
   comparable.
+- **The trie walk not checking the answer position** - **done** (§10.9): the check
+  now runs at the answer position as well, so the reading is never computed for a
+  context the model is not in. Measured: no change to the score (inside the noise
+  floor) and the same 233 fast-path items.
+- **An option outside the engine's window** - **done** (§10.10): such an option is
+  below every option inside the window, so it cannot be the pick; it is scored as
+  zero instead of dropping the question to the decode path.
+- **The gate refusing to use the readings** - **done** (§10.11): the gate is a flag
+  now, and the answer is a fallback order - the model's own text when it is a valid
+  answer, the readings with a small confidence when it is not. Measured: the gate
+  never fires on the 235 items, so this is a safety net, and it removes a class of
+  502s.
 - **The exact probability of an option that continues past the separating token.** The
   walk stops where the options are told apart, so a longer option's weight is the
   probability of the prefix that identifies it, with the rest of its text assumed
   certain - the same approximation the first-token path makes. The exact weight would
   need the row at the end of that option's own text (the full trie: up to 94 rows for
   one item of the sample, against the 1-7 the walk needs).
-- **An option outside the engine's window.** Two of the 235 items still fall back
-  because an option's token is not in the engine's top-k (`'creative_writing'` and
-  `'escalate_human'`). It does not change the answer - an option below the window
-  has a lower logit than every option inside it, so it cannot be the pick - but the
-  endpoint gives up rather than report a probability for it. The bound is there: the
-  option's probability is below the window's tail, so the closed reading could be
-  computed with it at (almost) zero.
 - **The chat path's telemetry for the decision path.** The decision path takes the
   engine's turn and the engine's DONE line, but it does not go through
   `Service.run`, so the monitor's live request list does not show a decision
   request. It shows as idle while a decision runs.
-- **The trie walk does not check the answer position when the options all collide.**
-  The check ("the model's top token at this node must be one the options claim, or
-  the model was going to say something else") runs at the nodes where the options
-  are told apart. When every option shares a first token, that node is deeper than
-  the answer position, so the answer position is not checked: the reading is then
-  "what the model would write IF it wrote the shared prefix". Measured over the 235
-  items that reading is the better one (the score questions went from 67.8% to 79.7%
-  accurate), but the hole is real - the first-token path does check its row. The
-  check needs the row's top token to be the shared first token, which is the same
-  check the first-token path makes, so it is a small change; it was not made here
-  because it can only be judged by another run.
 - **The conversation cache's slots.** Measured: the minimum free VRAM during the
   235-item run was 1082 MiB (1206 at load), against the engine's 1024 MiB warning
   threshold - and each parked conversation costs ~240 MiB of VRAM with these long
