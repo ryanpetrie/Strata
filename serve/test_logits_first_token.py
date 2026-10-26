@@ -581,8 +581,27 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertLessEqual(body["answers"]["q"]["confidence"],
                              max(body["answers"]["q"]["probabilities"].values()))
 
-    def test_multi_question_uses_decode(self):
+    def test_multi_question_is_answered_per_question(self):
+        # several questions: each one runs the single-question path, so each answer
+        # carries the model's own probability (the rows are the two answer positions)
+        svc = svc_with()
+        svc.engine.logits_rows = [({1000: 2.0, 1001: 1.0}, 3.0), ({1000: 1.0, 1001: 2.0}, 3.0)]
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
+            code, body = svc.systemone(req(questions={
+                "q1": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}},
+                "q2": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}),
+                threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q1"]["choice"], "a")      # the first answer position
+        self.assertEqual(body["answers"]["q2"]["choice"], "b")      # the second one
+        self.assertLess(body["answers"]["q1"]["confidence"], 1.0)
+
+    def test_the_shared_prompt_is_still_there(self):
+        # the old path, behind the config flag: one prompt answers every question, so
+        # the prefill is shared and the answers carry no probability
         svc = svc_with("q1: a\nq2: b\n")
+        svc.systemone_multi = "shared"
         code, body = svc.systemone(req(questions={
             "q1": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}},
             "q2": {"type": "choice", "instructions": "Pick", "criteria": {"a": None, "b": None}}}),
