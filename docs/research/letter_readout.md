@@ -1,11 +1,14 @@
 # The letter readout: the options as A, B, C ...
 
-**Status:** built, unit-tested and measured. The 235-item OpenDecisions sample was
-run both ways on 2026-10-21, on a freshly restarted engine each time: the letter
-readout scored **82.7** Capability against the direct readout's **79.3** in the same
-session, was faster, and needs one engine request per question where the direct path
-needs 113 extra over the same items. The full comparison, its mechanism and its
-limits are in the companion doc's section 20.
+**Status:** built, unit-tested and measured on two populations. On the 235-item
+OpenDecisions sample (2026-10-21) the letter readout scored **82.7** Capability
+against the direct readout's **79.3** in the same session, was faster, and needs one
+engine request per question where the direct path needs 113 extra over the same
+items. **On jev-bench - the sample that carries the human label distributions - it
+loses: 48.3 against 55.1, and the mean distance to the humans goes from 0.4439 to
+0.4688.** The OpenDecisions win does not generalize; the letter readout is not
+ready to be the default. The comparisons are in the companion doc's sections 20 and
+21.
 
 **Date:** 2026-10-21
 
@@ -158,8 +161,57 @@ and the limits.
 choice and score items; an unbiased readout would pick it 24.5% of the time.
 
 The exit criterion (roadmap item 1.3) - ship it only if it wins on at least two of
-{Capability, latency, simplicity} without losing the other - **is met**: it wins
-Capability and simplicity, and the latency does not lose.
+{Capability, latency, simplicity} without losing the other - **is met on this
+sample**: it wins Capability and simplicity, and the latency does not lose.
+
+## The second population: jev-bench, against the humans
+
+The check that decides the default question, on the sample that carries the **human
+label distributions** (683 items, 280 of them with a human distribution over the
+options).  The direct arm's numbers there were measured by roadmap item 1.2; the
+letter arm was run on 2026-10-21, on a freshly restarted engine, with the same
+harness and the same ids.
+
+| | the direct readout | the letter readout |
+|---|---:|---:|
+| Capability | **55.1** | 48.3 |
+| Intelligence | **46.6** | 44.4 |
+| Calibration | **63.6** | 52.2 |
+| choice accuracy / calibration | 71.1% / 69.3 | 69.7% / 44.9 |
+| yes/no accuracy / calibration | 74.3% / 57.8 | 72.5% / 56.5 |
+| score accuracy / calibration | 48.5% / 63.6 | 47.3% / 55.2 |
+| the mean TVD to the humans | **0.4439** | 0.4688 |
+| the TVD, choice / yes/no / score | **0.4699** / 0.3844 / **0.4955** | 0.5268 / **0.3559** / 0.5437 |
+| predicted / failures | 683 / 0 | 683 / 0 |
+| the fast path | 683 | 539 (144 questions have more options than there are letters) |
+
+**The letter readout loses by 6.9 Capability points, and the loss is the
+calibration.**  Two reasons, both measured:
+
+* **144 of the 683 questions have more than 26 options** (go_emotions with 28,
+  ledgar with 100, massive with 60, banking77 with 77, clinc150 with 151), and there
+  are only 26 letters.  Those questions are answered from the decode path, which
+  reports a degenerate 1.0/0.0 distribution: their calibration collapses from 56.5 to
+  18.1.  That is a fix, not a verdict - those questions should be read the direct way.
+* **Even on the 539 questions the letter readout did serve, it loses**: Capability
+  57.8 against 53.8, the calibration 67.0 against 60.8.  The choice questions' accuracy
+  is the same (80.0% against 80.0%).
+
+**The hedging hypothesis is refuted.**  The letter readout's distributions are
+**sharper**, not flatter: the choice questions' entropy is 0.188 bits against the
+direct readout's 0.531, the mass on the mode 0.950 against 0.866.  On the items with
+a human distribution the humans carry 1.144 bits, the direct readout answers with
+0.803 and the letter readout with 0.310 - twice as certain as the direct readout and
+far more certain than the humans, which is what the calibration component measures.
+The score questions' gain on OpenDecisions (the expected level closer to the gold)
+does not transfer: on jev-bench the same sharpening moves the expected level further
+from the gold.
+
+**The recommendation: do not ship it as the default.**  The exit criterion was met on
+the OpenDecisions sample; it does not survive the population with the humans' labels.
+The flag stays (it is faster and simpler where it works, and on the yes/no questions
+it is closer to the humans), the default stays the direct readout, and the next steps
+are the >26-options fix and a paired re-measurement on both populations.
 
 ## How to measure it again
 
