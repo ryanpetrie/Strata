@@ -241,6 +241,14 @@ class VsRange(unittest.TestCase):
         self.assertEqual(self.asked((13, 3)), "[17.0,19.0)")
         self.assertEqual(self.asked((14, 0)), "[17.0,19.0)")
 
+    def test_allow_vs2026_with_older_cuda(self):
+        """STRATA_ALLOW_VS2026=1: VS 2026 is looked for even with CUDA 13.0-13.2 (tried anyway)."""
+        with mock.patch.dict(os.environ, {"STRATA_ALLOW_VS2026": "1"}):
+            self.assertEqual(self.asked((13, 0)), "[16.0,19.0)")
+            self.assertEqual(self.asked((13, 2)), "[16.0,19.0)")
+        with mock.patch.dict(os.environ, {"STRATA_ALLOW_VS2026": ""}):
+            self.assertEqual(self.asked((13, 0)), "[16.0,18.0)")
+
 
     def test_vcvars_by_hand(self):
         """#881: STRATA_VCVARS names a vcvars64.bat directly, for an install vswhere cannot use."""

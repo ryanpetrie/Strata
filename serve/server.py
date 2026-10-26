@@ -376,6 +376,11 @@ class MockEngine:
                 time.sleep(self.delay)
             yield t
 
+    def logits(self, ids, k, cancel):
+        """The scripted top-k logits (tests): set `self.logits_topk = {token_id: value}`."""
+        self.last_prompt = list(ids)
+        return dict(getattr(self, "logits_topk", {}))
+
 
 class EngineDied(RuntimeError):
     """The engine process ended in the middle of a request (issue #27: on Linux, the out-of-memory killer)."""
@@ -2183,6 +2188,63 @@ class StrataEngine:
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
 
+    def logits(self, ids, k, cancel):
+        """Runs the prefill for `ids` and returns the top-k logits at the next-token
+        position: {token_id: logit_value}. The engine answers `L <token_id> <value>`
+        lines, then DONE. Raises EngineDied/ValueError on failure."""
+        if not self.alive():
+            raise EngineDied("the engine is unavailable; this request was not sent")
+        self.progress, self.progress_ms, self.reused = None, 0, 0
+        self.prefill_tok_s_mean = None
+        try:
+            self.proc.stdin.write(f"LOGITS {int(k)} {','.join(str(int(t)) for t in ids)}\n")
+            self.proc.stdin.flush()
+        except OSError:
+            raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
+        out = {}
+        done = False
+        try:
+            while True:
+                try:
+                    line = self.lines.get(timeout=0.5)
+                except queue.Empty:
+                    if cancel.is_set():
+                        return out
+                    continue
+                if line is None:
+                    raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
+                if line.startswith("L "):
+                    f = line.split()
+                    if len(f) >= 3:
+                        try:
+                            out[int(f[1])] = float(f[2])
+                        except ValueError:
+                            pass
+                elif line.startswith("PP "):
+                    f = line.split()
+                    if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
+                        self.progress = (int(f[1]), int(f[2]))
+                        self.progress_ms = float(f[3]) if len(f) >= 4 else 0.0
+                        self.prefill_tok_s_mean = float(f[4]) if len(f) >= 5 else None
+                elif line.startswith("RESUME "):
+                    try:
+                        self.reused = int(line.split()[1])
+                    except (IndexError, ValueError):
+                        pass
+                elif line.startswith("DONE"):
+                    self._parse_done(line)
+                    done = True
+                    return out
+                elif line.startswith("ERR"):
+                    raise ValueError(line[4:].strip())
+        finally:
+            if not done:
+                try:
+                    self.proc.stdin.write("STOP\n")
+                    self.proc.stdin.flush()
+                except OSError:
+                    pass
+
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
         the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
@@ -3830,6 +3892,7 @@ class Service:
         self.reasoning_close_retry = False            # #1053 (opt-in): close the thinking once when a reply ends inside it
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
+        self.systemone_enabled = False                # opt-in: the config's "systemone": {"enabled": true} turns on POST /v1/systemone
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4564,6 +4627,69 @@ class Service:
             reading = self.status.get("busy") and self.status.get("first_token") is None
         return getattr(self.engine, "prefill_tok_s_mean", None) if reading else 0.0
 
+    def systemone(self, req: dict, cancel: threading.Event) -> tuple[int, dict]:
+        """POST /v1/systemone: the reference API's classification shape on this server's
+        own model (serve/systemone.py). One prompt answers every question; a reply that
+        does not parse is a StructuredOutputError (502), never a fabricated answer."""
+        from serve import systemone as sysone
+        if not self.systemone_enabled:
+            return 404, {"error": {"type": "invalid_request_error",
+                                    "message": "/v1/systemone is not enabled (set \"systemone\": "
+                                             "{\"enabled\": true} in the config and restart)"}}
+        state_text, questions = sysone.validate_request(req)   # ValueError: the server answers 400
+        model = self.model_for(req)
+        # Milestone 1: the first-token logits path for one question whose options have
+        # unique first tokens. Multi-question requests keep the one-prompt decode path.
+        if len(questions) == 1:
+            fast = self._systemone_logits(state_text, questions, model, cancel)
+            if fast is not None:
+                return fast
+        messages = [{"role": "system", "content": sysone.SYSTEM},
+                    {"role": "user", "content": sysone.render_prompt(state_text, questions)}]
+        max_new = min(sysone.MAX_TOKENS_PER_QUESTION * len(questions), sysone.MAX_TOKENS_CAP)
+        self.load()
+        ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
+                                              max_new, req=None, cancel=cancel)
+        sampling = {"model": model, "temperature": 0.0}        # greedy: the argmax, documented uncalibrated
+        chunks = openai_chunks(self, sampling, ids, thinking, None, max_new, cancel)
+        collected = openai_collect(chunks)
+        finish = collected["choices"][0]["finish_reason"]
+        if finish != "stop":
+            raise StructuredOutputError(f"/v1/systemone: the answer was cut off ({finish}); retry")
+        text = collected["choices"][0]["message"]["content"] or ""
+        answers = sysone.parse_answers(text, questions)
+        body = sysone.build_response(questions, answers, model, collected.get("usage") or {},
+                                     collected.get("timings"))
+        return 200, body
+
+    def _systemone_logits(self, state_text, questions, model, cancel):
+        """The first-token logits path (milestone 1): one question, a prompt ending at
+        the answer position, and probabilities from the engine's top-k logits. Returns
+        None to fall back to the decode path (an option's first token outside the
+        top-k, colliding first tokens, or an engine failure)."""
+        from serve import systemone as sysone
+        from serve import logits_first_token as lft
+        name, q = questions[0]
+        messages = [{"role": "system", "content": sysone.SYSTEM},
+                    {"role": "user", "content": sysone.render_logits_prompt(state_text, name, q)}]
+        self.load()
+        try:
+            ids, thinking, _ = self.prepare(messages, None, {"enable_thinking": False},
+                                            sysone.MAX_TOKENS_PER_QUESTION, req=None, cancel=cancel)
+            topk = self.engine.logits(ids, 64, cancel)
+        except Exception:
+            return None
+        probs = lft.try_first_token_probs(questions, topk, self.tok) if topk else None
+        if probs is None:
+            return None
+        usage = {"prompt_tokens": len(ids), "completion_tokens": 0,
+                 "total_tokens": len(ids),
+                 "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
+        body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
+                "created": int(time.time()), "model": model, "calibrated": True,
+                "answers": probs, "usage": usage}
+        return 200, body
+
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
         if not self.api_monitor:
@@ -4713,7 +4839,7 @@ class Service:
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
             "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
                             "requested": getattr(self, "requested_slots", max(1, int(getattr(self.engine, "batch", 0) or 0)))},
-            "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
+            "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/systemone"],
             "vision": {"enabled": images, "available": images, "error": None},
             "image_generation": self.images.status() if self.images is not None else {"enabled": False},
             "activity": {"requests": totals["requests"] + running,
@@ -6759,7 +6885,7 @@ def make_handler(svc: Service):
                 return
             reserved = False
             try:
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/systemone"):
                     reserved = svc.reserve_inference()
                     if reserved is None:
                         error = {"type": "server_error", "code": "server_draining",
@@ -6819,7 +6945,7 @@ def make_handler(svc: Service):
                     except EngineDied as e:
                         self._json(503, {"error": {"type": "server_error", "message": str(e)}})
                     return
-                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses"):
+                if path in ("/v1/chat/completions", "/v1/messages", "/v1/responses", "/v1/systemone"):
                     self.record = svc.begin_request(path, req)
                 if path == "/v1/responses":
                     self._responses(req)
@@ -6838,6 +6964,8 @@ def make_handler(svc: Service):
                     self._anthropic(req)
                 elif path == "/v1/messages/count_tokens":
                     self._count_tokens(req)
+                elif path == "/v1/systemone":
+                    self._systemone(req)
                 elif path == "/v1/images/generations":
                     self._images(req)
                 else:
@@ -7383,6 +7511,14 @@ def make_handler(svc: Service):
             stop_strings(req)                                 # the same 400 as the request itself would get
             check_request_sampling(req)                       # ... likewise a sampling field of the wrong type
             self._json(200, {"input_tokens": len(svc.encode_prompt(messages, tools, kw, store=False))})
+
+        def _systemone(self, req):
+            """POST /v1/systemone (serve/systemone.py): classification without text
+            generation.  Non-streaming: one prompt answers every question."""
+            cancel = threading.Event()
+            self._watch_client(cancel)                       # #430 #431 (#1999: before prepare, which can take long)
+            code, body = svc.systemone(req, cancel)
+            self._json(code, body)
 
         def _anthropic(self, req):
             svc.load()
@@ -8488,6 +8624,11 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
             print(f"[strata] thinking level: {svc.config_effort} (reasoning_effort in the config; a request, or the "
                   "Chat settings shared with other apps, can set its own)", flush=True)
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default
+    _systemone_cfg = cfg.get("systemone")
+    svc.systemone_enabled = isinstance(_systemone_cfg, dict) and _systemone_cfg.get("enabled") is True
+    if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
+        print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
+              flush=True)
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:
         svc.set_aliases(cfg.get("aliases"))             # #297: other names the model answers to

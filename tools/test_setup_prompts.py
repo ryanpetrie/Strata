@@ -73,7 +73,7 @@ class BuildTools(unittest.TestCase):
         nvcc, vcvars = Path("nvcc"), Path("vcvars64.bat")
         with mock.patch.object(setup, "WIN", True), \
                 mock.patch.object(setup, "find_nvcc", side_effect=[(None, (0, 0)), (nvcc, (13, 0))]), \
-                mock.patch.object(setup, "find_vcvars", side_effect=[None, vcvars, vcvars, vcvars]), \
+                mock.patch.object(setup, "find_vcvars", side_effect=[None, None, vcvars, vcvars, vcvars]), \
                 mock.patch.object(setup.shutil, "which", return_value="winget"), \
                 mock.patch.object(setup, "run") as run, \
                 mock.patch("builtins.input", side_effect=AssertionError("unexpected prompt")), \
