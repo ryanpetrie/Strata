@@ -338,7 +338,7 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
-                               src/core/layout.cpp)
+                               src/core/layout.cpp src/core/lora_pack.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   # the DFlash2 drafter (src/core/dflash2.cpp, src/kernels/cuda/dflash2.cu) exists in the CUDA and HIP builds; the Metal and SYCL builds compile without it
   target_compile_definitions(strata_core PUBLIC STRATA_HAVE_DFLASH2=1)
@@ -418,6 +418,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/kv_q4.cu
                           src/kernels/cuda/fused_gr.cu
                           src/kernels/cuda/cvec.cu
+                          src/kernels/cuda/lora.cu
                           src/kernels/cuda/qsa_decode_attn.cu
                           src/kernels/cuda/qsa_prompt_attn.cu
                           src/kernels/cuda/fused_gdn.cu
@@ -1453,6 +1454,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(cvec_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(cvec_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME cvec_parity COMMAND cvec_parity)
+  # Phase 2.2 step 2: the LoRA delta kernel against core::lora_delta_f32 - flag off is bit-identical, flag on is
+  # the reference to fp32 tolerance, the flag is device-side, and one call applies a layer's entries.
+  add_executable(lora_parity src/kernels/lora_parity.cpp)
+  target_include_directories(lora_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(lora_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  add_test(NAME lora_parity COMMAND lora_parity)
 
   # The rewritten per-hit and grouped expert kernels vs the previous ones, bitwise (GPU, synthetic, no model).
   # `--bench` adds previous/new timings on engine-like shapes.
