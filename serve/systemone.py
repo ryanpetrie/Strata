@@ -264,6 +264,24 @@ def render_answer_prompt(state_text: str, name: str, q: dict) -> str:
     return "\n".join(parts)
 
 
+def _option_by_description(crit: dict, value: str) -> str | None:
+    """The option whose description is exactly this text - when exactly one is.
+
+    The prompt shows an option as `- name ("description")` and asks the model to
+    "answer with exactly one of these option names".  A model that answers with
+    the DESCRIPTION instead has still named the option; refusing it is a 502 for
+    no reason.  The mapping is made only when EXACTLY ONE option carries that
+    description, so it can never be a guess between two options, and it never
+    overrides an option name (the name is checked first).
+
+    Measured: the JevBench rewrite cases, whose options are named option_1 ...
+    option_4 with a description attached - the model answered "The paid pro plan"
+    for option_1, and four of 643 requests answered 502 because of it.
+    """
+    hits = [opt for opt, desc in crit.items() if desc and str(desc).strip() == value]
+    return hits[0] if len(hits) == 1 else None
+
+
 def parse_answers(text: str, questions: list[tuple[str, dict]]) -> dict:
     """The reply's answer lines -> {name: normalized value}. Anything else is a
     StructuredOutputError (the server answers 502): a missing, duplicated or
@@ -313,8 +331,11 @@ def parse_answers(text: str, questions: list[tuple[str, dict]]) -> dict:
             out[name] = num
         elif qtype == "choice":
             if value not in crit:
-                raise StructuredOutputError(
-                    f'/v1/systemone: question "{name}" takes one of {sorted(crit)}, got {value!r}')
+                opt = _option_by_description(crit, value)
+                if opt is None:
+                    raise StructuredOutputError(
+                        f'/v1/systemone: question "{name}" takes one of {sorted(crit)}, got {value!r}')
+                value = opt
             out[name] = value
         else:
             levels = score_names(by_name[name])
@@ -360,8 +381,11 @@ def parse_answer_text(text: str, questions: list[tuple[str, dict]]) -> dict:
         return {name: num}
     if qtype == "choice":
         if value not in crit:
-            raise StructuredOutputError(
-                f'/v1/systemone: question "{name}" takes one of {sorted(crit)}, got {value!r}')
+            opt = _option_by_description(crit, value)
+            if opt is None:
+                raise StructuredOutputError(
+                    f'/v1/systemone: question "{name}" takes one of {sorted(crit)}, got {value!r}')
+            value = opt
         return {name: value}
     levels = score_names(q)
     if value not in levels:
