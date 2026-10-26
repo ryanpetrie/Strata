@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import math
 
-from tools.decision_policy import logits_prob
+from serve import logits_prob
 
 # How many logits the engine returns for the answer position.  It has to be generous:
 # an option the model is very unlikely to pick can sit far down the vocabulary's tail
