@@ -497,9 +497,10 @@ python tools/decision_policy/trie_examples.py --items <D>\sample10_items.jsonl
 C:\tools\strata\.venv\Scripts\python.exe -m unittest serve.test_systemone serve.test_logits_first_token serve.test_decision_monitor -v
 ```
 
-`<D>` = `C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions` - the data, the
-predictions and the run logs live outside the repo on purpose (the dataset's rules
-say do-not-train; keep it out of git).
+`<D>` = `<opencode temp>\opendecisions` - the data, the predictions and the run logs
+live outside the repo on purpose (the dataset's rules say do-not-train; keep it out
+of git).  `<opencode temp>` is the machine's temporary run directory (for example
+`%LOCALAPPDATA%\Temp\opencode`).
 
 The harness reads the address, model id, and API key from the launch config
 (`C:\tools\strata\strata-unsloth-ud-iq4_xs.json`) or from `--host/--port/--model/--api-key`/`STRATA_API_KEY`. It

@@ -376,10 +376,11 @@ pool.
 
 ## 6. What was downloaded, and where
 
-The data root is outside the repository:
+The data root is outside the repository (on this machine, under the user's
+temporary directory; `<data root>` below):
 
 ```
-C:\Users\ryanp\AppData\Local\Temp\opencode\decision_policy_training\
+<data root>\decision_policy_training\
 ```
 
 22 files, 44,966,196 bytes, 32,328 rows in all (24,000 train rows and 8,328 validation rows). Every
