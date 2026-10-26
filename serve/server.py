@@ -2219,6 +2219,7 @@ class StrataEngine:
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
+        self.last = {}                          # only a DONE line replaces it: a stale one must not be read
         try:
             # LOGITS <k> <max_new> <ids>: the engine reads the top-k at the answer
             # position AND generates up to max_new tokens, so one request gives both
@@ -2235,14 +2236,34 @@ class StrataEngine:
         logz = None
         tokens = []
         done = False
+        # #481: how long the engine may stay silent from here.  The chat path's
+        # generate() has this watchdog and the decision path did not: an engine that
+        # lost step left a decision request waiting for a line that never came, and
+        # it waited while HOLDING the request FIFO - so every other request waited
+        # behind it.  The same allowance, the same rule.
+        silence = float(self.silence_s or 0)
+        allow = (silence + min(len(ids), PP_CHUNK_MAX) / PP_FLOOR_TOK_S) if silence > 0 else 0.0
+        heard = time.monotonic()
         try:
             while True:
+                wait = 10.0
+                if allow > 0:
+                    wait = min(wait, allow - (time.monotonic() - heard))
+                    if wait <= 0:
+                        raise self._silent(f"the engine said nothing for "
+                                            f"{time.monotonic() - heard:.0f} s during the request")
                 try:
-                    line = self.lines.get(timeout=0.5)
+                    line = self.lines.get(timeout=min(wait, 0.5))
                 except queue.Empty:
                     if cancel.is_set():
-                        return out, logz, tokens
+                        # The client went away: this request has no answer.  The
+                        # tokens read so far are a PARTIAL answer, so they are not
+                        # returned as one - the caller is told the request was
+                        # abandoned (and the engine is stopped and drained below, so
+                        # its lines do not reach the next request).
+                        raise QueueCancelled("the client disconnected while the engine was answering")
                     continue
+                heard = time.monotonic()      # any line is output: L, Z, T, PP, RESUME, DONE
                 if line is None:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
                 if line.startswith("L "):
@@ -2278,16 +2299,63 @@ class StrataEngine:
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
+                    # IS THIS ANSWER MINE?  The engine's DONE carries the prompt's own
+                    # token count, so a count that is not the one that was sent means
+                    # the lines just read belonged to ANOTHER request: the sides lost
+                    # step.  The engine is ended, so the next request starts on a fresh
+                    # pipe (the chat path ends it the same way) - and this request is
+                    # answered by the decode path, never with another request's answer.
+                    n = self.last.get("prompt_tokens")
+                    if n is not None and int(n) != len(ids):
+                        raise self._silent(f"the engine's answer carried {n} prompt tokens, "
+                                            f"not the {len(ids)} that were sent")
                     return out, logz, tokens
                 elif line.startswith("ERR"):
                     raise ValueError(line[4:].strip())
         finally:
             if not done:
-                try:
-                    self.proc.stdin.write("STOP\n")
-                    self.proc.stdin.flush()
-                except OSError:
-                    pass
+                # The consumer stopped early: stop the engine, drain to DONE.  The
+                # chat path's generate() does the same and says why: the engine's
+                # lines for THIS request must not reach the NEXT request, which
+                # reads the same queue.  Without the drain a stopped request leaves
+                # its L/Z/T/DONE lines behind, and the next request reads them as
+                # its own answer - another question's tokens, another question's
+                # distribution.
+                if self.can_stop:
+                    try:
+                        self.proc.stdin.write("STOP\n")
+                        self.proc.stdin.flush()
+                    except OSError:
+                        pass
+                # Never an untimed wait here: it holds the request FIFO, and an
+                # engine that lost step never answers.  And a drain that gives up
+                # must END the engine, not leave its lines in the queue: the chat
+                # path's drain does the same, because a queue that still holds
+                # another request's lines is how one request's answer becomes
+                # another request's.
+                pending = sys.exc_info()[0] is not None   # an exception is on its way out
+                heard = time.monotonic()
+                while True:
+                    left = (self.silence_s or 10.0) - (time.monotonic() - heard)
+                    if left <= 0:
+                        # the engine is ended either way - it is the fresh pipe that
+                        # matters - but the exception that is already on its way out
+                        # is not masked by this one.
+                        silent = self._silent("the engine did not finish the request after it "
+                                              "was stopped (STOP)")
+                        if not pending:
+                            raise silent
+                        break
+                    try:
+                        line = self.lines.get(timeout=left)
+                    except queue.Empty:
+                        silent = self._silent("the engine did not finish the request after it "
+                                              "was stopped (STOP)")
+                        if not pending:
+                            raise silent from None
+                        break
+                    if line is None or line.startswith("DONE") or line.startswith("ERR"):
+                        break
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
         """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
@@ -4714,7 +4782,7 @@ class Service:
             logz = top + math.log(sum(math.exp(v - top) for v in topk.values()))
         return topk, logz
 
-    def _systemone_trie(self, questions, topk, logz, ids, prefix, cancel):
+    def _systemone_trie(self, questions, topk, logz, ids, prefix, cancel, fifo_held=False):
         """The trie walk: the options that share a first token.
 
         The options' token sequences form a trie, and the row at a node of the trie
@@ -4725,6 +4793,12 @@ class Service:
 
         Each extra row is one more engine request - the prompt is cached, so it reads
         the shared tokens, not the prompt.
+
+        `fifo_held`: the caller already holds the engine's turn (the single-question
+        path holds it across the base request and this walk, so that no other request
+        can take the engine's turn in between and take the cached prompt away).  Then
+        the walk must NOT take the turn again - the FIFO is a lock, not a reentrant
+        one.
 
         -> (readings, requests_made, reason).  readings is None when the walk does
         not apply or does not finish; the caller then falls back to the decode path,
@@ -4738,19 +4812,29 @@ class Service:
         rows = {(): (topk, logz)}
         deadline = (time.monotonic() + self.queue_timeout_s
                     if self.queue_timeout_s is not None else None)
+
+        def walk() -> tuple[dict, int] | None:
+            for node in plan["walk"]:
+                row, lz = self._logits_row(list(ids) + list(node), cancel)
+                if row is None:
+                    return None
+                rows[node] = (row, lz)
+            return rows
+
         try:
-            with self._inference_fifo(deadline, cancel):
-                for node in plan["walk"]:
-                    row, lz = self._logits_row(list(ids) + list(node), cancel)
-                    if row is None:
-                        return None, len(rows) - 1, "the trie walk did not finish"
-                    rows[node] = (row, lz)
+            if fifo_held:
+                walk()
+            else:
+                with self._inference_fifo(deadline, cancel):
+                    walk()
         except (QueueCancelled, QueueWaitExpired):
             raise
         except Exception as e:
             print(f"[strata] the decision answer's trie walk failed ({e}); "
                   "answering it from the decode path", flush=True)
             return None, len(plan["walk"]), "the trie walk failed"
+        if len(rows) != len(plan["walk"]) + 1:
+            return None, len(rows) - 1, "the trie walk did not finish"
         readings = lft.trie_readings(q, plan, rows)
         if readings is None:
             return None, len(plan["walk"]), lft.trie_failure_reason(plan, rows)
@@ -4820,6 +4904,24 @@ class Service:
             with self._inference_fifo(deadline, cancel):
                 topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
                                                         sysone.MAX_TOKENS_PER_QUESTION, cancel)
+                # The trie walk is part of THIS question's work, so it runs inside the
+                # same turn.  It asks the engine for the row at a node of the options'
+                # trie, and it appends that node's tokens to the prompt it was given -
+                # so it needs the base prompt still in the engine's cache.  Another
+                # request taking the engine's turn in between would take that cache
+                # away, and the walk would run against a context that is not this
+                # question's.
+                readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz) if topk else None
+                walk = 0
+                trie_reason = None
+                if readings is None and topk:
+                    # The options share their first token ("rule_1" and "rule_2" both
+                    # start with " rule"), so the first-token row cannot separate them.
+                    # The trie walk can: the options' token sequences form a trie, and
+                    # the row at the node where they are told apart separates them.
+                    readings, walk, trie_reason = self._systemone_trie(questions, topk, logz,
+                                                                        ids, prefix, cancel,
+                                                                        fifo_held=True)
         except (QueueCancelled, QueueWaitExpired):
             # The client left, or the queue wait expired: neither is a reason to fall
             # back to the decode path (it would wait for the same turn and fail the
@@ -4831,6 +4933,7 @@ class Service:
             # but the reason is printed, because a silent fallback is a bug that looks
             # like a slow path.
             topk, logz, tokens = None, None, []
+            readings, walk, trie_reason = None, 0, None
             print(f"[strata] the decision answer's probabilities are unavailable ({e}); "
                   "answering it from the decode path", flush=True)
         dbg = os.environ.get("STRATA_LOGITS_DEBUG")
@@ -4841,16 +4944,17 @@ class Service:
                 lft.debug_prompt(ids, self.tok, dbg)
             except Exception:
                 pass
-        readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz) if topk else None
-        walk = 0
-        trie_reason = None
-        if readings is None and topk:
-            # The options share their first token ("rule_1" and "rule_2" both start
-            # with " rule"), so the first-token row cannot separate them.  The trie
-            # walk can: the options' token sequences form a trie, and the row at the
-            # node where they are told apart separates them.
-            readings, walk, trie_reason = self._systemone_trie(questions, topk, logz, ids,
-                                                                prefix, cancel)
+        # DID THE ENGINE FINISH THE TURN?  A request the engine STOPPED (a client that
+        # went away, a STOP that arrived for another request) leaves the tokens it had
+        # produced so far - a partial answer, or nothing.  Those tokens are not the
+        # model's answer and must not be read as one: the answer comes from the
+        # readings (the row at the answer position is valid whether or not the decode
+        # finished) or, failing that, from the decode path.
+        finish = (getattr(self.engine, "last", None) or {}).get("finish")
+        tokens_are_the_answer = finish in (None, "stop")
+        if not tokens_are_the_answer:
+            print(f"[strata] the engine stopped the decision request ({finish}); "
+                  "its tokens are not an answer", flush=True)
         usage = {"prompt_tokens": len(ids) * (1 + walk), "completion_tokens": len(tokens),
                  "total_tokens": len(ids) * (1 + walk) + len(tokens),
                  "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
@@ -4867,9 +4971,10 @@ class Service:
         if readings is not None and picked:
             return 200, self._systemone_readings(readings, model, usage)
         # The model's own text: the tokens THIS request generated are the answer, so no
-        # second request is needed.
+        # second request is needed.  Only a request the engine FINISHED has an answer
+        # in its tokens.
         reason = lft.fallback_reason(questions, topk or {}, self.tok, prefix, logz, trie_reason)
-        text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if tokens else ""
+        text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if (tokens and tokens_are_the_answer) else ""
         if text.strip():
             try:
                 answers = sysone.parse_answer_text(text, questions)
