@@ -238,6 +238,42 @@ function renderConvCache(c) {
   $("cc-note").textContent = c.enabled
     ? "A request that continues a parked conversation gets its state back instead of reading it again; the oldest goes when the slots or the memory are full."
     : "The engine keeps the last conversation's state, so a follow-up reads only what is new. To keep several conversations (agents taking turns), add \"--conversation-cache-mib\", \"8192\" to the run config's args (docs/DETAILS.md).";
+  renderConvDisk(c);
+}
+
+// the disk tier (L2) beside the RAM cache: one session file per conversation in a private folder. Shown only when the
+// engine's INFO line says the tier is on, so a RAM-only install sees the card exactly as before.
+const CC_REFUSALS = {ram: "RAM", budget: "budget", min_tokens: "min tokens", disk_space: "disk space",
+                     identity: "model or settings", disk_other: "other"};
+function renderConvDisk(c) {
+  const on = !!c.disk_enabled;
+  $("cc-disk").hidden = !on;
+  $("cc-disk-bars").hidden = !on;
+  if (!on) return;
+  const pct = (a, b) => (b ? `${Math.min(100, (100 * a) / b)}%` : "0%");
+  const slots = c.disk_slots || 0;
+  $("cc-disk-slots-text").textContent = slots
+    ? `${fmt(c.disk_entries)} / ${fmt(slots)}`
+    : `${fmt(c.disk_entries)} · unlimited`;
+  $("cc-disk-slots-bar").style.width = slots ? pct(c.disk_entries, slots) : "0%";
+  $("cc-disk-mem-text").textContent = `${gb(c.disk_bytes)} / ${gb((c.disk_budget_mib || 0) * 1048576)} GB`;
+  $("cc-disk-mem-bar").style.width = pct(c.disk_bytes, (c.disk_budget_mib || 0) * 1048576);
+  const reasons = Object.entries(c.refusals || {}).filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3)
+    .map(([key, n]) => `${CC_REFUSALS[key] || key} ${fmt(n)}`).join(" · ");
+  const last = c.disk_last_restore_ms != null
+    ? `${fmt(c.disk_last_restore_ms, 1)} ms · ${fmt(c.disk_last_restore_mib_s)} MiB/s` : null;
+  facts($("cc-disk-facts"), [
+    ["Disk saved / restored", `${fmt(c.disk_saves)} / ${fmt(c.disk_restores)}`],
+    ["Disk evictions", fmt(c.disk_evictions)],
+    ["Last disk restore", last],
+    ["Refused saves", reasons || "none"],
+    ["Disk errors", c.disk_errors ? fmt(c.disk_errors) : null],
+  ]);
+  const where = c.disk_dir ? ` in ${c.disk_dir}` : "";
+  $("cc-disk-note").textContent = `Each conversation is one plaintext file${where}, in a folder private to your user. ` +
+    "It is opt-in: add \"--conversation-cache-disk-mib\", \"32768\" and \"--conversation-cache-spill-dir\", \"<folder>\" " +
+    "to the run config's args (docs/DISK_CACHE.md).";
 }
 
 function renderTotals(t) {

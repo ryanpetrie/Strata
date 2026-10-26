@@ -9568,6 +9568,7 @@ int main(int argc, char** argv) {
         // creates no folder, samples no fingerprint and does no I/O.
         const bool disk_asked = o.conversation_disk_mib > 0;
         int64_t conversation_disk_mib_info = 0, conversation_disk_slots_info = 0;
+        unsigned long long conversation_disk_bytes_info = 0, conversation_disk_entries_info = 0;
         std::string conversation_disk_dir_info;
         std::string disk_why;   // why the tier is off although it was asked for (one line, printed below)
         strata::core::SessionFileIdentity disk_id;
@@ -9609,6 +9610,9 @@ int main(int argc, char** argv) {
             conversation_disk_mib_info = o.conversation_disk_mib;
             conversation_disk_slots_info = o.conversation_disk_slots;
             conversation_disk_dir_info = info_token(o.conversation_disk_dir);
+            // the startup index, so /metrics shows the files the scan found before this run logs its first save
+            conversation_disk_bytes_info = (unsigned long long) disk.bytes();
+            conversation_disk_entries_info = (unsigned long long) disk.entries();
             std::fprintf(stderr, "strata serve: conversation cache: disk tier on: dir=%s budget=%lld MiB slots=%lld "
                                  "staging=%lld MiB min_free=%lld MiB entries=%zu\n",
                          o.conversation_disk_dir.c_str(), (long long) o.conversation_disk_mib,
@@ -9757,7 +9761,15 @@ int main(int argc, char** argv) {
                     return ok;
                 };
                 std::string serr;
-                if (!disk.save(dmeta, estimate, writer, bytes, serr)) {
+                const uint64_t evicted_before = disk.stats().evictions;
+                const bool saved = disk.save(dmeta, estimate, writer, bytes, serr);
+                // Evictions happen inside save(), before the writer runs: a save that then fails still freed those
+                // entries, so the line is printed whatever the result.
+                if (const uint64_t evicted = disk.stats().evictions - evicted_before; evicted > 0)
+                    std::fprintf(stderr, "strata serve: conversation cache: disk evicted %llu entries (LRU); "
+                                         "entries=%zu bytes=%zu\n",
+                                 (unsigned long long) evicted, disk.entries(), disk.bytes());
+                if (!saved) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip disk save (%s; %zu tokens, ~%llu MiB)\n",
                                  serr.c_str(), live.size(), (unsigned long long) (estimate >> 20));
                     return false;
@@ -11444,6 +11456,7 @@ int main(int argc, char** argv) {
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "conversation_disk_mib=%lld conversation_disk_dir=%s conversation_disk_slots=%lld "
+                        "conversation_disk_bytes=%llu conversation_disk_entries=%llu "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
@@ -11459,6 +11472,7 @@ int main(int argc, char** argv) {
                         (long long) o.conversation_cache_min_free_mib, (long long) o.conversation_cache_min_tokens,
                         (long long) conversation_disk_mib_info, conversation_disk_dir_info.c_str(),
                         (long long) conversation_disk_slots_info,
+                        conversation_disk_bytes_info, conversation_disk_entries_info,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe

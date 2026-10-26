@@ -205,6 +205,20 @@ class ConversationCacheCard(unittest.TestCase):
     PARK = ("strata serve: conversation cache: parked 5000 tokens in 12.0 ms; parked=1 bytes=104857600 evictions=0 "
             "snapshot_bytes=104857600 reused_kv_bytes=0\n")
     RESTORE = "strata serve: conversation cache: restored 4000 tokens (exact) in 30.0 ms; parked=2 bytes=209715200\n"
+    SPILL = ("strata serve: conversation cache: spilled 205000 tokens to disk in 812.5 ms; "
+             "file=4900 MiB tier=disk entries=2 bytes=5242880000\n")
+    DRESTORE = ("strata serve: conversation cache: restored 205000 tokens from disk in 640.0 ms "
+                "(7656 MiB/s); tier=disk parked=1 bytes=104857600\n")
+    DREFUSE_SPACE = ("strata serve: conversation cache: skip disk save (the disk cache needs 5000000000 bytes plus "
+                     "4294967296 free, has 100; 200000 tokens, ~4800 MiB)\n")
+    DREFUSE_IDENTITY = ("strata serve: conversation cache: skip disk save (session file: saved with another engine "
+                        "configuration (config fingerprint differs); 200000 tokens)\n")
+    DREFUSE_OOM = "strata serve: conversation cache: skip disk save (out of memory; 200000 tokens)\n"
+    DREFUSE_OTHER = ("strata serve: conversation cache: skip disk save (the disk cache cannot make a file name; "
+                     "200000 tokens)\n")
+    DEVICT = "strata serve: conversation cache: disk evicted 3 entries (LRU); 1 still on disk\n"
+    DFAIL = ("strata serve: conversation cache: disk restore failed (session file: payload checksum mismatch); "
+             "reading the prompt\n")
 
     def test_the_log(self):
         from serve.server import ConvCacheLog
@@ -246,6 +260,14 @@ class ConversationCacheCard(unittest.TestCase):
                 c = json.loads(r.read())["conversation_cache"]
             self.assertEqual(c["requests"], 1)
             self.assertGreater(c["last_prompt"], 0)
+            engine.info.update(conversation_disk_mib=32768, conversation_disk_slots=0,
+                               conversation_disk_dir="C:\\Users\\Ryan%20P\\Strata%20cache")
+            with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
+                c = json.loads(r.read())["conversation_cache"]
+            self.assertTrue(c["disk_enabled"])
+            self.assertEqual((c["disk_budget_mib"], c["disk_slots"]), (32768, 0))
+            self.assertEqual(c["disk_dir"], "C:\\Users\\Ryan P\\Strata cache")
+            self.assertEqual((c["disk_saves"], c["disk_restores"], c["last_tier"]), (0, 0, None))
             engine.info = {}
             with urllib.request.urlopen(base + "/metrics", timeout=10) as r:
                 self.assertFalse(json.loads(r.read())["conversation_cache"]["enabled"])   # off: the reuse lines only
@@ -256,9 +278,117 @@ class ConversationCacheCard(unittest.TestCase):
     def test_the_card_is_on_the_page(self):
         web = Path(__file__).parent / "web"
         html, js = (web / "index.html").read_text(encoding="utf-8"), (web / "app.js").read_text(encoding="utf-8")
-        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note"):
+        for el in ("cc-card", "cc-slots-text", "cc-mem-text", "cc-facts", "cc-note",
+                   "cc-disk", "cc-disk-bars", "cc-disk-slots-text", "cc-disk-slots-bar",
+                   "cc-disk-mem-text", "cc-disk-mem-bar", "cc-disk-facts", "cc-disk-note"):
             self.assertIn(f'id="{el}"', html)
             self.assertIn(f'"{el}"', js)
+
+    def test_the_disk_lines(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("an earlier run\n", encoding="utf-8")
+            start = log.stat().st_size
+            c = ConvCacheLog()
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(
+                    "strata serve: conversation cache: skip parking (physical RAM admission; need 3788 MiB plus 2560 "
+                    "MiB floor, 5832 MiB available, source meminfo; evicted 0, 0 still parked)\n"
+                    "strata serve: conversation cache: skip parking (snapshot 4096 MiB exceeds available budget)\n"
+                    "strata serve: conversation cache: skip parking (2000 tokens, below the 4096 minimum; parked=1)\n"
+                    + self.DREFUSE_SPACE + self.DREFUSE_IDENTITY + self.DREFUSE_OOM + self.DREFUSE_OTHER
+                    + self.DEVICT + self.DFAIL + self.SPILL + self.DRESTORE)
+            st = c.poll(str(log), start)
+            self.assertEqual((st["disk_saves"], st["disk_restores"], st["disk_evictions"]), (1, 1, 3))
+            self.assertEqual(st["disk_refusals"], 4)
+            self.assertEqual(st["disk_errors"], 2)                  # the failed restore and the failed file name
+            self.assertEqual((st["disk_bytes"], st["disk_entries"]), (5242880000, 2))
+            self.assertEqual((st["disk_last_save_ms"], st["disk_last_restore_ms"], st["disk_last_restore_mib_s"]),
+                             (812.5, 640.0, 7656.0))
+            self.assertEqual(st["last_tier"], "disk")
+            self.assertEqual(st["refusals"], {"ram": 2, "budget": 1, "min_tokens": 1, "disk_space": 1,
+                                              "identity": 1, "disk_other": 1})
+            self.assertIn("cannot make a file name", st["last_refusal"])
+            # the restore line's bytes= is the RAM cache's figure: it must not overwrite the disk store's bytes
+            self.assertEqual(st["disk_bytes"], 5242880000)
+            # disk lines are not L1 events
+            self.assertEqual((st["parks"], st["restores"], st["parked"]), (0, 0, 0))
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(self.PARK + self.RESTORE)
+            st = c.poll(str(log), start)
+            self.assertEqual((st["parked"], st["parks"], st["restores"], st["last_tier"]), (2, 1, 1, "l1"))
+            self.assertEqual((st["disk_saves"], st["disk_restores"], st["disk_bytes"]), (1, 1, 5242880000))
+
+    def test_the_disk_eviction_line(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("strata serve: conversation cache: disk evicted 2 entries (LRU); entries=4 bytes=100\n",
+                           encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["disk_evictions"], st["disk_entries"], st["disk_bytes"]), (2, 4, 100))
+            self.assertEqual(st["last_tier"], "disk")
+            with open(log, "a", encoding="utf-8") as f:   # an older line without the store's state: count only
+                f.write("strata serve: conversation cache: disk evicted 1 entries (LRU); 1 still on disk\n")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["disk_evictions"], st["disk_entries"], st["disk_bytes"]), (3, 4, 100))
+
+    def test_the_info_baseline_until_the_log_has_a_save(self):
+        from serve.server import ConvCacheLog, conversation_cache_view
+        import tempfile
+        info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 4,
+                "conversation_disk_mib": 32768, "conversation_disk_slots": 0,
+                "conversation_disk_dir": "C:\\cache%20folder",
+                "conversation_disk_bytes": 123456789, "conversation_disk_entries": 3}
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text("", encoding="utf-8")
+            c = ConvCacheLog()
+            view = conversation_cache_view(info, [], {}, c.poll(str(log), 0))
+            self.assertEqual((view["disk_bytes"], view["disk_entries"]), (123456789, 3))
+            with open(log, "a", encoding="utf-8") as f:   # a restore has no disk bytes: the baseline stays
+                f.write(self.DRESTORE)
+            view = conversation_cache_view(info, [], {}, c.poll(str(log), 0))
+            self.assertEqual((view["disk_bytes"], view["disk_entries"]), (123456789, 3))
+            with open(log, "a", encoding="utf-8") as f:   # the first save: the log's own figures replace it
+                f.write(self.SPILL)
+            view = conversation_cache_view(info, [], {}, c.poll(str(log), 0))
+            self.assertEqual((view["disk_bytes"], view["disk_entries"]), (5242880000, 2))
+            self.assertEqual(view["disk_saves"], 1)
+
+    def test_an_l1_only_log_still_parses(self):
+        from serve.server import ConvCacheLog
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            log = Path(d) / "strata.log"
+            log.write_text(self.PARK, encoding="utf-8")
+            st = ConvCacheLog().poll(str(log), 0)
+            self.assertEqual((st["parked"], st["bytes"], st["parks"], st["restores"]),
+                             (1, 104857600, 1, 0))
+            self.assertEqual((st["disk_saves"], st["disk_restores"], st["disk_evictions"], st["disk_refusals"],
+                              st["disk_errors"], st["disk_bytes"], st["disk_entries"]), (0,) * 7)
+            self.assertEqual((st["disk_last_save_ms"], st["disk_last_restore_ms"], st["last_tier"]), (None, None, "l1"))
+            self.assertEqual(st["refusals"], {"ram": 0, "budget": 0, "min_tokens": 0, "disk_space": 0,
+                                              "identity": 0, "disk_other": 0})
+
+    def test_the_view_has_the_disk_tier(self):
+        from serve.server import conversation_cache_view
+        info = {"conversation_cache_mib": 8192, "conversation_cache_slots": 4, "conversation_disk_mib": 32768,
+                "conversation_disk_slots": 0,
+                "conversation_disk_dir": "C:\\Users\\Ryan%20P\\AppData\\Local\\Strata%20cache"}
+        view = conversation_cache_view(info, [], {}, {})
+        self.assertTrue(view["disk_enabled"])
+        self.assertEqual((view["disk_budget_mib"], view["disk_slots"]), (32768, 0))
+        self.assertEqual(view["disk_dir"], "C:\\Users\\Ryan P\\AppData\\Local\\Strata cache")
+        self.assertEqual((view["disk_saves"], view["disk_bytes"], view["last_tier"], view["last_refusal"]),
+                         (0, 0, None, None))
+        self.assertEqual(view["refusals"], {"ram": 0, "budget": 0, "min_tokens": 0, "disk_space": 0,
+                                            "identity": 0, "disk_other": 0})
+        for off in (0, "32768", None):
+            self.assertFalse(conversation_cache_view({**info, "conversation_disk_mib": off}, [], {}, {})["disk_enabled"])
 
 
 if __name__ == "__main__":

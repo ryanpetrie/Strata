@@ -55,7 +55,7 @@ from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -754,13 +754,47 @@ def narrate_start(log_path: str, offset: int, args: list, done: threading.Event,
             print(f"[strata] still starting ({time.time() - t0:.0f} s) - please wait ...", flush=True)
 
 
+REFUSAL_KEYS = ("ram", "budget", "min_tokens", "disk_space", "identity", "disk_other")
+
+
+def refusal_kind(text: str) -> str:
+    """Why a save was refused, in the Monitor's plain-word groups. `text` is the engine's reason (its own words)."""
+    t = text.lower()
+    if "physical ram" in t or "ram floor" in t or "out of memory" in t:
+        return "ram"                                   # the host cannot hold the snapshot (L1) / the copy (L2)
+    if "budget" in t:
+        return "budget"
+    if "minimum" in t or "min-tokens" in t or "min_tokens" in t or "shorter than" in t:
+        return "min_tokens"
+    if "identity" in t or "another model" in t or "config fingerprint" in t or "another engine configuration" in t:
+        return "identity"
+    if "free space" in t or " free" in t or "no unpinned entry" in t or "no space" in t or "disk full" in t:
+        return "disk_space"
+    return "disk_other"
+
+
 class ConvCacheLog:
-    """#596: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
-    cache: parked N tokens ...; parked=P bytes=B evictions=E" and "restored N tokens ...; parked=P bytes=B" to stderr,
-    which is the log): read on from where it was last read, from the start of the engine's current run."""
+    """#596, #disk: the engine's conversation cache as its log tells it (the engine writes "strata serve: conversation
+    cache: parked N tokens ...; parked=P bytes=B evictions=E", "restored N tokens ...; parked=P bytes=B", the disk
+    tier's "spilled"/"restored ... from disk"/"skip disk save"/"disk restore failed" lines and the RAM refusals to
+    stderr, which is the log): read on from where it was last read, from the start of the engine's current run.
+
+    L1 (the host-RAM cache) keeps its keys and its meaning. The disk tier (L2) has its own counters, so a log with no
+    disk lines parses exactly as before. A refusal is counted once per line; a disk line never counts as an L1
+    park/restore."""
     EVENT = re.compile(r"conversation cache: (parked|skipped|restored) (\d+) tokens.*?parked=(\d+) bytes=(\d+)"
                        r"(?: evictions=(\d+))?")
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
+    # the disk tier's own lines (generate.cpp: park_to_disk and the restore path)
+    DISK_SPILL = re.compile(r"conversation cache: spilled (\d+) tokens to disk in ([\d.]+) ms; file=(\d+) MiB "
+                            r"tier=disk entries=(\d+) bytes=(\d+)")
+    DISK_RESTORE = re.compile(r"conversation cache: restored (\d+) tokens from disk in ([\d.]+) ms "
+                              r"\(([\d.]+) MiB/s\); tier=disk")
+    DISK_REFUSE = re.compile(r"conversation cache: skip disk save \((.+?); (\d+) tokens(?:, ~(\d+) MiB)?\)")
+    DISK_FAILED = re.compile(r"conversation cache: disk restore failed \((.+?)\); reading the prompt")
+    DISK_EVICTED = re.compile(r"conversation cache: disk evicted (\d+) entries(?: \(LRU\))?"
+                              r"(?:; entries=(\d+) bytes=(\d+))?")
+    RAM_REFUSE = re.compile(r"conversation cache: skip parking \((.+)\)$")
     READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
 
     def __init__(self):
@@ -769,7 +803,20 @@ class ConvCacheLog:
 
     def reset(self):
         self.state = {"parked": 0, "bytes": 0, "evictions": 0, "parks": 0, "restores": 0, "last_event": None,
-                      "last_tokens": None, "last_at": None}
+                      "last_tokens": None, "last_at": None,
+                      # the disk tier (L2): 0/empty until its first line
+                      "disk_saves": 0, "disk_restores": 0, "disk_evictions": 0, "disk_refusals": 0,
+                      "disk_errors": 0, "disk_bytes": 0, "disk_entries": 0,
+                      "disk_last_save_ms": None, "disk_last_restore_ms": None,
+                      "disk_last_restore_mib_s": None, "last_tier": None,
+                      "refusals": {key: 0 for key in REFUSAL_KEYS}, "last_refusal": None}
+
+    def _refused(self, reason: str):
+        """One line, one refusal: its plain-word group and the engine's reason text."""
+        kind = refusal_kind(reason)
+        self.state["refusals"][kind] += 1
+        self.state["last_refusal"] = reason.split(";")[0].strip()[:160]
+        return kind
 
     def poll(self, path, start) -> dict:
         """The state after the log's new lines; `start` is where the engine's current run began in it."""
@@ -795,19 +842,61 @@ class ConvCacheLog:
         for line in data[:end].decode("utf-8", "replace").splitlines():
             if "conversation cache:" not in line:
                 continue
+            st = self.state
+            m = self.DISK_SPILL.search(line)
+            if m:
+                st["disk_saves"] += 1
+                st["disk_last_save_ms"] = float(m.group(2))
+                st["disk_entries"], st["disk_bytes"] = int(m.group(4)), int(m.group(5))
+                st["last_tier"] = "disk"
+                continue
+            m = self.DISK_RESTORE.search(line)
+            if m:
+                st["disk_restores"] += 1
+                st["disk_last_restore_ms"] = float(m.group(2))
+                st["disk_last_restore_mib_s"] = float(m.group(3))
+                st["last_tier"] = "disk"
+                # No disk bytes here: the line's bytes= is the RAM cache's figure (generate.cpp prints
+                # conversations.bytes()). The spill line carries the disk store's own.
+                continue
+            m = self.DISK_FAILED.search(line)
+            if m:
+                st["disk_errors"] += 1              # a failed restore is a cache miss, not a refused save
+                st["last_tier"] = "disk"
+                continue
+            m = self.DISK_REFUSE.search(line)
+            if m:
+                st["last_tier"] = "disk"
+                if m.group(1).startswith("park gain"):
+                    continue                            # a deliberate skip: the disk copy is current, nothing refused
+                st["disk_refusals"] += 1
+                if self._refused(m.group(1)) == "disk_other":
+                    st["disk_errors"] += 1              # not an admission refusal: the save itself failed
+                continue
+            m = self.DISK_EVICTED.search(line)
+            if m:
+                st["disk_evictions"] += int(m.group(1))
+                if m.group(2) is not None:              # the current line carries the store's state after the eviction
+                    st["disk_entries"], st["disk_bytes"] = int(m.group(2)), int(m.group(3))
+                st["last_tier"] = "disk"
+                continue
+            m = self.RAM_REFUSE.search(line)
+            if m:
+                self._refused(m.group(1))              # an L1 refusal: counted once, never as a park
+                continue
             m = self.EVENT.search(line)
             if m:
-                st = self.state
                 st["parked"], st["bytes"] = int(m.group(3)), int(m.group(4))
                 if m.group(5) is not None:
                     st["evictions"] = int(m.group(5))
                 if m.group(1) != "skipped":
                     st["parks" if m.group(1) == "parked" else "restores"] += 1
                     st["last_event"], st["last_tokens"], st["last_at"] = m.group(1), int(m.group(2)), now
+                    st["last_tier"] = "l1"
                 continue
             m = self.DROPPED.search(line)
             if m:
-                self.state["parked"] = int(m.group(1))
+                st["parked"] = int(m.group(1))
         return dict(self.state)
 
 
@@ -825,16 +914,40 @@ def conversation_slots(engine) -> int | None:
 
 
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
-    """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
-    --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
+    """#596, #disk: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
+    --conversation-cache-mib: budget, slots, what its log says), the disk tier beside them (L2) and how much of the
+    prompts the cache gave back. The L1 keys are unchanged; the disk keys are zero/None while the tier is off."""
     mib = info.get("conversation_cache_mib")
+    disk_mib = info.get("conversation_disk_mib")
+    disk_dir = info.get("conversation_disk_dir")
     last = hist[-1] if hist else None
+    # The INFO line reports the disk index the start-up scan found, before this run logs its first save. A save or an
+    # eviction line carries the same store's newer state and is authoritative from then on. A restore-only log has no
+    # disk bytes to report, so it must not zero a non-empty start-up cache.
+    log_has_disk = (parked.get("disk_saves") or 0) > 0 or (parked.get("disk_evictions") or 0) > 0
+    disk_bytes = parked.get("disk_bytes", 0) if log_has_disk else info.get("conversation_disk_bytes", 0)
+    disk_entries = parked.get("disk_entries", 0) if log_has_disk else info.get("conversation_disk_entries", 0)
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
             "slots": info.get("conversation_cache_slots"), **parked,
             "requests": len(hist), "requests_reused": sum(1 for r in hist if (r.get("reused") or 0) > 0),
             "reused_tokens": totals.get("reused", 0), "prompt_tokens": totals.get("prompt_tokens", 0),
             "last_reused": last.get("reused") if last else None,
-            "last_prompt": last.get("prompt_tokens") if last else None}
+            "last_prompt": last.get("prompt_tokens") if last else None,
+            # the disk tier (L2). Paths in the INFO line are percent-encoded (generate.cpp info_token).
+            "disk_enabled": isinstance(disk_mib, int) and disk_mib > 0,
+            "disk_budget_mib": disk_mib if isinstance(disk_mib, int) else None,
+            "disk_dir": unquote(disk_dir) if isinstance(disk_dir, str) and disk_dir else None,
+            "disk_slots": info.get("conversation_disk_slots"),
+            "disk_bytes": disk_bytes, "disk_entries": disk_entries,
+            "disk_saves": parked.get("disk_saves", 0), "disk_restores": parked.get("disk_restores", 0),
+            "disk_evictions": parked.get("disk_evictions", 0),
+            "disk_refusals": parked.get("disk_refusals", 0), "disk_errors": parked.get("disk_errors", 0),
+            "disk_last_save_ms": parked.get("disk_last_save_ms"),
+            "disk_last_restore_ms": parked.get("disk_last_restore_ms"),
+            "disk_last_restore_mib_s": parked.get("disk_last_restore_mib_s"),
+            "last_tier": parked.get("last_tier"),
+            "refusals": parked.get("refusals") or {key: 0 for key in REFUSAL_KEYS},
+            "last_refusal": parked.get("last_refusal")}
 
 
 _BTRACE = bool(os.environ.get("STRATA_BATCH_TRACE"))
