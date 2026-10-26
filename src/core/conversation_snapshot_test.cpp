@@ -145,7 +145,7 @@ void full_session(int fmt, int mode, int experts) {
     check(conversation_checkpoint_save(checkpoint,ss,g,err),"save complete running checkpoint");
     checkpoint.used = 17;
     checkpoints.push_back(std::move(checkpoint));
-    const ConversationView view{ids,images,checkpoints,true};
+    const ConversationView view{ids,images,checkpoints,true,kLoraNone};
     SavedConversation a,b,restored;
     check(conversation_snapshot_save(a,view,ss,g,draft.state,err),"capture complete A");
     check(a.checkpoints[0].used == 17,"upstream checkpoint LRU stamp survives capture");
@@ -177,7 +177,7 @@ void full_session(int fmt, int mode, int experts) {
         std::error_code ec;
         fs::remove_all(dir,ec);
         auto empty_ids=std::vector<int32_t>{};
-        const ConversationView none{empty_ids,images,checkpoints,true};
+        const ConversationView none{empty_ids,images,checkpoints,true,kLoraNone};
         check(!conversation_snapshot_sources(meta,sources,none,ss,g,draft.state,err),"empty session refused");
     }
     check(a.live.dead!=b.live.dead,"different opening-state spare keys in regression fixture");

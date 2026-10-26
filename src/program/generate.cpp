@@ -92,6 +92,9 @@
 #include "strata/spec/spec_start.hpp"
 #include "strata/program/batch_groups.hpp"
 #include "strata/kernels/cvec.hpp"
+#include "strata/kernels/lora.hpp"
+#include "strata/core/lora_pack.hpp"
+#include "strata/core/lora_request.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/emulate.hpp"
@@ -804,6 +807,11 @@ struct Options {
     int cvec_first = -1, cvec_last = -1;   ///< llama.cpp's defaults: 1 .. the last layer
     int cvec_mode = 1;                     ///< 0 = project, 1 = add (llama.cpp's default)
     int cvec_single = -1;                  ///< --cvec-dir single:L (project mode): layer L's direction everywhere
+    /// --lora DIR: one LoRA adapter (tools/lora_pack.py's `index.txt` + `lora.bin`) added to the base projections
+    /// this adapter targets.  Empty = none.  Read and uploaded once, before graph capture, so every captured graph
+    /// already contains the delta kernel and the per-request flag only switches it on and off (kernels/lora.hpp).
+    /// --serve turns it on for one LOGITS request (`lora=1`); a chat turn always runs the base model.
+    std::string lora;
 };
 
 void usage() {
@@ -958,6 +966,8 @@ void usage() {
                  "  --control-vector-layer-range A B  the layers it follows (inclusive; default 1 .. the last)\n"
                  "  --cvec-mode add|project  h += s v (default) or h -= s (h.v) v with v unit\n"
                  "  --cvec-dir per-layer|single:L  each layer's own direction (default) or layer L's everywhere (project)\n"
+                 "  --lora DIR           a LoRA adapter directory (tools/lora_pack.py's index.txt + lora.bin) added to the base\n"
+                 "                       projections.  --serve: only a LOGITS request switches it on (lora=1); chat is base\n"
                  "  --no-token-graph     A/B: two graphs per layer (the host launches each) instead of one per token\n"
                  "  --no-fused-gr        A/B: the six-kernel hyper-connection read and a separate write (native)\n"
                  "  --prefill CHUNK      batched prompt processing in chunks of CHUNK tokens (needs --native); auto =\n"
@@ -2736,6 +2746,7 @@ int main(int argc, char** argv) {
             else if (d.rfind("single:", 0) == 0) o.cvec_single = std::atoi(d.c_str() + 7);
             else { std::fprintf(stderr, "--cvec-dir: per-layer or single:L, got '%s'\n", d.c_str()); return 2; }
         }
+        else if (a == "--lora") o.lora = next("--lora");
         else if (a == "--no-spec-split") o.spec_split = false;
         else if (a == "--eos-ids") {
             std::string e;
@@ -3379,6 +3390,13 @@ int main(int argc, char** argv) {
                                             : "--expert-cache-device1..3 (the peer tier already caches experts there)");
         return 2;
     }
+    // an adapter's flag is one device int for the whole engine, and continuous batching interleaves slots: a slot
+    // that asked for the base model would read another slot's flag, i.e. answer with the wrong model silently
+    if (!o.lora.empty() && o.batch > 0) {
+        std::fprintf(stderr, "strata generate: --lora cannot be combined with %s\n",
+                     "--batch (per-slot adapter state is not built)");
+        return 2;
+    }
 
     if (o.native_flash_attn_short && o.max_context > 256) {
         std::fprintf(stderr, "strata generate: --native-flash-attn-short requires --max-context <=256\n");
@@ -3972,6 +3990,38 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // --lora: the same rule as the vector above, and for the same reason - the delta kernel's node is placed inside
+    // every graph captured from here on, and the per-request flag only turns its arithmetic on and off.  A refusal
+    // (plan 3.5) is printed verbatim and the engine continues WITHOUT the adapter: exiting would take a serve process
+    // down over a file the caller can fix, and `INFO ... lora=none` says which model the engine is actually serving.
+    // The digest is taken before the upload, so a digest failure cannot leave an adapter resident that no session
+    // file could ever match.
+    std::string lora_summary = "none";
+    uint64_t lora_digest = 0;   // a session file is bound to the loaded adapter (0: none)
+    if (!o.lora.empty()) {
+        std::string le;
+        strata::core::LoraAdapter adapter;
+        if (!strata::core::lora_load(o.lora, g, adapter, le) ||
+            !strata::core::lora_digest(o.lora, adapter, lora_digest, le) ||
+            !strata::kernels::lora_upload(adapter, o.lora, le)) {
+            std::fprintf(stderr, "strata generate: lora: %s\n", le.c_str());
+            lora_digest = 0;
+            lora_summary = "none";
+        } else {
+            const strata::kernels::Lora& resident = strata::kernels::lora();
+            // One token and no spaces: serve/server.py tokenizes INFO on whitespace, so a value with spaces would
+            // truncate at the first one and leave its words in `self.info` as keys of their own.
+            lora_summary = std::to_string((long long) resident.n_entries) + "t/" +
+                           std::to_string((long long) resident.n_blocks) + "l/" +
+                           std::to_string((unsigned long long) resident.bytes) + "B";
+            // START FROM THE BASE MODEL, ALWAYS.  `lora_upload` leaves the flag ON (the cvec upload's convention), and
+            // the only other `lora_set_enabled` in the engine is the serve request loop's, which a plain CLI run never
+            // reaches: without this line `strata generate --lora X ...` would answer the WHOLE turn on adapted
+            // weights - the opposite of what the usage text promises, and silent.  Every path from here to a request
+            // now starts at base; only a `lora=1` LOGITS request raises the flag, and it lowers it again afterwards.
+            strata::kernels::lora_set_enabled(false);
+        }
+    }
     if (o.max_context < (int64_t) o.tokens.size() + o.max_new) {
         std::fprintf(stderr, "strata generate: --max-context %lld cannot hold %zu prompt + %lld new tokens\n",
                      (long long) o.max_context, o.tokens.size(), (long long) o.max_new);
@@ -4372,6 +4422,13 @@ int main(int argc, char** argv) {
         }
         // a control vector (the speed projection): its tables on this device too - the stage's layers apply it here
         if (!strata::kernels::cvec_replicate(err)) {
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
+            return 1;
+        }
+        // the LoRA adapter, for the same reason: `lora_apply_layer` reads the tables of the device it runs on, so a
+        // stage without them writes no delta and returns false - which the forward path does not check, i.e. the
+        // stage's layers would answer from the base weights with no error anywhere.  A no-op when none is loaded.
+        if (!strata::kernels::lora_replicate(err)) {
             std::fprintf(stderr, "strata generate: layer split, CUDA%d: %s\n", st.dev, err.c_str());
             return 1;
         }
@@ -9400,6 +9457,12 @@ int main(int argc, char** argv) {
         // checkpoints taken inside it
         ConvCheckpoint::PromptPlan seg_plan;
         bool cvec_cached = true;   // the control vector's state the live session and the checkpoints were read with
+        // the adapter's state the live session and the checkpoints were read with (`ConversationLora`): a tri-state,
+        // not `want_lora`'s bool, so an engine that has an adapter does not hand its base-model state to an adapted
+        // request (or the reverse).  The engine starts where `--lora` left it: resident and OFF (generate.cpp's
+        // upload block), or no adapter at all.
+        strata::core::ConversationLora lora_cached =
+            strata::core::conversation_lora_key(strata::kernels::lora().loaded(), false);
         // without --mtp the conversation cache stays on: a parked image carries the draft layer's K/V only when there is one
         // (the snapshots accept a null draft)
         // #3493: no --conversation-cache-mib given: size the cache for agent use from the RAM that is free now that the model is
@@ -9479,6 +9542,7 @@ int main(int argc, char** argv) {
                           rope_cfg.orig_ctx, rope_cfg.ext_factor, rope_cfg.attn_factor, rope_cfg.beta_fast,
                           rope_cfg.beta_slow};
                 c.cvec = cvec_digest;
+                c.lora = lora_digest;
                 c.switches = {
                     {"no_ple", o.no_ple}, {"native_bf16", o.native_bf16}, {"native_bf16_extra", o.native_bf16_extra},
                     {"native_ple_key", o.native_ple_key}, {"native_moe_combine", o.native_moe_combine},
@@ -9530,7 +9594,7 @@ int main(int argc, char** argv) {
             }
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached))
+            if (const size_t dropped = conversations.drop_superseded(live, live_imgs, checks, cvec_cached, lora_cached))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
@@ -9547,7 +9611,8 @@ int main(int argc, char** argv) {
                 strata::core::ConversationCheckpointSplit& cs; std::vector<ConvCheckpoint>& checks; bool on;
                 ~MergeBack() { if (on && !strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear(); }
             } merge_back{cs, checks, n_st > 0};
-            const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached};
+            const strata::core::ConversationView view{live, live_imgs, n_st > 0 ? cs.stage0 : checks, cvec_cached,
+                                                      lora_cached};
             auto reuse = conversations.take_reuse();
             std::vector<strata::core::ConversationKvReuse> stage_reuse = std::move(reuse.stages);
             stage_reuse.resize(n_st);
@@ -9557,7 +9622,7 @@ int main(int argc, char** argv) {
             for (size_t k = 0; k < n_st; ++k) {
                 auto& st = stages[k];
                 const strata::core::OnDevice on(st->dev);
-                const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached, lora_cached};
                 size_t b = 0;
                 if (!strata::core::conversation_snapshot_bytes(view_k, st->ss, g, draft_of(k), b, err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (stage CUDA%d: %s)\n",
@@ -9646,7 +9711,7 @@ int main(int argc, char** argv) {
                     auto& st = stages[k];
                     const strata::core::OnDevice on(st->dev);
                     if (cudaDeviceSynchronize() != cudaSuccess) { err = "stage sync failed"; return false; }
-                    const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached};
+                    const strata::core::ConversationView view_k{live, live_imgs, cs.parts[k], cvec_cached, lora_cached};
                     strata::core::SavedConversation part;
                     if (!strata::core::conversation_snapshot_save(part, view_k, st->ss, g, draft_of(k), err,
                             std::move(stage_reuse[k]), &reused_bytes))
@@ -11128,7 +11193,7 @@ int main(int argc, char** argv) {
                 }
             std::printf("INFO logit_bias=1 context=%lld kv=%s kv_resident=%lld expert_slots=%lld expert_cache_mib=%lld "
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
-                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
+                        "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s lora=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
                         "conversation_cache_min_free_mib=%lld conversation_cache_min_tokens=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
@@ -11139,7 +11204,7 @@ int main(int argc, char** argv) {
                         (long long) slots_all, (long long) mib_all,
                         (long long) slots_primary, (long long) mib_primary,
                         o.spec, o.mtp_max_t,
-                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(),
+                        o.suffix_draft, (long long) (free_b >> 20), cvec_summary.c_str(), lora_summary.c_str(),
                         (long long) ((o.mmap_experts ? src.resident_bytes() : strata::kernels::cpu::expert_layout().total) >> 20),
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
@@ -11380,6 +11445,10 @@ int main(int argc, char** argv) {
             std::vector<int32_t> ids;
             bool cached = false;           ///< idle, and its sessions still hold `ids`
             bool cvec = true;              ///< the control vector setting `ids` were read with
+            /// the adapter state `ids` were read with (`ConversationLora`). Always kLoraNone today: --lora with --batch
+            /// is refused at start-up, so a batched engine never has an adapter. Kept beside `cvec` so lifting that
+            /// refusal cannot reuse a slot's cells under the wrong model.
+            strata::core::ConversationLora lora = strata::core::kLoraNone;
             bool img = false;              ///< the conversation has pictures (never reused from the slot)
             // the checkpoint its prompt read took at the last turn boundary (the history before the new turn's
             // header): a client's next turn renders the history again WITHOUT this reply's thinking, so it matches
@@ -12222,7 +12291,8 @@ int main(int argc, char** argv) {
                             continue;
                         }
                         kept = disk_checks.size();
-                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached};
+                        const strata::core::ConversationView view{live, live_imgs, disk_checks, cvec_cached,
+                                                                  lora_cached};
                         strata::core::SavedConversation meta;
                         std::vector<strata::core::SessionKvSource> sources;
                         // the live running state comes off the device in one synchronous copy
@@ -12319,6 +12389,7 @@ int main(int argc, char** argv) {
                     checks = std::move(image.checkpoints);
                     for (const ConvCheckpoint& c : checks) check_clock = std::max(check_clock, c.used);
                     cvec_cached = image.cvec;
+                    lora_cached = image.lora;
                     live_ok = true;
                     live_parkable = true;   // a session file's conversation is parked as before (no park=0 on SAVE/LOAD)
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
@@ -12382,6 +12453,15 @@ int main(int argc, char** argv) {
             std::string req_bias_text;
             bool req_bias_present = false;
             int req_cvec = 1;   // cvec=0|1: a loaded control vector for this request (on when absent)
+            // lora=0|1: the loaded adapter for this request, and the ABSENT default is the opposite of `cvec`'s.
+            // Absent means the base model (a chat turn never carries the adapter by accident), while an absent
+            // `cvec` keeps the vector on.  Only a LOGITS line may ask for it: see lora_request_problem below.
+            // The value is kept as text until after the loop: only "0" and "1" are accepted, because `atoi` would
+            // read `lora=yes` or a bare `lora=` as 0 and answer the decision from the base weights without a word.
+            int req_lora = 0;
+            bool req_lora_asked = false;
+            bool req_lora_twice = false;   // the line gave `lora=` more than once (refused: one request, one value)
+            std::string req_lora_text;     // what followed `lora=`, unparsed (lora_key_problem decides)
             // ckpt=0: a one-shot call whose turn no later request extends.  No checkpoint at its last turn boundary
             // (so no split there) nor every --prompt-cache-every tokens, and its session is neither continued nor
             // parked after it.  It still resumes from a checkpoint it matches, and still saves the system-prompt root
@@ -12423,6 +12503,11 @@ int main(int argc, char** argv) {
                     const float fv = std::strtof(tok.c_str() + eq + 1, nullptr);
                     if (key == "logit_bias") { req_bias_text = tok.substr(eq + 1); req_bias_present = true; }
                     else if (key == "cvec") req_cvec = std::atoi(tok.c_str() + eq + 1);
+                    else if (key == "lora") {
+                        req_lora_text = tok.substr(eq + 1);
+                        req_lora_twice = req_lora_asked;   // a second `lora=` on the line is refused below
+                        req_lora_asked = true;
+                    }
                     else if (key == "ckpt") req_ckpt = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "park") req_park = std::atoi(tok.c_str() + eq + 1) != 0;
                     else if (key == "pin") req_pin = std::max<long long>(0, std::atoll(tok.c_str() + eq + 1));
@@ -12452,6 +12537,23 @@ int main(int argc, char** argv) {
                         }
                     }
                     // unknown keys are skipped: the ids start at the first token without '='
+                }
+            }
+            // `lora=` is a decision request's key only, and asking for it on a chat line is a REFUSAL, not a silent
+            // fallback to the base model: the caller would otherwise believe its turn carried the adapter.  The same
+            // holds on an engine with no adapter resident (no --lora, or one refused at start-up): honoring it would
+            // answer the decision from the base weights and say nothing.  The key's own value is checked first, so
+            // `lora=yes` is refused whatever the line is.  `req_logits_k` is still in scope here, and it is 0 on
+            // every line that is not a LOGITS line.
+            {
+                std::string lora_problem = strata::core::lora_key_problem(req_lora_asked, req_lora_twice, req_lora_text);
+                if (lora_problem.empty() && req_lora_asked) req_lora = req_lora_text == "1" ? 1 : 0;
+                if (lora_problem.empty())
+                    lora_problem = strata::core::lora_request_problem(req_lora_asked && req_lora, req_logits_k,
+                                                                      strata::kernels::lora().loaded());
+                if (!lora_problem.empty()) {
+                    std::printf("ERR %s\n", lora_problem.c_str());
+                    continue;
                 }
             }
             strata::prefill::Prefill::set_pipe_request(req_pipe);   // every request sets it: none carries over
@@ -12606,6 +12708,13 @@ int main(int argc, char** argv) {
                 return imgs_below(req_imgs, L) == pre_imgs;
             };
             const bool want_cvec = strata::kernels::cvec().loaded() ? req_cvec != 0 : true;
+            // the structural guarantee of the phase 2 exit criterion: only a LOGITS line can raise the adapter's
+            // flag, so the chat turn beside it runs the base model whatever the cache, the slot or the graph holds
+            const bool want_lora = req_logits_k > 0 && req_lora && strata::kernels::lora().loaded();
+            // ...and the same request expressed as the cache key: `want_lora` alone would make "no adapter resident"
+            // and "resident but off" the same key, which is the reuse `ConversationLora` exists to prevent.
+            const strata::core::ConversationLora want_lora_key =
+                strata::core::conversation_lora_key(strata::kernels::lora().loaded(), want_lora);
             // the last request's final commit may still be running on the verifier's stream (set_commit_async):
             // everything below reads, restores or zeroes the session from other streams and the host (the end of the
             // last request waited already; this covers a request that ended on an error path)
@@ -12674,7 +12783,10 @@ int main(int argc, char** argv) {
             }
             int64_t resume = 0;
             bool from_live = false;
-            if (o.prompt_cache > 0 && want_cvec == cvec_cached) {
+            // Both side-weight keys, or the live session is not this request's model: a chat turn must not resume cells
+            // an adapted request wrote (the guard further down can only drop the state, not the `resume` already
+            // taken from it).
+            if (o.prompt_cache > 0 && want_cvec == cvec_cached && want_lora_key == lora_cached) {
                 if (live_ok && starts_with(live, live_imgs)) { resume = (int64_t) live.size(); from_live = true; }
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() > resume && starts_with(c.ids, c.imgs)) {
@@ -12688,9 +12800,11 @@ int main(int argc, char** argv) {
             // of a slot's checkpoint this request moved into `checks` (from the slot it is admitted to), -1: none
             int lent_slot = -1;
             int64_t moved_in = -1;
-            if (slot_ckpt_move_env() && o.prompt_cache > 0 && want_cvec == cvec_cached && live_ok)
+            if (slot_ckpt_move_env() && o.prompt_cache > 0 && want_cvec == cvec_cached && want_lora_key == lora_cached &&
+                live_ok)
                 for (int b = 0; b < (int) bs.size(); ++b) {
-                    if (bs[(size_t) b].cvec != cvec_cached || bs[(size_t) b].tainted) continue;   // (#879)
+                    if (bs[(size_t) b].cvec != cvec_cached || bs[(size_t) b].lora != lora_cached ||
+                        bs[(size_t) b].tainted) continue;   // (#879)
                     for (const ConvCheckpoint& c : bs[(size_t) b].checks) {
                         const int64_t L = (int64_t) c.ids.size();
                         if (L > resume && L <= (int64_t) live.size() && starts_with(c.ids, c.imgs) &&
@@ -12721,7 +12835,7 @@ int main(int argc, char** argv) {
                     // takes the main layers' cells, so the main drafter would keep another conversation's below it)
                     const bool active_source = sl.active && !sl.tainted && slot_ckpt_move_env() &&
                                                (!use_mtp || batch_mtp || admit_slot >= 0);
-                    if (sl.cvec != want_cvec || !(idle_source || active_source)) continue;
+                    if (sl.cvec != want_cvec || sl.lora != want_lora_key || !(idle_source || active_source)) continue;
                     if (idle_source && (int64_t) sl.ids.size() > std::max(resume, slot_tokens) && starts_with(sl.ids, {})) {
                         slot_source = b;
                         slot_tokens = (int64_t) sl.ids.size();
@@ -12768,7 +12882,7 @@ int main(int argc, char** argv) {
                                  k + 1, (long long) (k < now.size() ? now[k].start : -1));
                 }
             }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            const auto parked = conversations.best(ids, req_imgs, want_cvec, want_lora_key);
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
@@ -12830,7 +12944,7 @@ int main(int argc, char** argv) {
             // it still holds this conversation's prefix, and re-parking writes the whole snapshot only for the next
             // turn to drop it again.  0 (the default) parks every turn, as before.
             const size_t park_held = o.conversation_cache_park_gain > 0
-                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks, cvec_cached)
+                                         ? conversations.parked_prefix_tokens(live, live_imgs, checks, cvec_cached, lora_cached)
                                          : 0;
             const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
                                     (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
@@ -12939,6 +13053,7 @@ int main(int argc, char** argv) {
                 for (const ConvCheckpoint& c : checks)
                     if ((int64_t) c.ids.size() == parked.tokens) { live = c.ids; live_imgs = c.imgs; }
                 cvec_cached = donor->cvec;
+                lora_cached = donor->lora;
                 resume = parked.tokens;
                 from_live = false;
                 conversations.count_borrow();
@@ -12993,6 +13108,7 @@ int main(int argc, char** argv) {
                     if (!strata::core::conversation_checkpoints_merge(std::move(cs), checks)) checks.clear();
                 }
                 cvec_cached = incoming->cvec;
+                lora_cached = incoming->lora;
                 resume = parked.tokens;
                 from_live = parked.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
@@ -13015,7 +13131,20 @@ int main(int argc, char** argv) {
                 checks.clear();
                 cvec_cached = want_cvec;
             }
+            // The same for the adapter: the live state and every checkpoint were written by the model the key names.
+            // A chat turn after a `LOGITS ... lora=1` request must not resume cells the adapted model produced (the
+            // base model would read them), and an adapted request must not resume base-model cells (its delta would be
+            // added to state the adapted model never saw).  Dropping the live state is a cache miss; resuming it is a
+            // silently wrong answer with no trace anywhere.  This line is what lets the verify hook (C5) exist at all.
+            if (want_lora_key != lora_cached) {
+                live_ok = false;
+                checks.clear();
+                lora_cached = want_lora_key;
+            }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            // UNCONDITIONAL every request, like the vector's line above: this is the line that turns the adapter
+            // BACK OFF after a LOGITS request, so a request that skips it would let the next chat turn run adapted.
+            strata::kernels::lora_set_enabled(want_lora);
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             auto off_path = [&](const ConvCheckpoint& c) {
@@ -13603,6 +13732,7 @@ int main(int argc, char** argv) {
                         sl.partial_from0 = read_from == 0 || resumed_from0;
                         if (planned) sl.partial_plan = plan;   // the resend reads the rest in these chunks
                         sl.cvec = cvec_cached;
+                        sl.lora = lora_cached;
                         for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
                             if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
                                     [](int32_t x, int64_t y) { return (int64_t) x == y; }))
@@ -15582,6 +15712,7 @@ int main(int argc, char** argv) {
                         sl.draft_ready = true;
                     }
                     sl.cvec = cvec_cached;
+                    sl.lora = lora_cached;
                     sl.img = !live_imgs.empty();   // pictures: not matched again by tokens alone, so not cached
                     const ConvCheckpoint* best = nullptr;
                     size_t best_at = 0;   // its place in `checks` (STRATA_SLOT_CKPT_MOVE)

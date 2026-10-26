@@ -39,6 +39,42 @@ const Cvec& cvec() {
 }
 }  // namespace strata::kernels
 
+// ---- the LoRA adapter: its loader and digest ARE real on Metal (src/core/lora_pack.cpp is in the host library), but
+// the delta kernel is CUDA/HIP only, so `lora_upload` is where --lora is refused - in the sentence generate.cpp prints
+// verbatim before it carries on with the base model (`INFO ... lora=none` names the model actually serving).  That is
+// the same outcome as an adapter the loader refuses on CUDA (plan 3.5): a start-up message, never a silent wrong
+// answer, and not the `missing()` path, which would end a serve process.
+// The forward-path entry points (`lora_find`, `lora_apply_layer`, `lora_apply_tensor`, `lora_layer_begin/end`, steps 3
+// and 4) are stubbed here so the Metal link still resolves when those hooks land in verify.cpp/prefill.cpp; with no
+// adapter loadable they can never be reached.
+#include "strata/kernels/lora.hpp"
+namespace strata::kernels {
+// the empty adapter, `loaded()` false
+const Lora& lora() {
+    static const Lora none{};
+    return none;
+}
+bool lora_upload(const core::LoraAdapter&, const std::string&, std::string& err) {
+    err = "no LoRA on Metal: the delta kernel is CUDA/HIP only";
+    return false;
+}
+// unreachable (Metal has no layer split).  False rather than true: reporting success here would let a stage run with
+// no tables and answer from the base weights without a word if it ever did happen.
+bool lora_replicate(std::string& err) {
+    err = "no LoRA on Metal: the delta kernel is CUDA/HIP only";
+    return false;
+}
+void lora_set_enabled(bool) {}   // nothing is ever uploaded, so there is nothing to switch
+bool lora_enabled() { return false; }
+int lora_find(int64_t, const char*) { return -1; }
+// unreachable: `lora_upload` always refuses here, so no layer has entries.  A no-op rather than a throw, because the
+// throw exists to catch a call site that reached a loaded adapter, and that state cannot occur on this build.
+void lora_apply_layer(int64_t, int64_t, const LoraIo[kLoraActCount], const LoraOut*, void*) {}
+void lora_apply_tensor(int64_t, int64_t, const LoraIo[kLoraActCount], const char*, LoraOut, void*) {}
+void lora_layer_begin(int64_t) {}
+void lora_layer_end(int64_t) {}   // `lora()` is never loaded here, so there is nothing to have missed
+}  // namespace strata::kernels
+
 // an uncaught exception or abort on the Metal build prints where it came from (macOS gives no core dump by default and
 // lldb needs a debugging permission a user's session may not have)
 #include <csignal>
