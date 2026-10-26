@@ -94,3 +94,11 @@ node_modules/
 /tools/decision_policy/stage_a_report.json
 /tools/decision_policy/stage_a_report.md
 /tools/decision_policy/vectors/
+# the tokenization and first-token studies: generated, and big (the first-token analysis is 200k lines).
+# The tools that write them are the source of truth; the research doc says what they measured.
+/tools/decision_policy/tokenization_results.json
+/tools/decision_policy/first_token_analysis.json
+
+# a launch config's BACKUP holds the same API key as the config it backs up, and /strata-*.json does not
+# match a .bak: keep the backups out of git too.
+/strata-*.json.bak
