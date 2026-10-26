@@ -285,7 +285,7 @@ is in the companion doc's section 20.
 | `trie_costs.py`, `trie_examples.py` | source | the options' token shape and the walk's cost. |
 | `letter_costs.py` | source | the letter readout's engine-request cost over a set. |
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
-| `logits_prob.py` | source | the probability helpers the response shape is built from. |
+| `logits_prob.py` | moved | the probability helpers the response shape is built from; they now live at `serve/logits_prob.py`, because the decision endpoint imports them at module load and the server may not import `tools/` (the no-acquisition guard). |
 | `jevbench.py` | source | the jev-bench sample harness: one item per request, the human label distribution and the distance to it. |
 | `jevbench_paired.py` | source | the paired temperature comparison: the T = 1 arm recovered from a tempered run, the official scorer's numbers for both arms, and the checks on the inversion. |
 | `jevbench_sample.py` | source | builds the 3% sample and its scorer-shaped items file from the dataset. |
