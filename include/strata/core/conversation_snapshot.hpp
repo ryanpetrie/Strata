@@ -52,6 +52,12 @@ bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, i
 // Disk sessions: the read limits this session can ever restore - its geometry and layer range, at most
 // min(max_tokens, its cells) tokens, `max_checkpoints` checkpoints, the exact running-state sizes and the K/V part
 // sizes at that many tokens - so session_file_read refuses an oversized or foreign file before it allocates.
+// `draft == nullptr`: a session with no drafter (`--mtp` absent), whose files hold the session's own QSA layers only:
+// max_kv_layers = owned QSA layers and no draft layer's part bounds.
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error);
+// The same with the draft layer always present (one K/V layer more).
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error);

@@ -9628,7 +9628,17 @@ int main(int argc, char** argv) {
         // it is.  SYNCHRONOUS: its K/V sources read the live session's device memory, so the caller must not run the
         // session until this returns.  A disk failure is a cache miss, never a fatal error, and it never touches the
         // RAM cache or the live state.
+        // A restore from the disk tier is in flight (a request is about to read that entry): the outgoing
+        // conversation's park must not write to the tier, least of all evict the entry being restored.  L1 parking
+        // still runs, as it does for a borrow.  Set around the park only, by DiskRestoreMark below.
+        bool disk_restoring = false;
+        struct DiskRestoreMark {
+            bool& flag;
+            explicit DiskRestoreMark(bool& f) : flag(f) { flag = true; }
+            ~DiskRestoreMark() { flag = false; }
+        };
         auto park_to_disk = [&]() -> bool {
+            if (disk_restoring) return false;
             if (!disk.enabled() || !live_ok || live.empty() || !disk.wants((int64_t) live.size())) return false;
             if (!stages.empty() || o.batch > 0 || o.peer_device >= 1) {
                 // Start-up turned the tier off for these; kept so no future path reaches the writer with them.
@@ -13037,15 +13047,39 @@ int main(int argc, char** argv) {
                 }
             }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // The disk tier (L2): a conversation whose live prefix or checkpoint is a longer start of this prompt than
+            // anything L1 holds is restored from its session file.  L1's matching rules, applied by the store: a
+            // strict longer prefix wins and a tie keeps L1; a checkpoint inside the entry is BORROWED and the entry
+            // stays, as ConversationCache::borrows does.  The payload's path is copied here: a save, an eviction or a
+            // rolled index between this point and the open must not change which file is read.
+            strata::core::ConversationDiskStore::Match dparked;
+            bool use_disk = false;
+            bool disk_borrow = false;
+            strata::core::SessionFileStream disk_stream;
+            std::string disk_payload;
+            uint64_t disk_serial = 0;
+            if (disk.enabled() && stages.empty() && slot_source < 0 && o.batch == 0) {
+                dparked = disk.best(ids, req_imgs, want_cvec);
+                const int64_t floor = std::max(resume, slot_tokens);
+                if (dparked.tokens > floor && dparked.tokens > parked.tokens) {   // strictly longer; ties prefer L1
+                    const auto* e = disk.find(dparked.serial);
+                    if (e != nullptr) {
+                        disk_payload = e->payload;   // copy before anything can reorder or evict the index
+                        disk_serial = e->serial;
+                        use_disk = true;
+                        disk_borrow = dparked.tokens > floor && disk.borrows(dparked);
+                    }
+                }
+            }
             std::optional<strata::core::SavedConversation> incoming;
             // A checkpoint inside ANOTHER parked conversation (a sibling subagent's system prompt and tools, say) is
             // borrowed: its K/V up to there and the checkpoint come over, and that conversation stays parked for its
             // own next turn (ConversationCache::borrows).  Everything else is taken whole, as before.
             // (a layer split restores whole stage images only, so it never borrows; a batch slot that holds a longer
-            // start of this prompt wins as before)
-            bool borrow = stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
+            // start of this prompt wins as before; a disk entry that won above is taken instead)
+            bool borrow = !use_disk && stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
-            if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
+            if (!use_disk && parked.tokens > std::max(resume, slot_tokens) && !borrow)
                 incoming.emplace(conversations.take(parked.index));
             if (incoming || borrow) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
@@ -13102,7 +13136,57 @@ int main(int argc, char** argv) {
                                          : 0;
             const bool park_worth = o.conversation_cache_park_gain <= 0 || park_held == 0 ||
                                     (int64_t) live.size() >= (int64_t) park_held + o.conversation_cache_park_gain;
-            if (borrow && !pin_sibling && park_worth) {
+            // The disk restore is opened and validated BEFORE the outgoing conversation is parked: a missing, foreign,
+            // corrupt or oversized file then falls back with the live session and both caches exactly as they were
+            // (plan 4.8: a failed restore is a cache miss, and a failed save must not cost parked conversations).
+            if (use_disk) {
+                strata::core::SessionReadLimits limits;
+                limits.admit = [&](uint64_t need, std::string& why) {
+                    const uint64_t cap = (uint64_t) o.conversation_disk_staging_mib << 20;
+                    if (need <= cap) return true;
+                    why = "the disk restore needs " + std::to_string(need >> 20) + " MiB of host staging, the limit is " +
+                          std::to_string((long long) o.conversation_disk_staging_mib) +
+                          " MiB (--conversation-cache-disk-staging-mib)";
+                    return false;
+                };
+                limits.progress = [&](uint64_t done, uint64_t total) {
+                    strata::core::progress_at("restoring a conversation from disk, MiB", (int64_t) (done >> 20));
+                    strata::core::progress_allow(0);   // a block moved: a beat, and the ordinary watchdog limit again
+                    (void) total;
+                };
+                // the session's own layers, plus the draft's when there is a drafter (the save's rule)
+                if (!strata::core::conversation_session_read_limits(limits, ss, g,
+                        use_mtp ? &mtp.kv_state() : nullptr, (uint64_t) o.max_context,
+                        (uint64_t) std::max(o.prompt_cache, 1), err)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: disk restore failed (%s); reading the "
+                                         "prompt\n", err.c_str());
+                    use_disk = false;
+                    err.clear();
+                }
+                strata::core::SessionStatus disk_st;
+                if (use_disk && !disk_stream.open(disk_payload, disk_id, limits, err, &disk_st)) {
+                    // A header, identity, size, checksum or metadata failure: the entry cannot be read by this engine,
+                    // so it goes and the prompt is read from token 0.  Nothing has touched the session yet.
+                    std::fprintf(stderr, "strata serve: conversation cache: disk restore failed (%s); reading the "
+                                         "prompt\n", err.c_str());
+                    disk.note_restore_failure();
+                    std::string rerr;
+                    disk.remove(disk_serial, rerr);
+                    use_disk = false;
+                    err.clear();
+                }
+            }
+            if (use_disk) {
+                // the outgoing conversation is parked as for a borrow - into RAM only: the disk tier's own save would
+                // evict (or supersede) the entry this request is about to read
+                if (!pin_sibling && park_worth) {
+                    DiskRestoreMark restoring(disk_restoring);
+                    if (!park_current(0)) {
+                        std::printf("ERR %s\n", err.c_str());
+                        return 1;
+                    }
+                }
+            } else if (borrow && !pin_sibling && park_worth) {
                 conversations.guard(parked.serial);   // parking the outgoing conversation must not evict the donor
                 const bool parked_ok = park_current(0);
                 const bool blocked = conversations.guard_blocked();
@@ -13186,6 +13270,75 @@ int main(int argc, char** argv) {
             if (incoming && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce)) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
+            }
+            // The disk tier's restore: the session file is read one K/V layer at a time, so peak host RAM is the
+            // reader's metadata plus one layer, never the conversation.  The outgoing session is already parked; a
+            // failure here is a cache miss - the entry goes, the session is treated as half written (the same reset a
+            // failed slot restore takes) and the prompt is read from token 0.  A full restore keeps the entry on disk
+            // (the next park recaptures; Phase 2 makes it a CoW delta) and does not retain anything in L1.
+            if (use_disk) {
+                // the cells the restore writes: the whole live state, or the prefix a borrow needs
+                const int64_t disk_cells =
+                    disk_borrow ? dparked.tokens : (int64_t) disk_stream.meta().live.ids.size();
+                bool grown = kvg_ensure(disk_cells + 256, kv_quiesce);
+                if (!grown) err = "the K/V cannot grow to the conversation on disk: no VRAM is left";
+                const auto t0 = Clock::now();
+                strata::core::ConversationRestore rr = strata::core::ConversationRestore::invalid;
+                if (grown)
+                    rr = strata::core::conversation_snapshot_restore_stream(
+                        disk_stream, ss, g, use_mtp ? &mtp.kv_state() : nullptr, disk_borrow ? dparked.tokens : 0, err);
+                if (grown && rr == strata::core::ConversationRestore::restored) {
+                    const auto& dmeta = disk_stream.meta();
+                    // the retained K/V described the outgoing session (a park-gain or pin skip may have left it): the
+                    // restart below rewrote every cell from 0, so it must not be handed to the next park
+                    conversations.take_reuse();
+                    if (disk_borrow) {
+                        // the checkpoints of the entry on this prompt's path (copied: the stream owns its own), and
+                        // the one at the match's token mounts below, as for any checkpoint resume
+                        checks.clear();
+                        for (const ConvCheckpoint& c : dmeta.checkpoints)
+                            if ((int64_t) c.ids.size() <= dparked.tokens && starts_with(c.ids, c.imgs))
+                                checks.push_back(c);
+                        for (const ConvCheckpoint& c : checks)
+                            if ((int64_t) c.ids.size() == dparked.tokens) { live = c.ids; live_imgs = c.imgs; }
+                        from_live = false;
+                    } else {
+                        live = dmeta.live.ids;   // copies: the stream owns them
+                        live_imgs = dmeta.live.imgs;
+                        checks = dmeta.checkpoints;
+                        from_live = dparked.live;
+                    }
+                    cvec_cached = dmeta.cvec;
+                    resume = dparked.tokens;
+                    lent_slot = -1;
+                    const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+                    disk.touch(disk_serial);
+                    disk.note_restore((uint64_t) ms, disk_stream.bytes());
+                    const double mib = (double) (disk_stream.bytes() >> 20);
+                    std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk in %.1f ms "
+                                         "(%.0f MiB/s); tier=disk parked=%zu bytes=%zu\n",
+                                 (long long) resume, ms, ms > 0 ? mib / (ms / 1000.0) : 0.0,
+                                 conversations.size(), conversations.bytes());
+                } else {
+                    std::fprintf(stderr, "strata serve: conversation cache: disk restore failed (%s); reading the "
+                                         "prompt\n", err.c_str());
+                    if (grown) {   // the file's own failure: it goes; a K/V that would not grow is not the entry's
+                        disk.note_restore_failure();
+                        std::string rerr;
+                        disk.remove(disk_serial, rerr);
+                    }
+                    // the main session may be half written: read this prompt from the start, as a failed slot
+                    // restore does (the cold read from 0 overwrites what the restore wrote)
+                    // the retained K/V described the outgoing session and the cold read from 0 rewrites it
+                    conversations.take_reuse();
+                    live.clear();
+                    live_imgs.clear();
+                    checks.clear();
+                    resume = 0;
+                    from_live = false;
+                    live_ok = false;
+                    err.clear();
+                }
             }
             if (borrow) {
                 const auto t0 = Clock::now();

@@ -499,6 +499,23 @@ void null_draft_sources(int fmt, int mode) {
     std::vector<int32_t> ids(captured);
     for (size_t i = 0; i < ids.size(); ++i) ids[i] = (int32_t) i + 1;
     std::vector<ConversationImageKey> images;
+    // The engine's read limits for a no-`--mtp` engine (park_to_disk's restore passes `use_mtp ? &mtp.kv_state() :
+    // nullptr`): a null draft is the session's own QSA layers and no draft layer's part bounds; a drafter adds
+    // exactly one.  An off-by-one here refuses every no-`--mtp` file, or bounds a draft layer that is not there.
+    {
+        SessionReadLimits none, with;
+        std::string lerr;
+        check(conversation_session_read_limits(none, ss, g, nullptr, (uint64_t) ss.max_cells, 1, lerr),
+              "no-draft: read limits without a draft layer");
+        check(none.max_kv_layers == (uint64_t) ss.qsa_alloc && none.max_kv_bytes.size() == (size_t) ss.qsa_alloc,
+              "no-draft: a null draft leaves the K/V layer count at the session's own layers");
+        lerr.clear();
+        check(conversation_session_read_limits(with, ss, g, &main.state, (uint64_t) ss.max_cells, 1, lerr),
+              "no-draft: read limits with a draft layer");
+        check(with.max_kv_layers == (uint64_t) ss.qsa_alloc + 1 &&
+                  with.max_kv_bytes.size() == (size_t) ss.qsa_alloc + 1,
+              "no-draft: a draft layer adds exactly one K/V layer limit");
+    }
     auto fill = [&](uint8_t salt) {
         main.fill(salt);
         for (const auto& [p, n] : std::vector<std::pair<void*, size_t>>{
