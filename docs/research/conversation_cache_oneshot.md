@@ -1,10 +1,12 @@
 # The conversation cache and a decision request's parked state
 
-**2026-10-22.** Status: plan. No engine change, no build, no request to the live
-engine. Every number below is from the user's engine log
-(`strata-unsloth-ud-iq4_xs.log`, 211,642 lines, 64 engine lifetimes, last start
-2026-10-22 02:37) or from a named line of the code. Anything read from the code
-and not run is marked **static analysis**.
+**2026-10-22.** Status: the plan's steps 3 and 4 are built (the engine's `park=0` key and
+the server's switch); step 5 waits for the engine. The engine was not run, the server was
+not restarted and no request went to the live engine. Every number in §1-§6 is from the
+user's engine log (`strata-unsloth-ud-iq4_xs.log`, 211,642 lines, 64 engine lifetimes, last
+start 2026-10-22 02:37) or from a named line of the code. Anything read from the code and
+not run is marked **static analysis**. §10 is the as-built record: what changed, the line
+map, the tests, the build and what the code does when the key is absent.
 
 ## 1. The problem
 
@@ -357,3 +359,221 @@ not depend on it. Step 6 must not happen before step 5.
   document is about; the code at `:12441` decides it, and I did not trace one
   such request in the engine.
 * The SYCL and Metal build claim is **static analysis**: I did not build them.
+
+## 10. As built
+
+**2026-10-22, `feat/cache-oneshot`.** Steps 3 and 4 of §8. The engine was not run, the
+server was not restarted and nothing was sent to the live engine or the live API. The
+default path is unchanged, byte for byte (§10.4), and the tests that say so are in §10.3.
+
+### 10.1 What changed, and where it is
+
+| file | line | what |
+|---|---|---|
+| `src/program/generate.cpp` | `9041` | `live_parkable`: whether the session the queue holds may be parked by the next request. One flag, per session; true at start |
+| | `9141-9146` | the guard at the top of `park_current_body`: not parkable means the same non-error skip the minimum-length and budget paths take, and the log line `skip parking (the request that read it said park=0; parked=P)` |
+| | `12005-12006` | the request key: `bool req_park = true;` beside `ckpt`, and `bool took_parked = false;` |
+| | `12037` | the parse, `park` beside `ckpt`. Unknown keys are still skipped, so an older engine ignores it |
+| | `12613` | `took_parked = true;` after a parked conversation was restored into the session |
+| | `14964` | at the end of a finished request: `live_parkable = conversation_park_allowed(req_park, took_parked)` |
+| | `14974` | the same for a request stopped between two prompt windows, which keeps its conversation (#1620) |
+| | `11933` | `LOAD` of a session file sets it back to true (no request key there) |
+| `include/strata/core/conversation_cache.hpp` | `201-206` | `conversation_park_allowed(park_key, took_parked)`: the one rule, `park_key || took_parked`. In the header so it can be tested without a GPU |
+| `src/core/conversation_cache_test.cpp` | `561-573` | the engine test of that rule and of the slot it saves (§10.3) |
+| `serve/server.py` | `312-317` | `decision_park_off()`: `STRATA_DECISION_PARK` set and not `0` or empty |
+| | `2154-2184` | `StrataEngine.logits(..., park=True)`; `park=False` writes ` park=0` between `max_new` and the ids |
+| | `4514-4522` | `Service._engine_logits`, the one call the decision path uses. Off, it calls `self.engine.logits(ids, k, max_new, cancel)`, argument for argument today's |
+| | `4534` | the trie walk's steps take it (`_logits_row`) |
+| | `4685-4686` | the base request takes it |
+| `docs/DETAILS.md` | `1189-1197` | the key, what it does, what it does not do, and the log line |
+| `serve/test_decision_engine_turn.py` | `285-371` | the server's tests: off by default, on with the switch, on every walk step, never on a chat's `GEN` |
+| `serve/test_logits_first_token.py` | `911-921` | the wire format of `LOGITS <k> <max_new> park=0 <ids>` |
+
+The state is per session because parking is not the request's own decision: the request
+that *reads* a conversation decides whether it may be parked, and the request that
+*replaces* it does the parking. So the key is remembered in `live_parkable` at the end of
+the request that read it.
+
+### 10.2 Which request lines carry the key
+
+```
+LOGITS <k> <max_new> park=0 <id,id,...>          the base request, one per question
+LOGITS <k> 1 park=0 <id,id,...>,<node tokens>   each trie-walk step
+```
+
+Both of the decision path's LOGITS calls go through `_engine_logits`, so both carry it.
+**The walk's steps carry it too**, for one reason: `live_parkable` is set at the end of
+*every* request (`:14964`), so a walk step without the key would set it back to true, and
+the step that matters - the last one, the one that leaves the conversation behind - would
+be parkable again. The walk keeps its checkpoint: no decision request sends `ckpt`, so
+`ckpt` is 1 on all of them and the step still resumes the live session (§3.4). The key
+only stops the park.
+
+The key comes **before** the ids, not after: the engine's key loop (`:12022-12064`) ends at
+the first token without `=`, and everything from there is parsed as the token ids. A key
+after the ids is an invalid token id (`ERR bad request`).
+
+Nothing else gets the key. `GEN`, `GENI` and `BGEN` lines are built by `sampling_keys`, which
+this change does not touch, so a chat request cannot carry it (§10.3's last test).
+
+### 10.3 The tests and the build
+
+**The engine's test that needs no GPU** is `conversation_cache_test` (CMake option
+`STRATA_BUILD_CONVERSATION_TESTS`). The new case is the rule and its effect on a slot: a
+conversation read from scratch with `park=0` takes no slot, so the chat parked before it is
+still the one a new request restores; a conversation taken from the cache is parked again
+even with the key.
+
+```
+cmake -S . -B build-cache -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+      -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_BUILD_TESTS=OFF
+cmake --build build-cache --target conversation_cache_test
+build-cache\conversation_cache_test.exe
+  -> conversation_cache_test: 4778 checks passed
+```
+
+(Run from a Visual Studio developer shell, so `cl` is on the PATH. The artifact stays in the
+worktree's `build-cache\`; no binary the user runs is touched.)
+
+**The compile check of `generate.cpp`**, with CUDA configured as the release build is:
+
+```
+cmake -S . -B build-cache-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release ^
+      -DSTRATA_ENABLE_CUDA=ON -DSTRATA_BUILD_TESTS=OFF
+cmake --build build-cache-cuda --target CMakeFiles/strata.dir/src/program/generate.cpp.obj
+  -> build-cache-cuda\CMakeFiles\strata.dir\src\program\generate.cpp.obj (20,097,389 bytes)
+```
+
+The object compiles; the target was not linked and nothing was written to `engine\`.
+**HIP was not built**: this machine has no ROCm or `hipcc`. That is the one item of §7's
+"build CUDA and HIP before review" that this record cannot claim, and it is the one a
+reviewer with an AMD card must do.
+
+**The server's tests, no GPU, mock engine** (`C:\tools\strata\.venv\Scripts\python.exe`,
+system Python has no `jinja2`):
+
+| command | result |
+|---|---|
+| `python -m unittest serve.test_decision_engine_turn serve.test_logits_first_token` | 14 + 70 tests, OK |
+| `python -m unittest serve.test_systemone serve.test_decision_monitor` | 142 tests together with the first file, OK |
+| `python -m unittest serve.test_server serve.test_logit_bias serve.test_model_card_sampling serve.test_cache_drop serve.test_prompt_encoder serve.test_request_accounting serve.test_structured` | 390 tests, OK (6 skipped) |
+| `python -m unittest serve.test_parallel` | 42 tests, OK |
+
+The four new server cases:
+
+1. **Not sent by default.** `STRATA_DECISION_PARK=0`: every LOGITS call the decision makes
+   carries `park=True`, and the wire-format test pins the line itself,
+   `LOGITS 64 32 11,22,33` - the same string the test asserted before this change.
+2. **Sent when the switch asks.** With `STRATA_DECISION_PARK=1`, no decision call carries
+   `park=True`.
+3. **Every walk step carries it.** The options share a first token, so the walk runs; more
+   than one engine request is made and none of them is parkable.
+4. **A chat's `GEN` line never carries it**, with the switch off and on:
+   `GEN 8 1,2,3`, byte for byte.
+
+The smoke test the plan's step 3 asked for (a manual `park=0`, then another request) needs
+the engine; §10.6 names the log lines it looks for. It has not been run.
+
+### 10.4 When the key is absent
+
+The engine: `req_park` stays true and `took_parked` false, so `live_parkable` is set to
+true at the end of every request and the guard at `:9141` is never reached. No `GEN` or
+`LOGITS` line changes, no log line is added, `park_current_body` runs exactly its old path,
+and no memory or latency is added. An engineer reading the diff can check this from
+`conversation_park_allowed(true, false) == true`.
+
+The server: `_engine_logits` calls `self.engine.logits(ids, k, max_new, cancel)` with the
+switch off - today's arguments, not today's arguments plus a default - and only passes
+`park=False` when the variable is set. So an older engine, or a test double with the old
+four-argument `logits`, is never handed the new keyword on the default path.
+
+Version skew both ways is safe: a new server with an old engine sends nothing (switch off);
+with the switch on, the old engine skips the unknown key (`:12064`) and parks as before.
+A new engine with any server parks as before.
+
+### 10.5 What differs from the plan
+
+1. **The walk's steps.** Step 4 said "an argument to `Engine.logits`". As built it is an
+   argument to one helper that both LOGITS call sites use, and the walk's steps carry the
+   key. §10.2 has the reason: with per-request state, a step without it undoes the base
+   request's key.
+2. **The restore path.** Setting `live_parkable = true` at `:12587` alone would not work:
+   the end-of-request assignment (`:14964`) runs later and would overwrite it. The restore
+   records `took_parked`, and the end-of-request rule ORs it. That is the plan's trap
+   (§7), expressed once in `conversation_park_allowed` and tested without a GPU.
+3. **No help-text line.** The plan listed `:883` (the `--help` text). There is no
+   command-line flag: this is a request key, so it is documented in `docs/DETAILS.md`
+   beside `--conversation-cache-min-tokens`, and in the comment at the parse.
+4. **`park=0` and an exact repeat.** A repeat of the same question restores the previous
+   decision's entry (a hit) and, because it `took_parked`, parks it again at its end. So the
+   key does not throw away §3.4's second case; it only stops a conversation that read from
+   scratch from taking a slot.
+5. **The switch is read per request** (`decision_park_off()` at each call), like the engine's
+   other switches. The two arms need no code change: arm A is the server without the
+   variable, arm B with it (a launch config can carry it as `env`).
+
+### 10.6 The measurement, ready to paste
+
+The engine has to be free first. Build and stage the new binary from the worktree (this is
+the step this record did **not** do, because the user's engine is serving):
+
+```
+cmake --build C:\tools\strata-wt-cache\build-cache-cuda --target strata
+# artifact: C:\tools\strata-wt-cache\build-cache-cuda\strata.exe
+```
+
+The arms, 3 runs each, alternating A B A B A B, a **fresh engine start per run** (§6.1).
+Arm A is today's server and engine; arm B is the new engine and the server started with
+`STRATA_DECISION_PARK=1`. `$D` is the OpenDecisions sample directory §9 names.
+
+```powershell
+$D   = "C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions"
+$PY  = "C:\tools\strata\.venv\Scripts\python.exe"
+$LOG = "C:\tools\strata\strata-unsloth-ud-iq4_xs.log"     # the user's engine log
+$env:STRATA_DECISION_PARK = "1"                            # arm B only; unset it for arm A
+```
+
+1. Four chat turns over `/v1/chat/completions` that build past 2k tokens: the user's chat
+   client, or step 5's script. Record turn 4's line
+   `prompt N4 tokens = M4 reused + K4 read`.
+2. Twenty decision requests over `/v1/systemone`, one short fresh-state question each. The
+   endpoint's harness is the `opendecisions.py` command below.
+3. Turn 5 of the chat. Read `prompt N5 tokens = M5 reused + K5 read`.
+4. From the log, after the twenty decisions. The launch appends to one log across engine
+   lifetimes, so take the arm's own window first (`$FROM` is the log's line count before
+   the arm's first request):
+
+```powershell
+$FROM = (Get-Content $LOG).Count     # before the arm; write the arm's lines to its own file
+Get-Content $LOG | Select-Object -Skip $FROM | Set-Content measure\b1\arm.log
+
+# arm B: 20-21 of these; arm A: none
+(Select-String measure\b1\arm.log -Pattern 'skip parking \(the request that read it said park=0').Count
+# arm B: 1 (the chat's entry); arm A: 2 (the last two decisions)
+(Select-String measure\b1\arm.log -Pattern 'conversation cache: parked').Count
+(Select-String measure\b1\arm.log -Pattern 'evictions=' | Select-Object -Last 1).Line
+# the walk's steps: these must still read "~N-10 reused + 10 read"
+Select-String measure\b1\arm.log -Pattern 'prompt \d+ tokens = \d+ reused' | Select-Object -Last 5
+```
+
+The answers and the decision's own cost (§6.2, §6.3): one pass over the 235 items per arm,
+three passes each, from the same sample and the official scorer:
+
+```powershell
+& $PY C:\tools\strata-wt-cache\tools\decision_policy\opendecisions.py `
+      --items "$D\opendecisions.jsonl" `
+      --out "measure\b1\predictions.jsonl" --log "measure\b1\runlog.jsonl"
+& $PY "$D\score.py" "measure\b1\predictions.jsonl" --data "$D\sample_items.jsonl"
+```
+
+`opendecisions.py` is `--host 127.0.0.1 --port <the server's> --api-key <if set>`; the
+runlog has each item's latency, which is where the 3.2 s median / 5.4 s p95 of §6.2 is
+compared. The chat arm's script does not exist yet: it is step 5's
+`tools/decision_policy/cache_churn.py`, and until it does, §6.1's first and third steps are
+done by hand.
+
+**The proof that the key reached the engine**: arm B's log carries
+`conversation cache: skip parking (the request that read it said park=0; parked=P)` once per
+decision switch, and the decision's `LOGITS` requests leave no `conversation cache: parked`
+line. Neither line exists in arm A.
+
