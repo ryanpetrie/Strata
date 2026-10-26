@@ -475,6 +475,93 @@ void stream_restore(int fmt, int mode) {
     fs::remove_all(dir, ec);
     check(!ec && !fs::exists(dir), "stream: the test removes its temporary files");
 }
+
+// A session with no drafter (`--mtp` absent): the disk-save sources must hold the session's own layers and no draft
+// layer, and the stream restore with a null draft must read that file back into the same state.  The engine's
+// park_to_disk passes `use_mtp ? &mtp.kv_state() : nullptr`, so an extra or missing layer here is every no-`--mtp`
+// spill failing or restoring into the wrong state.
+void null_draft_sources(int fmt, int mode) {
+    namespace fs = std::filesystem;
+    Fixture main(fmt, mode, 2048);
+    auto& g = main.g;
+    g.n_layers = 4; g.n_expert = 256;
+    g.ssm_state_size = 2; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
+    SessionState ss;
+    ss.max_cells = main.state.max_cells; ss.qsa_states = &main.state;
+    ss.layer_hi = g.n_layers; ss.gdn_alloc = g.n_gdn_layers(); ss.qsa_alloc = g.n_qsa_layers();
+    std::string err;
+    ConversationStateSizes sizes;
+    check(conversation_state_sizes(g, sizes, err), "no-draft: whole-session geometry sizes");
+    main.alloc(ss.gdn_state, sizes.gdn); main.alloc(ss.ple_hist, sizes.ple);
+    main.alloc(main.state.idx_tail, sizes.tail); main.alloc(main.state.idx_dead, sizes.dead);
+    main.alloc(main.state.idx_block_pos, sizes.block_pos);
+    const size_t captured = 4096;
+    std::vector<int32_t> ids(captured);
+    for (size_t i = 0; i < ids.size(); ++i) ids[i] = (int32_t) i + 1;
+    std::vector<ConversationImageKey> images;
+    auto fill = [&](uint8_t salt) {
+        main.fill(salt);
+        for (const auto& [p, n] : std::vector<std::pair<void*, size_t>>{
+                 {ss.gdn_state, sizes.gdn}, {ss.ple_hist, sizes.ple}, {main.state.idx_tail, sizes.tail},
+                 {main.state.idx_dead, sizes.dead}, {main.state.idx_block_pos, sizes.block_pos}})
+            cuda_check(cudaMemset(p, salt, n));
+        // A real indexer maintains its spare pooled row as a copy of idx_dead.
+        cuda_check(cudaMemcpy(main.state.idx_pooled + (ids.size() / 4) * g.idx_key_dim,
+                              main.state.idx_dead, sizes.dead, cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    };
+    fill(13);
+    std::vector<ConversationCheckpoint> checkpoints;
+    for (size_t at : {size_t(5), size_t(2048)}) {
+        ConversationCheckpoint c;
+        c.ids.assign(ids.begin(), ids.begin() + at);
+        check(conversation_checkpoint_save(c, ss, g, err), "no-draft: save an interior checkpoint");
+        checkpoints.push_back(std::move(c));
+    }
+    const ConversationView view{ids, images, checkpoints, true};
+    const size_t layers = (size_t) g.n_qsa_layers();
+    SavedConversation want;
+    check(conversation_snapshot_save(want, view, ss, g, nullptr, err), "no-draft: capture without a draft layer");
+    check(want.kv.size() == layers, "no-draft: the captured image holds the session's own layers only");
+
+    SavedConversation meta;
+    std::vector<SessionKvSource> sources;
+    check(conversation_snapshot_sources(meta, sources, view, ss, g, nullptr, err),
+          "no-draft: sources without a draft layer");
+    check(meta.kv.empty() && sources.size() == layers, "no-draft: one source per owned QSA layer, no draft source");
+
+    const SessionFileIdentity id{0x6e756c6c64726166ull, 0x7400000000000001ull};
+    const fs::path dir = fs::temp_directory_path() / ("strata-snapshot-nodraft-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(dir);
+    const fs::path path = dir / "no-draft.bin";
+    size_t written = 0;
+    check(session_file_write(path.string(), meta, sources, id, written, err), "no-draft: session file write");
+    check(written > 0, "no-draft: the file is not empty");
+
+    SessionReadLimits limits;   // this file has no draft layer; the engine's read limits still need a draft state
+    SessionStatus st;
+    SessionFileStream reader;
+    check(reader.open(path.string(), id, limits, err, &st) && st.error == SessionError::none,
+          "no-draft: open the file");
+    check(reader.layers() == layers, "no-draft: the file has no draft layer");
+    fill(177);
+    check(conversation_snapshot_restore_stream(reader, ss, g, nullptr, 0, err) == ConversationRestore::restored,
+          "no-draft: streamed full restore with a null draft");
+    SavedConversation got;
+    check(conversation_snapshot_save(got, view, ss, g, nullptr, err), "no-draft: capture the restore");
+    check(got.kv.size() == layers, "no-draft: the restore touched the session's own layers only");
+    for (size_t i = 0; i < layers; ++i)
+        check(equal(got.kv[i], want.kv[i]), "no-draft: the restored K/V equals the null-draft capture");
+    check(got.live.gdn == want.live.gdn && got.live.ple == want.live.ple && got.live.tails == want.live.tails &&
+          got.live.dead == want.live.dead && got.live.block_pos == want.live.block_pos,
+          "no-draft: the restored live checkpoint equals the null-draft capture");
+
+    reader = SessionFileStream{};   // close the file before the test removes it (Windows holds it exclusively)
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    check(!ec && !fs::exists(dir), "no-draft: the test removes its temporary files");
+}
 }
 
 int main() {
@@ -581,5 +668,7 @@ int main() {
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
     stream_restore(kKvInt8, 0);
+    null_draft_sources(kKvInt8, 0);
+    null_draft_sources(kKvF16, 1);
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);
 }

@@ -99,8 +99,13 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
 // Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
-// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
-// synchronized and must not run the session until the file is written.
+// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  `draft == nullptr`
+// writes the session's own layers only (`sources.size() == owned_qsa(session)`): the no-`--mtp` session and a layer
+// split's later stage.  Caller has synchronized and must not run the session until the file is written.
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
+// The same with the draft layer always present (the whole-session session-file save).
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
