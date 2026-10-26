@@ -35,13 +35,19 @@ USAGE
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-DATASET = Path(r"C:\Users\ryanp\AppData\Local\Temp\opencode\opendecisions\opendecisions.jsonl")
+#: The data root: no tool in the repository carries this machine's absolute paths
+#: (CONTRIBUTING: no private paths).  Set STRATA_DECISION_DATA to the directory that holds
+#: `decision_policy_training/` and `opendecisions/`.
+DATA = Path(os.environ.get("STRATA_DECISION_DATA")
+            or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Temp" / "opencode"))
+DATASET = DATA / "opendecisions" / "opendecisions.jsonl"
 TOKENIZER_DIR = Path(r"C:\tools\Strata-data\packs\unsloth-ud-iq4_xs\tokenizer")
 OUT_JSON = HERE / "first_token_analysis.json"
 OUT_MD = HERE / "first_token_report.md"
