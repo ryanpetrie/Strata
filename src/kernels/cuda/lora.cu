@@ -85,6 +85,11 @@ DevTables g_dev[kDevices];
 // slice and the layer's entry count, so the forward path pays no host round trip and the predicate works.
 Lora g_lora;
 bool g_on_host = false;
+// Capture-time coverage marks: one bit per entry of every layer, set by `lora_apply_tensor` when it applies that
+// entry and cleared by `lora_layer_begin`.  `lora_layer_end` refuses a layer with an unmarked entry, which is the
+// only way a forgotten call site can be made loud: the model would otherwise answer that projection from the base
+// weights while every other one ran adapted (lora.hpp).
+std::vector<uint32_t> g_applied;
 
 struct PlanEntry {
     int layer = 0;
@@ -424,6 +429,7 @@ bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string
     g_entries_host = std::move(entries_host);
     g_layers_host = std::move(layers_host);
     g_layer_first = std::move(layer_first);
+    g_applied.assign((size_t) n_layers, 0);   // one word per layer: kMaxEntriesPerLayer is 8, the word holds 32
 
     g_lora = Lora{};
     g_lora.layers = g_layers_host.data();
@@ -442,6 +448,7 @@ bool lora_upload(const core::LoraAdapter& a, const std::string& dir, std::string
         g_entries_host.clear();
         g_layers_host.clear();
         g_layer_first.clear();
+        g_applied.clear();
         return false;
     }
     g_lora.on = g_dev[cur_device()].on;
@@ -538,6 +545,69 @@ void lora_apply_layer(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], 
                                                              io[kLoraActInput], io[kLoraActAttn], io[kLoraActSsm],
                                                              arg);
     if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("lora_apply_layer: launch failed");
+}
+
+void lora_apply_tensor(int64_t layer, int64_t T, const LoraIo io[kLoraActCount], const char* base, LoraOut out,
+                       void* stream) {
+    if (!g_lora.loaded() || base == nullptr || T < 1) return;   // no adapter: the base path, nothing to check
+    if (layer < 0 || layer >= (int64_t) g_entries_host.size()) return;
+    const int idx = lora_find(layer, base);
+    if (idx < 0) return;   // this layer does not target this projection: nothing to apply, nothing to mark
+    g_applied[(size_t) layer] |= 1u << (unsigned) idx;   // this entry found its site (lora_layer_end checks the rest)
+    const LoraEntry& e = g_entries_host[(size_t) layer][(size_t) idx];
+    if (io == nullptr)
+        throw std::runtime_error("lora_apply_tensor: layer " + std::to_string(layer) +
+                                 " has entries but the activation array is null");
+    // The same call-site bugs `lora_apply_layer` refuses, for the one entry this call owns: a silent return would be
+    // a base-model projection wearing the adapter's name.
+    const std::string name = e.name != nullptr ? e.name : ("entry " + std::to_string(idx));
+    if (e.act < 0 || e.act >= kLoraActCount)
+        throw std::runtime_error("lora_apply_tensor: " + name + " names activation " + std::to_string(e.act) +
+                                 ", which is not one of the three");
+    if (io[e.act].x == nullptr)
+        throw std::runtime_error("lora_apply_tensor: " + name + " reads activation " + std::to_string(e.act) +
+                                 " but that pointer was not passed (io[" + std::to_string(e.act) + "].x is null)");
+    if (out.y == nullptr)
+        throw std::runtime_error("lora_apply_tensor: " + name + "'s output is null");
+    if (io[e.act].ld_x < (int64_t) e.n_in)
+        throw std::runtime_error("lora_apply_tensor: " + name + ": the activation's row stride " +
+                                 std::to_string(io[e.act].ld_x) + " is smaller than its width " +
+                                 std::to_string(e.n_in));
+    if (out.ld_y < (int64_t) e.n_out)
+        throw std::runtime_error("lora_apply_tensor: " + name + ": the output's row stride " +
+                                 std::to_string(out.ld_y) + " is smaller than its width " +
+                                 std::to_string(e.n_out));
+    const DevTables& t = g_dev[cur_device()];
+    if (t.layers == nullptr)
+        throw std::runtime_error("lora_apply_tensor: the adapter is not on this device (call lora_replicate for the "
+                                 "layer split)");
+    // ONE entry, so the grid is one block wide and `entries` points at that entry: the kernel's `entries[blockIdx.x]`
+    // and its `outs.e[blockIdx.x]` then name the same projection without a second index the call site could get
+    // wrong.
+    LoraOuts arg{};
+    arg.e[0] = out;
+    const dim3 grid(1, (unsigned) ((T + kTokensPerBlock - 1) / kTokensPerBlock));
+    lora_kernel<<<grid, kThreads, 0, (cudaStream_t) stream>>>(t.entries + g_layer_first[(size_t) layer] + idx, t.on, T,
+                                                             io[kLoraActInput], io[kLoraActAttn], io[kLoraActSsm],
+                                                             arg);
+    if (cudaPeekAtLastError() != cudaSuccess) throw std::runtime_error("lora_apply_tensor: launch failed");
+}
+
+void lora_layer_begin(int64_t layer) {
+    if (!g_lora.loaded() || layer < 0 || layer >= (int64_t) g_applied.size()) return;
+    g_applied[(size_t) layer] = 0;
+}
+
+void lora_layer_end(int64_t layer) {
+    if (!g_lora.loaded() || layer < 0 || layer >= (int64_t) g_entries_host.size()) return;
+    const std::vector<LoraEntry>& es = g_entries_host[(size_t) layer];
+    for (size_t i = 0; i < es.size(); ++i) {
+        if ((g_applied[(size_t) layer] & (1u << (unsigned) i)) != 0) continue;
+        const std::string name = es[i].name != nullptr ? es[i].name : ("entry " + std::to_string(i));
+        throw std::runtime_error("lora: layer " + std::to_string(layer) + "'s `" + name +
+                                 "` was never applied: no call site covers it in this path, so that projection "
+                                 "would answer from the base weights while the rest of the model ran adapted");
+    }
 }
 
 }  // namespace strata::kernels
