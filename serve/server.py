@@ -376,10 +376,14 @@ class MockEngine:
                 time.sleep(self.delay)
             yield t
 
-    def logits(self, ids, k, cancel):
-        """The scripted top-k logits (tests): set `self.logits_topk = {token_id: value}`."""
+    def logits(self, ids, k, max_new, cancel):
+        """The scripted top-k logits and the generated tokens (tests): set
+        `self.logits_topk = {token_id: value}`, optionally `self.logits_logz` (the
+        normalizer) and `self.logits_tokens` (the ids the request generated)."""
         self.last_prompt = list(ids)
-        return dict(getattr(self, "logits_topk", {}))
+        return (dict(getattr(self, "logits_topk", {})),
+                getattr(self, "logits_logz", None),
+                list(getattr(self, "logits_tokens", [])))
 
 
 class EngineDied(RuntimeError):
@@ -2188,20 +2192,37 @@ class StrataEngine:
                          "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
         return view
 
-    def logits(self, ids, k, cancel):
-        """Runs the prefill for `ids` and returns the top-k logits at the next-token
-        position: {token_id: logit_value}. The engine answers `L <token_id> <value>`
-        lines, then DONE. Raises EngineDied/ValueError on failure."""
+    def logits(self, ids, k, max_new, cancel):
+        """Runs the request for `ids` and returns (topk, logz, tokens):
+        the top-k logits at the answer position as {token_id: logit_value}, the
+        full-vocabulary log-sum-exp - the normalizer that turns a logit into the
+        model's own probability (P = exp(logit - logz)) - and the token ids the
+        request generated.
+
+        The engine answers `Z <logz>`, `L <token_id> <value>` and `T <token_id>`
+        lines, then DONE.  It is an ordinary GEN request that also reports the answer
+        position's row, so the tokens it generated are the answer itself: the caller
+        uses them when the logits cannot be scored.  logz is None when the engine did
+        not report one.  Raises EngineDied/ValueError on failure."""
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
         self.prefill_tok_s_mean = None
         try:
-            self.proc.stdin.write(f"LOGITS {int(k)} {','.join(str(int(t)) for t in ids)}\n")
+            # LOGITS <k> <max_new> <ids>: the engine reads the top-k at the answer
+            # position AND generates up to max_new tokens, so one request gives both
+            # the distribution and the answer.  The three fields are the engine's
+            # protocol (src/program/generate.cpp): a missing max_new is an ERR, and
+            # the request never runs - the engine answers nothing and the caller
+            # falls back to the decode path.
+            self.proc.stdin.write(f"LOGITS {int(k)} {int(max_new)} "
+                                  f"{','.join(str(int(t)) for t in ids)}\n")
             self.proc.stdin.flush()
         except OSError:
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
         out = {}
+        logz = None
+        tokens = []
         done = False
         try:
             while True:
@@ -2209,7 +2230,7 @@ class StrataEngine:
                     line = self.lines.get(timeout=0.5)
                 except queue.Empty:
                     if cancel.is_set():
-                        return out
+                        return out, logz, tokens
                     continue
                 if line is None:
                     raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})")
@@ -2220,6 +2241,18 @@ class StrataEngine:
                             out[int(f[1])] = float(f[2])
                         except ValueError:
                             pass
+                elif line.startswith("Z "):
+                    f = line.split()
+                    if len(f) >= 2:
+                        try:
+                            logz = float(f[1])
+                        except ValueError:
+                            pass
+                elif line.startswith("T "):
+                    try:
+                        tokens.append(int(line[2:]))
+                    except ValueError:
+                        pass
                 elif line.startswith("PP "):
                     f = line.split()
                     if len(f) >= 3 and f[1].isdigit() and f[2].isdigit():
@@ -2234,7 +2267,7 @@ class StrataEngine:
                 elif line.startswith("DONE"):
                     self._parse_done(line)
                     done = True
-                    return out
+                    return out, logz, tokens
                 elif line.startswith("ERR"):
                     raise ValueError(line[4:].strip())
         finally:
@@ -3893,6 +3926,7 @@ class Service:
         self.codex_compaction_cache = False           # #924 (opt-in): a Codex compaction is rendered with its conversation's tools
         self.codex_thread_titles = False              # #923 (opt-in): answer Codex's thread-title turns without the engine
         self.systemone_enabled = False                # opt-in: the config's "systemone": {"enabled": true} turns on POST /v1/systemone
+        self.systemone_diagnostics = False            # opt-in: "systemone": {"diagnostics": true} adds the alternative reading
         self.sampling_defaults = dict(sampling_defaults or {})   # the run config's `sampling` block
         self.model_arch = None                        # the config's family ("qwen4exp", "qwen35moe"): None = no model-card defaults
         self.shared = {}                              # the web app's Chat settings for every client (POST /settings)
@@ -4638,12 +4672,19 @@ class Service:
                                              "{\"enabled\": true} in the config and restart)"}}
         state_text, questions = sysone.validate_request(req)   # ValueError: the server answers 400
         model = self.model_for(req)
-        # Milestone 1: the first-token logits path for one question whose options have
-        # unique first tokens. Multi-question requests keep the one-prompt decode path.
         if len(questions) == 1:
-            fast = self._systemone_logits(state_text, questions, model, cancel)
-            if fast is not None:
-                return fast
+            # One question: the assistant turn is prefilled with the answer line's prefix,
+            # so the next token IS the answer.  The logits path reads the distribution
+            # there; the fallback generates from the same position.
+            return self._systemone_single(state_text, questions, model, cancel)
+        # Several questions: one prompt answers them all, so the prefill is shared.
+        return self._systemone_classic(state_text, questions, model, cancel)
+
+    def _systemone_classic(self, state_text, questions, model, cancel):
+        """The decode path: one prompt answers every question and the reply is the
+        `name: answer` lines.  It is the fallback for a single question too, when the
+        model wrote nothing at the answer position."""
+        from serve import systemone as sysone
         messages = [{"role": "system", "content": sysone.SYSTEM},
                     {"role": "user", "content": sysone.render_prompt(state_text, questions)}]
         max_new = min(sysone.MAX_TOKENS_PER_QUESTION * len(questions), sysone.MAX_TOKENS_CAP)
@@ -4662,33 +4703,79 @@ class Service:
                                      collected.get("timings"))
         return 200, body
 
-    def _systemone_logits(self, state_text, questions, model, cancel):
-        """The first-token logits path (milestone 1): one question, a prompt ending at
-        the answer position, and probabilities from the engine's top-k logits. Returns
-        None to fall back to the decode path (an option's first token outside the
-        top-k, colliding first tokens, or an engine failure)."""
+    def _systemone_single(self, state_text, questions, model, cancel):
+        """One question, read at the answer position.
+
+        The assistant turn is prefilled with the answer line's prefix ("name:"), so the
+        next token the model writes is the answer's first token.  The request is an
+        ordinary GEN that ALSO reports the answer position's top-k logits, so one
+        engine request gives both: the logits become real probabilities, and the
+        tokens it generated are the answer when the logits cannot be scored.
+
+        The prefix is what makes the logits usable at all: without it the model starts
+        its turn by writing the question's NAME, and the next-token logits then
+        describe the name rather than the answer (measured: the name was the top token
+        in every probe, and the answers came second)."""
         from serve import systemone as sysone
         from serve import logits_first_token as lft
         name, q = questions[0]
+        # The answer line's prefix, prefilling the ASSISTANT's turn.  It ends at the
+        # colon and NOT at a space: the answer's own space is part of the first token
+        # the model writes (the merged " no"), so a prompt ending in a lone space
+        # token after the colon is off-distribution - the model then wants to end the
+        # turn (measured: <|im_end|> was the top token at the answer position).
+        prefix = f"{name}:"
         messages = [{"role": "system", "content": sysone.SYSTEM},
-                    {"role": "user", "content": sysone.render_logits_prompt(state_text, name, q)}]
+                    {"role": "user", "content": sysone.render_answer_prompt(state_text, name, q)}]
         self.load()
+        ids, thinking, max_new = self.prepare(messages, None, {"enable_thinking": False},
+                                              sysone.MAX_TOKENS_PER_QUESTION, force=prefix,
+                                              req=None, cancel=cancel)
         try:
-            ids, thinking, _ = self.prepare(messages, None, {"enable_thinking": False},
-                                            sysone.MAX_TOKENS_PER_QUESTION, req=None, cancel=cancel)
-            topk = self.engine.logits(ids, 64, cancel)
-        except Exception:
-            return None
-        probs = lft.try_first_token_probs(questions, topk, self.tok) if topk else None
-        if probs is None:
-            return None
-        usage = {"prompt_tokens": len(ids), "completion_tokens": 0,
-                 "total_tokens": len(ids),
+            topk, logz, tokens = self.engine.logits(ids, lft.LOGITS_TOP_K,
+                                                     sysone.MAX_TOKENS_PER_QUESTION, cancel)
+        except Exception as e:
+            # The engine's answer was lost (it died, it answered ERR, the client went
+            # away).  The decision still has to be made, so the decode path answers it -
+            # but the reason is printed, because a silent fallback is a bug that looks
+            # like a slow path.
+            topk, logz, tokens = None, None, []
+            print(f"[strata] the decision answer's probabilities are unavailable ({e}); "
+                  "answering it from the decode path", flush=True)
+        dbg = os.environ.get("STRATA_LOGITS_DEBUG")
+        if dbg:
+            try:
+                if topk:
+                    lft.debug_report(questions, topk, self.tok, dbg, prefix, logz)
+                lft.debug_prompt(ids, self.tok, dbg)
+            except Exception:
+                pass
+        readings = lft.first_token_probs(questions, topk, self.tok, prefix, logz) if topk else None
+        usage = {"prompt_tokens": len(ids), "completion_tokens": len(tokens),
+                 "total_tokens": len(ids) + len(tokens),
                  "prompt_tokens_details": {"cached_tokens": getattr(self.engine, "reused", 0) or 0}}
-        body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
-                "created": int(time.time()), "model": model, "calibrated": True,
-                "answers": probs, "usage": usage}
-        return 200, body
+        if readings is not None:
+            answers = {name: lft.reading_response(r) for name, r in readings.items()}
+            body = {"id": "systemone-" + uuid.uuid4().hex, "object": sysone.OBJECT,
+                    "created": int(time.time()), "model": model, "calibrated": True,
+                    "answers": answers, "usage": usage}
+            if getattr(self, "systemone_diagnostics", False):
+                # opt-in: the alternative reading, so the two can be compared (which one
+                # predicts a correct answer better is a measurement, not a decision)
+                body["diagnostics"] = {name: lft.reading_diagnostics(r)
+                                       for name, r in readings.items()}
+            return 200, body
+        # The logits cannot be scored (an option's first token is outside the window, two
+        # options share one, or the model wanted to say something else): the tokens THIS
+        # request generated are the answer, so no second request is needed.
+        text = sysone.decode_answer(tokens, self.tok, self.stop_ids) if tokens else ""
+        if text.strip():
+            answers = sysone.parse_answer_text(text, questions)
+            body = sysone.build_response(questions, answers, model, usage, None)
+            return 200, body
+        # The model wrote nothing at the answer position (it wanted to end the turn):
+        # the classic prompt, where it writes the whole line, answers it.
+        return self._systemone_classic(state_text, questions, model, cancel)
 
     def begin_request(self, path, req):
         """#332: a monitor record for this request, or None when the monitor is off (nothing is kept then)."""
@@ -8626,8 +8713,12 @@ def main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> in
     svc.codex_thread_titles = cfg.get("codex_thread_titles") is True    # #923: opt-in, off by default
     _systemone_cfg = cfg.get("systemone")
     svc.systemone_enabled = isinstance(_systemone_cfg, dict) and _systemone_cfg.get("enabled") is True
+    svc.systemone_diagnostics = isinstance(_systemone_cfg, dict) and _systemone_cfg.get("diagnostics") is True
     if svc.systemone_enabled:                                 # opt-in: POST /v1/systemone on this server's own model
         print("[strata] decisions: POST /v1/systemone is on (\"systemone\": {\"enabled\": true} in the config)",
+              flush=True)
+    if svc.systemone_diagnostics:
+        print("[strata] decisions: the alternative reading is on (\"systemone\": {\"diagnostics\": true})",
               flush=True)
     svc.codex_compaction_cache = cfg.get("codex_compaction_cache") is True   # #924: opt-in, off by default
     try:
