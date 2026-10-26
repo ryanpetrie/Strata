@@ -139,4 +139,17 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
                                                           SessionState& session, const ModelGeometry& g,
                                                           const QsaState* draft, std::string& error);
 
+// Restores a session file that SessionFileStream reads, one K/V layer at a time, so peak host RAM is the
+// reader's metadata plus one layer, never the whole image.  upto <= 0 restores the whole live state
+// (all layers + the live running checkpoint); 1 <= upto <= live tokens restores only the K/V prefix for a
+// borrow and does NOT restore the live checkpoint state (the caller adopts the checkpoints it needs).
+// On any failure the session is not safe to decode from: the caller must discard it and read the prompt
+// from scratch.  finish() is called here; `restored` is returned only when the payload hash passed.
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& session,
+                                                         const ModelGeometry& g, const QsaState* draft,
+                                                         int64_t upto, std::string& error);
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& session,
+                                                         const ModelGeometry& g, const QsaState& draft,
+                                                         int64_t upto, std::string& error);
+
 } // namespace strata::core

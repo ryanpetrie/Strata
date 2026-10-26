@@ -462,4 +462,63 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
         return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
 }
+
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
+                                                          const ModelGeometry& g, const QsaState* draft,
+                                                          int64_t upto, std::string& error) {
+    const SavedConversation& meta = reader.meta();
+    const auto invalid = [&error](const char* why) {
+        fail(error, why);
+        return ConversationRestore::invalid;
+    };
+    // the metadata checks conversation_snapshot_validate makes, before any layer is read or copied
+    if (!meta.live.stage_parts.empty())
+        return invalid("a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
+    if (meta.geometry != geometry_key(g)) return invalid("incompatible runtime geometry");
+    if (meta.layer_lo != ss.layer_lo || meta.layer_hi != ss.layer_hi)
+        return invalid("snapshot from another session layer range");
+    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec};
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(meta.live, ss, g, error))
+        return ConversationRestore::invalid;
+    const size_t layers = owned_qsa(ss);
+    if (reader.layers() != layers + (draft ? 1 : 0)) return invalid("invalid K/V layer count");
+    const int64_t captured = (int64_t) meta.live.ids.size();
+    const bool full = upto <= 0;
+    if (!full && (upto < 1 || upto > captured)) {
+        fail(error, "the borrowed prefix is not inside the parked conversation");
+        return ConversationRestore::invalid;
+    }
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    ConversationKv layer;   // the reader clears it before each read: one layer is live at a time
+    for (size_t j = 0; j < layers; ++j) {
+        if (!reader.next(layer, error)) return ConversationRestore::transfer_failed;
+        if (!conversation_kv_validate(layer, owned(ss, j), g, captured, true, error))
+            return ConversationRestore::invalid;
+        const bool ok = full ? conversation_kv_restore(layer, owned(ss, j), g, captured, true, error)
+                             : conversation_kv_restore_prefix(layer, owned(ss, j), g, captured, upto, true, error);
+        if (!ok) return ConversationRestore::transfer_failed;
+    }
+    if (draft) {   // the last layer in the file
+        if (!reader.next(layer, error)) return ConversationRestore::transfer_failed;
+        if (!conversation_kv_validate(layer, *draft, g, captured, false, error))
+            return ConversationRestore::invalid;
+        const bool ok = full ? conversation_kv_restore(layer, *draft, g, captured, false, error)
+                             : conversation_kv_restore_prefix(layer, *draft, g, captured, upto, false, error);
+        if (!ok) return ConversationRestore::transfer_failed;
+    }
+    // the payload hash covers every layer: until it passes, the file is not valid
+    if (!reader.finish(error)) return ConversationRestore::invalid;
+    if (full) {
+        // the live running checkpoint, as conversation_snapshot_restore does; a prefix borrow leaves it alone
+        if (!conversation_checkpoint_restore(meta.live, ss, g, error) || !sync(error))
+            return ConversationRestore::transfer_failed;
+    }
+    return ConversationRestore::restored;
+}
+
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
+                                                          const ModelGeometry& g, const QsaState& draft,
+                                                          int64_t upto, std::string& error) {
+    return conversation_snapshot_restore_stream(reader, ss, g, &draft, upto, error);
+}
 } // namespace strata::core
