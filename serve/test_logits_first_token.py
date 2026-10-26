@@ -134,7 +134,12 @@ class Readings(unittest.TestCase):
         self.assertEqual(resp["choice"], "a")
         p = resp["probabilities"]
         self.assertAlmostEqual(p["a"] + p["b"], 1.0)          # the closed reading adds up to 1
-        self.assertAlmostEqual(resp["confidence"], p["a"])
+        # the confidence is the model's OWN probability of the pick (the open
+        # reading), not the distribution's maximum (the closed reading)
+        resp = lft.reading_response(lft.first_token_probs(
+            self.qs, self._logits({"a": 2.0, "b": 1.0}), self.tok, PREFIX, logz=3.0)["q"])
+        self.assertAlmostEqual(resp["confidence"], math.exp(2.0 - 3.0))
+        self.assertLessEqual(resp["confidence"], resp["probabilities"]["a"])
 
     def test_the_two_readings_differ_by_the_mass_outside(self):
         logits = self._logits({"a": 2.0, "b": 1.0})
@@ -233,6 +238,78 @@ class DebugReport(unittest.TestCase):
         self.assertIn("top 1", text)
 
 
+class ChainRule(unittest.TestCase):
+    """The chain rule: an option's probability is the product of its token
+    probabilities, so the row after the shared token separates two options the
+    first-token row cannot ("rule_1" and "rule_2" both start with " rule")."""
+
+    def setUp(self):
+        self.tok = Tok()
+        _, self.collide = sysone.validate_request({"state": "x", "questions": {
+            "q": {"type": "choice", "instructions": "Pick", "criteria": {"rule_1": None, "rule_2": None}}}})
+
+    def test_the_plan_finds_the_shared_tokens(self):
+        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        self.assertIsNotNone(plan)
+        # the mock tokenizer splits "rule_1" into "rule", "_", "1" (the model's BPE
+        # gives " rule" and "_1"), so the options share the first two tokens
+        self.assertEqual(plan["shared"], 2)
+        self.assertEqual(len(plan["shared_tokens"]), 2)
+        self.assertNotEqual(plan["tokens"]["rule_1"], plan["tokens"]["rule_2"])
+
+    def test_the_plan_needs_the_options_to_be_the_same_length(self):
+        # "bill" and "bill now": separating them exactly needs the probability of NOT
+        # continuing, so the plan does not apply
+        self.assertIsNone(lft.chain_plan(["bill", "bill now"], self.tok, PREFIX))
+
+    def test_the_probability_is_the_product_of_the_token_probabilities(self):
+        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        ids = plan["tokens"]
+        # row 0: the answer position ("rule"); row 1: after "rule" ("_");
+        # row 2: after "rule", "_" (the two options' own tokens)
+        row0 = {ids["rule_1"][0]: 3.0}
+        row1 = {ids["rule_1"][1]: 2.0}
+        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}
+        probs = lft.chain_probs(ids, [row0, row1, row2], [3.0, 3.0, 3.0])
+        self.assertAlmostEqual(probs["rule_1"],
+                               math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(2.0 - 3.0))
+        self.assertAlmostEqual(probs["rule_2"],
+                               math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(1.0 - 3.0))
+        self.assertGreater(probs["rule_1"], probs["rule_2"])
+
+    def test_a_token_outside_the_window_is_no_answer(self):
+        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        ids = plan["tokens"]
+        row0 = {ids["rule_1"][0]: 3.0}
+        row1 = {ids["rule_1"][1]: 2.0}
+        row2 = {ids["rule_1"][2]: 2.0}                    # rule_2's token is missing
+        self.assertIsNone(lft.chain_probs(ids, [row0, row1, row2], [3.0, 3.0, 3.0]))
+
+    def test_the_reading_separates_the_options(self):
+        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        ids = plan["tokens"]
+        row0 = {ids["rule_1"][0]: 3.0}
+        row1 = {ids["rule_1"][1]: 2.0}
+        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}
+        r = lft.chain_readings(self.collide[0][1], ids, [row0, row1, row2], [3.0, 3.0, 3.0], self.tok)
+        self.assertIsNotNone(r)
+        self.assertAlmostEqual(sum(r["closed"].values()), 1.0)
+        self.assertEqual(max(r["closed"], key=r["closed"].get), "rule_1")
+        # the open reading: the model's own probability of each option
+        self.assertAlmostEqual(r["open"]["rule_1"],
+                               math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(2.0 - 3.0))
+
+    def test_the_reading_is_none_when_the_model_wanted_something_else(self):
+        plan = lft.chain_plan(["rule_1", "rule_2"], self.tok, PREFIX)
+        ids = plan["tokens"]
+        stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
+        row0 = {ids["rule_1"][0]: 3.0}
+        row1 = {ids["rule_1"][1]: 2.0}
+        row2 = {ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0, stop_id: 9.0}
+        self.assertIsNone(lft.chain_readings(self.collide[0][1], ids, [row0, row1, row2],
+                                              [3.0, 3.0, 3.0], self.tok))
+
+
 class DecodeAnswer(unittest.TestCase):
     """The text the model wrote at the answer position."""
 
@@ -319,6 +396,33 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(body["answers"]["q"]["choice"], "b")
 
+    def test_colliding_options_use_the_chain_rule(self):
+        # "x1" and "x2" share their first tokens, so the first-token row cannot
+        # separate them: the chain rule walks to the row that does, and the answer
+        # comes from the probabilities
+        svc = svc_with()
+        tok = svc.tok
+        ids = lft.option_token_ids(["x1", "x2"], tok, PREFIX)
+        a, b = ids["x1"], ids["x2"]
+        shared = 0
+        while shared < len(a) and shared < len(b) and a[shared] == b[shared]:
+            shared += 1
+        self.assertGreater(shared, 0)
+        # row 0 is the answer position, rows 1..shared follow the shared tokens, and
+        # the last row holds the two options' own tokens
+        rows = [({a[i]: 3.0}, 3.0) for i in range(shared)]
+        rows.append(({a[shared]: 2.0, b[shared]: 1.0}, 3.0))
+        svc.engine.logits_rows = rows
+        code, body = svc.systemone(req(questions={"q": {"type": "choice", "instructions": "Pick",
+                                                         "criteria": {"x1": None, "x2": None}}}),
+                                    threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q"]["choice"], "x1")
+        self.assertGreater(body["answers"]["q"]["confidence"], 0.0)
+        self.assertLessEqual(body["answers"]["q"]["confidence"],
+                             max(body["answers"]["q"]["probabilities"].values()))
+
     def test_multi_question_uses_decode(self):
         svc = svc_with("q1: a\nq2: b\n")
         code, body = svc.systemone(req(questions={
@@ -350,7 +454,9 @@ class ServiceLogitsPath(unittest.TestCase):
             code, body = svc.systemone(req(), threading.Event())
         diag = body["diagnostics"]["q"]
         self.assertAlmostEqual(diag["open_confidence"], math.exp(2.0 - 3.0))
-        self.assertAlmostEqual(diag["closed_confidence"], body["answers"]["q"]["confidence"])
+        # the response's confidence is the OPEN reading; the diagnostics carry both
+        self.assertAlmostEqual(diag["open_confidence"], body["answers"]["q"]["confidence"])
+        self.assertNotAlmostEqual(diag["closed_confidence"], body["answers"]["q"]["confidence"])
         self.assertGreaterEqual(diag["outside"], 0.0)
 
     def test_empty_reply_falls_back_to_the_classic_prompt(self):
