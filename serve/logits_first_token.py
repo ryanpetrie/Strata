@@ -278,13 +278,18 @@ probability at all.
     if probs is None:
         return None
     # THE MODEL'S OWN CHOICE.  At every node where the options are told apart, the
-    # row's top token must be one of the outcomes the options claim there - or the
+    # row's top token should be one of the outcomes the options claim there - or the
     # model was going to say something else and the option distribution is about a
-    # choice it is not making.
+    # choice it is not making.  That is not a reason to refuse: the weights already
+    # carry it (an option the model was not going to write has a small weight), and
+    # the open reading is the confidence.  The answer position is the one that
+    # matters for the caller's fallback order, so it is reported as a flag.
+    model_picked = True
     for node, claimed in plan["outcomes"].items():
         topk, _ = rows[node]
         if claimed and max(topk, key=lambda t: topk[t]) not in claimed:
-            return None
+            if not node:
+                model_picked = False
     total = sum(probs.values())
     if total <= 0.0:
         return None
@@ -296,7 +301,7 @@ probability at all.
     topk, logz = rows[node]
     stop = sum(math.exp(topk[t] - logz) for t in plan["stop_ids"] if t in topk)
     return {"type": q["type"], "options": options, "closed": closed, "open": dict(probs),
-            "stop": stop, "outside": max(0.0, 1.0 - total)}
+            "stop": stop, "outside": max(0.0, 1.0 - total), "model_picked": model_picked}
 
 
 def end_of_turn_ids(tok) -> set[int]:
@@ -391,6 +396,11 @@ def first_token_probs(questions: list[tuple[str, dict]], logits: dict[int, float
                 instead.
       stop    - the probability of ending the turn rather than answering.
       outside - everything that is not one of the options.
+      model_picked - the model's top token at the answer position is one of the
+                options' first tokens, i.e. the model was choosing among them.  False
+                means it was going to write something else (a digit, a phrase), and
+                the caller's answer then comes from the model's own text if that text
+                is a valid answer, and from these readings if it is not.
 
     The two readings differ by exactly the mass outside the options.  The ANSWER is the
     same under both (a renormalization does not reorder them); only the confidence
@@ -405,30 +415,24 @@ AN OPTION OUTSIDE THE WINDOW.  The engine sends the top k logits, not the whole
     as zero - the answer cannot change - instead of giving up on the question.
 
     Returns None when first tokens collide (two options sharing a first token cannot
-    be separated by first-token logits alone), when no option is in the window at
-    all, or when the model was going to say something else.
+    be separated by first-token logits alone) or when no option is in the window at
+    all.  The model wanting to say something else is NOT one of those: the readings
+    are computed and flagged, and the doubt they carry is the confidence.
     """
     per_question = first_token_plan(questions, tok, prefix)
     if per_question is None:
         return None
+    top = max(logits, key=lambda t: logits[t]) if logits else None
     for name, q, options, ftids in per_question:
         # An option outside the window is scored as zero, not as a failure: it is
         # below every option inside the window, so it cannot be the pick.
         if not any(ftids[opt] in logits for opt in options):
             return None               # nothing to score: the decode path
-        # THE MODEL'S OWN CHOICE.  The first-token probabilities describe the answer only
-        # if the model is choosing among the options: if its top token is something else
-        # (a digit it wants to write, the end of the turn), the option distribution is
-        # about a choice it is not making, and the decode path answers it properly.
-        # This is also what keeps a question that asks for a probability (the model
-        # writes "0.7") on the decode path, where the number can be read.
-        if max(logits, key=lambda t: logits[t]) not in set(ftids.values()):
-            return None
 
     if logz is None:
         # the engine reported no normalizer: normalize over the tokens it did send
-        top = max(logits.values())
-        logz = top + math.log(sum(math.exp(v - top) for v in logits.values()))
+        top_logit = max(logits.values())
+        logz = top_logit + math.log(sum(math.exp(v - top_logit) for v in logits.values()))
     stop_ids = end_of_turn_ids(tok)
     out = {}
     for name, q, options, ftids in per_question:
@@ -443,7 +447,8 @@ AN OPTION OUTSIDE THE WINDOW.  The engine sends the top k logits, not the whole
         stop = sum(math.exp(logits[t] - logz) for t in stop_ids if t in logits)
         outside = max(0.0, 1.0 - sum(openp.values()))
         out[name] = {"type": q["type"], "options": options, "closed": closed, "open": openp,
-                     "stop": stop, "outside": outside}
+                     "stop": stop, "outside": outside,
+                     "model_picked": top in set(ftids.values())}
     return out
 
 
@@ -462,13 +467,15 @@ def reading_response(reading: dict) -> dict:
     is the closed one times the mass the model put on the options at all), so the
     confidence never exceeds the distribution's maximum.
 
-    A yes/no keeps the closed reading: the value is the probability of "yes" among
-    the two answers, so the value and the answer always agree, and it measured
-    better there (the expected calibration error 0.093 against 0.116)."""
+    A yes/no keeps the closed reading for its VALUE: the value is the probability of
+    "yes" among the two answers, so the value and the answer always agree, and it
+    measured better there (the expected calibration error 0.093 against 0.116).  It
+    now carries a confidence too - the same open reading the other types report, the
+    model's own probability of the side it picked.  So a confident "no" reports
+    {"noul": 0.03, "confidence": 0.95}: the value is the probability of yes, the
+    confidence is how sure the model is that the answer is "no"."""
     answers = {opt: [[i]] for i, opt in enumerate(reading["options"])}
     dist = {opt: reading["closed"][opt] for opt in reading["options"]}
-    if reading["type"] == "noul":
-        return logits_prob.build_response(reading["type"], answers, dist)
     pick = max(reading["closed"], key=reading["closed"].get)
     return logits_prob.build_response(reading["type"], answers, dist,
                                       confidence=reading["open"].get(pick, dist[pick]))
@@ -479,7 +486,8 @@ def reading_diagnostics(reading: dict) -> dict:
     option, the probability of ending the turn, and everything that is not an option."""
     pick = max(reading["closed"], key=lambda o: reading["closed"][o])
     return {"closed_confidence": reading["closed"][pick], "open_confidence": reading["open"][pick],
-            "open": reading["open"], "stop": reading["stop"], "outside": reading["outside"]}
+            "open": reading["open"], "stop": reading["stop"], "outside": reading["outside"],
+            "model_picked": reading.get("model_picked", True)}
 
 
 def debug_prompt(ids: list[int], tok, path: str, n: int = 48) -> None:

@@ -163,14 +163,28 @@ class Readings(unittest.TestCase):
         self.assertAlmostEqual(r["stop"], math.exp(1.5 - 3.0))
         self.assertGreater(r["stop"], 0.0)
 
-    def test_falls_back_when_the_model_choses_something_else(self):
+    def test_the_model_wanting_something_else_is_a_flag_not_a_refusal(self):
         # the model's top token is not one of the options (it wants to write a digit,
-        # or to end the turn): the option distribution is about a choice it is not
-        # making, so the decode path answers it instead
+        # a phrase, the end of the turn): the readings are still computed, and the flag
+        # says the model was not choosing among the options - the caller's answer then
+        # comes from the model's own text if that text is a valid answer, and from
+        # these readings if it is not
         stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
         logits = self._logits({"a": 2.0, "b": 1.0})
         logits[stop_id] = 5.0
-        self.assertIsNone(lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0))
+        readings = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)
+        self.assertIsNotNone(readings)
+        r = readings["q"]
+        self.assertFalse(r["model_picked"])
+        # the doubt is in the confidence: the open reading is the model's own
+        # probability of the pick, and the mass it put elsewhere is the difference
+        self.assertLess(r["open"]["a"], r["closed"]["a"])
+        self.assertAlmostEqual(r["outside"], 1.0 - sum(r["open"].values()))
+
+    def test_the_model_choosing_an_option_is_flagged(self):
+        logits = self._logits({"a": 2.0, "b": 1.0})
+        readings = lft.first_token_probs(self.qs, logits, self.tok, PREFIX, logz=3.0)
+        self.assertTrue(readings["q"]["model_picked"])
 
     def test_collision_falls_back(self):
         _, qs = sysone.validate_request({"state": "x", "questions": {
@@ -364,7 +378,7 @@ class TrieWalk(unittest.TestCase):
                                math.exp(3.0 - 3.0) * math.exp(2.0 - 3.0) * math.exp(2.0 - 3.0))
         self.assertLessEqual(r["outside"], 1.0)
 
-    def test_the_reading_is_none_when_the_model_wanted_something_else(self):
+    def test_the_model_wanting_something_else_is_a_flag_not_a_refusal(self):
         plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
         stop_id = self.tok.encode("<|im_end|>", parse_special=True)[0]
@@ -372,7 +386,11 @@ class TrieWalk(unittest.TestCase):
                 tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
                 tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0,
                                            stop_id: 9.0}, 3.0)}
-        self.assertIsNone(lft.trie_readings(self.collide[0][1], plan, rows))
+        r = lft.trie_readings(self.collide[0][1], plan, rows)
+        # the reading is computed; the model wanted to end the turn at the separating
+        # node, and the doubt is in the confidence
+        self.assertIsNotNone(r)
+        self.assertLess(r["open"]["rule_1"], r["closed"]["rule_1"])
 
     def test_the_answer_position_is_checked_too(self):
         # the options share their first token, so the answer position is not a node
@@ -384,8 +402,9 @@ class TrieWalk(unittest.TestCase):
         rows = {(): ({ids["rule_1"][0]: 3.0, 999: 9.0}, 3.0),      # the model wants 999
                 tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
                 tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}, 3.0)}
-        self.assertIsNone(lft.trie_readings(self.collide[0][1], plan, rows))
-        self.assertIn("wanted something else", lft.trie_failure_reason(plan, rows))
+        r = lft.trie_readings(self.collide[0][1], plan, rows)
+        self.assertIsNotNone(r)
+        self.assertFalse(r["model_picked"])
 
     def test_the_failure_reason_says_which_way_it_failed(self):
         plan = self._plan(["rule_1", "rule_2"])
@@ -485,6 +504,43 @@ class ServiceLogitsPath(unittest.TestCase):
         self.assertTrue(body["calibrated"])
         self.assertEqual(body["answers"]["q"]["choice"], "a")
         self.assertEqual(body["answers"]["q"]["probabilities"]["b"], 0.0)
+
+    def test_the_readings_answer_when_the_model_wrote_something_else(self):
+        # the model's top token is not an option and the text it wrote is not an
+        # answer: the forced choice, with the confidence carrying the doubt
+        svc = svc_with("q: hmm\n")
+        svc.engine.logits_topk = {1000: 2.0, 1001: 1.0, 1002: 9.0}    # 1002 is not an option
+        svc.engine.logits_tokens = svc.tok.encode("q: hmm")
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"a": 1000, "b": 1001}):
+            code, body = svc.systemone(req(), threading.Event())
+        self.assertEqual(code, 200)
+        self.assertTrue(body["calibrated"])
+        self.assertEqual(body["answers"]["q"]["choice"], "a")
+        # the doubt is in the confidence: the model's own probability of the pick
+        self.assertLess(body["answers"]["q"]["confidence"], 0.5)
+        self.assertAlmostEqual(body["answers"]["q"]["probabilities"]["a"]
+                               + body["answers"]["q"]["probabilities"]["b"], 1.0)
+
+    def test_the_noul_carries_a_confidence(self):
+        # the value is the closed reading (the probability of yes among the two
+        # answers); the confidence is the model's own probability of the side it
+        # picked - so a confident "no" reports a small value and a large confidence
+        svc = svc_with()
+        svc.engine.logits_topk = {1000: 3.0, 1001: 0.0}
+        svc.engine.logits_logz = 4.0
+        with mock.patch.object(lft, "first_token_ids", lambda opts, tok, prefix="": {"yes": 1000, "no": 1001}):
+            code, body = svc.systemone(req(questions={"q": {"type": "noul",
+                                                             "instructions": "Is it?"}}),
+                                       threading.Event())
+        self.assertEqual(code, 200)
+        ans = body["answers"]["q"]
+        self.assertEqual(ans["type"], "noul")
+        self.assertIn("confidence", ans)
+        # the value is the closed reading of "yes", the confidence the open one
+        self.assertAlmostEqual(ans["noul"], math.exp(3.0 - 4.0) / (math.exp(3.0 - 4.0)
+                                                           + math.exp(0.0 - 4.0)))
+        self.assertAlmostEqual(ans["confidence"], math.exp(3.0 - 4.0))
+        self.assertLessEqual(ans["confidence"], ans["noul"])
 
     def test_the_end_of_turn_token_is_not_part_of_the_answer(self):
         # the model wrote the answer and then ended its turn.  The end token must not
