@@ -165,6 +165,25 @@ metadata records: jev-bench has no difficulty tier, so every item is filed under
 tier weights collapse to one - say so in any write-up, it is not a difficulty claim; the licence is per-source
 and mixed (several "research use only"); and the dataset says validation only.
 
+`jevbench_paired.py` makes the **paired** comparison of a run made with a temperature against the same run
+without it. The temperature's transform is invertible - the server scales the closed reading by
+`closed_T(i) = normalize(closed_1(i) ** (1/T))`, so `closed_1(i) = normalize(closed_T(i) ** T)` - so a
+tempered run carries the T = 1 distribution inside it:
+
+```sh
+python tools/decision_policy/jevbench_paired.py \
+  --items <items.jsonl> --runlog <the tempered run's runlog.jsonl> \
+  --baseline-runlog <a stored T = 1 run's runlog.jsonl> --scorer <path to score.py> \
+  --out-predictions <the recovered T = 1 predictions.jsonl> --out-report <report.md>
+```
+
+Both arms then come from the **same run, the same items, the same engine**, so the difference between them is
+the temperature and nothing else. The recovered arm is written as a predictions file, so the official scorer
+scores it: the paired Capability on identical items. The script **validates the inversion** rather than
+assuming it (the recomputed per-item TVD against the harness's stored one, the forward transform against the
+arm the run reported, the noul's recovered P(yes) against the run log's own open reading) and reports the
+distance from the recovered arm to a stored T = 1 run, which is the engine's run-to-run wobble.
+
 `jevbench_rewrites.py` runs the JevBench coherence suite (the metamorphic rewrite cases). The official metric
 is in the published package (`pip install jevbench`, [JevBench/jevbench](https://github.com/JevBench/jevbench),
 Apache-2.0); the harness re-implements the laws and names the official file and class beside each one, so it
@@ -245,6 +264,7 @@ whose options share a first token.
 | `first_token.py` | source | the first-token ambiguity of the whole dataset (the Phase 1 study). |
 | `logits_prob.py` | source | the probability helpers the response shape is built from. |
 | `jevbench.py` | source | the jev-bench sample harness: one item per request, the human label distribution and the distance to it. |
+| `jevbench_paired.py` | source | the paired temperature comparison: the T = 1 arm recovered from a tempered run, the official scorer's numbers for both arms, and the checks on the inversion. |
 | `jevbench_sample.py` | source | builds the 3% sample and its scorer-shaped items file from the dataset. |
 | `jevbench_rewrites.py` | source | the JevBench coherence metric over the endpoint's answers (the official laws, re-implemented). |
 | `jevbench_rewrites_sample.py` | source | builds the rewrite sample from the official frozen plan (SHA-256 checked). |
