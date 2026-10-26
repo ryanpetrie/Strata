@@ -348,6 +348,19 @@ class TrieWalk(unittest.TestCase):
                                            stop_id: 9.0}, 3.0)}
         self.assertIsNone(lft.trie_readings(self.collide[0][1], plan, rows))
 
+    def test_the_answer_position_is_checked_too(self):
+        # the options share their first token, so the answer position is not a node
+        # where they are told apart - but the reading is still about the context the
+        # model is in, so the row at the answer position is held to the same rule the
+        # first-token path holds it to
+        plan = self._plan(["rule_1", "rule_2"])
+        ids = plan["tokens"]
+        rows = {(): ({ids["rule_1"][0]: 3.0, 999: 9.0}, 3.0),      # the model wants 999
+                tuple(ids["rule_1"][:1]): ({ids["rule_1"][1]: 2.0}, 3.0),
+                tuple(ids["rule_1"][:2]): ({ids["rule_1"][2]: 2.0, ids["rule_2"][2]: 1.0}, 3.0)}
+        self.assertIsNone(lft.trie_readings(self.collide[0][1], plan, rows))
+        self.assertIn("wanted something else", lft.trie_failure_reason(plan, rows))
+
     def test_the_failure_reason_says_which_way_it_failed(self):
         plan = self._plan(["rule_1", "rule_2"])
         ids = plan["tokens"]
