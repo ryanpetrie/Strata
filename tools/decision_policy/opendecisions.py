@@ -70,14 +70,28 @@ def post(url: str, key: str, payload: dict, timeout: float):
 
 
 def to_probs(item: dict, answer: dict) -> dict:
-    """The endpoint's answer -> the scorer's probs (degenerate 1.0/0.0)."""
+    """The endpoint's answer -> the scorer's probs.
+
+    The scorer wants a distribution over the labels: the option names for a choice,
+    the level indices for a score, the probability of yes for a yes/no.  The
+    first-token path sends real probabilities (the closed reading: the options
+    renormalized over themselves), and the scorer's calibration component is computed
+    from exactly that - so they are passed on, not flattened to 1.0/0.0.  The decode
+    path sends the degenerate distribution, and so does an answer with none.
+    """
     qtype, labels = item["question"]["type"], item["labels"]
     if qtype == "choice":
         pick = answer["choice"]
+        probs = answer.get("probabilities") or {}
+        if probs and set(labels) <= set(probs) and abs(sum(float(v) for v in probs.values()) - 1.0) < 0.01:
+            return {lab: float(probs[lab]) for lab in labels}
         return {lab: 1.0 if lab == pick else 0.0 for lab in labels}
     if qtype == "noul":
         return {"yes": float(answer["noul"])}
     idx = int(answer["score"])
+    probs = answer.get("probabilities") or {}
+    if probs and abs(sum(float(v) for v in probs.values()) - 1.0) < 0.01:
+        return {str(i): float(probs.get(str(i), 0.0)) for i in range(len(labels))}
     return {str(i): 1.0 if i == idx else 0.0 for i in range(len(labels))}
 
 
@@ -276,6 +290,14 @@ def main() -> int:
                             record["outside_probability"] = diag.get("outside")
                             record["open_probs"] = diag.get("open")
                             record["fast_path"] = bool(body.get("calibrated"))
+                        if diag and diag.get("reason"):
+                            # why the fast path did not fire (the server's own words)
+                            record["fallback_reason"] = diag["reason"]
+                            record["fast_path"] = False
+                        # the whole distribution the endpoint reported, so the run can be
+                        # re-scored with the probabilities (the closed reading) offline
+                        record["probabilities"] = got[name].get("probabilities")
+                        record["confidence"] = got[name].get("confidence")
                         n_ok += 1
                     except (KeyError, TypeError, ValueError) as e:
                         record["predicted"] = False
