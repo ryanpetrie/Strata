@@ -1144,6 +1144,12 @@ row is the same batched arm on the shared prompt (2026-10-21, a fresh engine).
 | **the merged path (5 questions per request)** | **79.0** | **74.4** | **83.7** | **235/235** | **235 items** | **6.92 s** |
 | the shared path (5 questions per request) | 49.5 | 27.8 | 71.2 | 165/235 | - | 1.61 s |
 
+**The serial row, re-measured after the concurrency fix (§13), on 2026-10-21:
+79.8 (78.0, 81.7), 235/235, 235 fast-path items, 3.12 s a question.**  The
+per-type accuracies are the same as the run above (choice 89.7%, noul 91.3%,
+score 79.7%), so the fix changed no answer; the 0.7 points are the run-to-run
+spread (§10.8), and the whole measured range for this sample is 78.9-80.4.
+
 **The merged path's quality is the serial path's, to within the noise floor.** The
 two rows differ by 0.1 Capability points, against a run-to-run spread of about 0.6
 (§10.8), and the merged run predicted **every** item with **every** question on the
@@ -1287,8 +1293,16 @@ anywhere in this document.
 
 #### 12.6 What is still open
 
+**2026-10-21, later the same day: the fault was found, and it is in the server's
+client, not in the engine's cache.**  §13 has it: the decision path did not drain
+the engine's line queue when a request was abandoned, so the next request read the
+abandoned one's tokens and `DONE` as its own answer - another question's option
+name, and a 502.  The evidence below is what ruled the engine's cache out; the
+fault that explains the symptom is §13's, and the measurements here are still
+right: the failed items answer on a healthy engine.
+
 1. **The trigger.** The engine state that produced the wrong answers has not been
-   reproduced, so there is no fix to write and no fix to measure. The two live
+   reproduced, so there is no fix to write and no fix to measure.  The two live
    candidates are the VRAM exhaustion above and the conversation cache's eviction
    path; both need a reproduction before anything is changed.
 2. **The user's own agent** shares this engine, so it shares the risk. The
@@ -1300,3 +1314,109 @@ anywhere in this document.
 
 Nothing in this section changes the engine. The finding is about what the evidence
 does and does not support.
+
+---
+
+## 13. The concurrency fault: the server's attribution of the engine's answer (2026-10-21)
+
+§12 corrected the handoff's diagnosis: the log line that was read as a proof is the
+trie walk's own request, and the failed items answer on a healthy engine.  But the
+fault was still unexplained, and the USER's experience was the clue that the
+handoff had lost: **the errors came when the decision engine was used by several
+users at once.**  Nothing measured so far had exercised that.
+
+### 13.1 The fault is in this branch's code, and it is in three parts
+
+The engine's answer reaches the server as lines on one pipe: the `L`/`Z` rows (the
+distribution at the answer position), the `T` tokens (the model's text) and a `DONE`
+line.  The server reads them from **one shared queue**.  So a request's answer is
+only its own if the reader that took it took *its* lines.
+
+**(a) The decision path did not drain the queue.**  The chat path's
+`Engine.generate` writes `STOP` and then **drains to `DONE`**, and its own comment
+says why: *"the consumer stopped early: stop the engine, drain to DONE"*, because
+the engine's lines for this request must not reach the next request, which reads
+the same queue.  `Engine.logits` - the decision path's engine call, added by this
+branch - wrote `STOP` and returned, **leaving the lines behind**.  A request the
+server gave up on (the client hung up, the queue wait expired) therefore handed the
+next request its tokens and its `DONE`: **another question's text, another
+question's distribution.**  That is the reported symptom exactly - the failing
+answers were other items' option names, and the strict parse turned them into
+502s.
+
+**(b) The decision path read a stopped request's tokens as an answer.**  The
+engine's `DONE` line says how the request ended (`stop`, `length`, `cancel`,
+`nonfinite`).  A request the engine stopped has a *partial* answer, or none.  The
+chat path checks the finish reason; this path did not, and `Engine.logits` did not
+even clear the previous request's, so the reason it read could be a stale one.
+
+**(c) The trie walk took the engine's turn again.**  The walk appends a node's
+tokens to the prompt it was given, so it needs that prompt still in the engine's
+cache - and another request's turn takes the cache away.  The base request and the
+walk are one question's work, so they now share one turn.
+
+**(d) The decision path had no engine-silence watchdog.**  The chat path's
+`generate` has one (#481): if the engine says nothing for the configured
+allowance, the engine is ended.  `Engine.logits` looped on `queue.Empty` forever.
+An engine that had lost step therefore left a decision request waiting for a line
+that never came, **while holding the request FIFO** - so every other request
+waited behind it, and the server looked stuck.
+
+### 13.2 The measurement: the server hung, and then it did not
+
+The reproduction is a load that looks like several users: four decision workers and
+four chat workers with growing conversations, on one engine.  The queue backs up, so
+the clients give up mid-request - which is the path that (a), (b) and (d) live on.
+
+| | before the fix | after the fix |
+|---|---:|---:|
+| requests served before it stopped | **41** | **780 decisions + 83 chat turns** |
+| decision failures | - | **0** |
+| what happened next | **a deadlock**: four requests in flight, the engine idle, no progress - the server never finished | the run completed |
+| the client's give-up timeout | 300 s | **60 s** (a stricter test: more requests were abandoned) |
+
+The deadlock is the signature of (a) and (d) together: the engine had nothing left
+to do, and the requests were waiting for a line that had already been consumed by
+a request that had already returned.  The server's own monitor showed
+`"in_flight": 4` with the engine idle for minutes.
+
+The fix is the chat path's own behaviour, applied to the decision path: stop the
+engine and **drain to `DONE`**; end the engine when the drain cannot finish; keep
+the engine's `DONE` line's own prompt-token count as the identity of the answer
+(so a request can tell that the lines it read were another request's, and refuse
+them); do not read a stopped request's tokens as an answer; and take the engine's
+turn once per question, base request and walk together.
+
+### 13.3 The engine's own resume machinery is sound
+
+A read of the engine's serve loop says the resume path cannot be the fault: every
+way the engine continues an earlier conversation - the live session, a checkpoint,
+a batch slot's checkpoint, a parked conversation - is gated by an **exact
+token-prefix comparison** (`starts_with`, and the conversation cache's
+`conversation_prefix`), and the checkpoint's validity invariant ("a checkpoint is
+only valid while the positional cells below it still hold ITS tokens") is enforced
+by an explicit prune.  The running state - the recurrences and the histories, which
+cannot be rewound - is restored from a checkpoint whose ids are an exact prefix of
+the new prompt, so it is correct for that prompt.
+
+**The engine can only ever read the token ids the server wrote on the command
+line.**  So "the engine restored a wrong context" requires either that the server
+sent the wrong ids, or that the server read the wrong lines back.  This section is
+about the second.
+
+### 13.4 What is still open
+
+* **The server's prompt cache** (`PromptEncoder`, #567) is the other way the wrong
+  ids could be sent.  It is exact by construction and unit-tested, and a fresh
+  *server* (not just a fresh engine) would be needed to rule it out; the clean
+  re-run in §12.2 restarted the server, so it is ruled out for that run.
+* **The engine's VRAM warning** (42 occurrences, 115 MiB free at the lowest) is
+  still unexplained, and it is the engine's own candidate: a window that never
+  finishes is exactly the condition under which the drain times out.  The fix
+  makes that case survivable (the engine is ended, the next request starts fresh)
+  rather than silent.
+* **The multi-question path's own numbers** (§11.5) were measured before this fix.
+  The serial path was re-measured after it: **79.8 (78.0, 81.7), 235/235
+  predicted, 235 on the fast path**, with the same per-type accuracies as before
+  (choice 89.7%, noul 91.3%, score 79.7%) - so the fix changed no answer, and the
+  0.7 points against the 79.1 row are the run-to-run spread.
