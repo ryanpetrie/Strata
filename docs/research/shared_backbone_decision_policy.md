@@ -1406,6 +1406,12 @@ about the second.
 
 ### 13.4 What is still open
 
+* **The engine's batch slots** - **ruled out.**  The chat path's `generate` has a
+  branch for the engine's `--batch` slots and the decision path's `logits` does
+  not, so if the engine ran with batch slots the decision path's turn would not be
+  exclusive *at the engine*.  The engine's log has no `batch_slots` and no batch
+  lines at all, and the server reports `"concurrency": {"serving": 1}`, so the
+  turn is exclusive on both sides.
 * **The server's prompt cache** (`PromptEncoder`, #567) is the other way the wrong
   ids could be sent.  It is exact by construction and unit-tested, and a fresh
   *server* (not just a fresh engine) would be needed to rule it out; the clean
