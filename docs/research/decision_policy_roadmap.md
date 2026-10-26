@@ -349,7 +349,26 @@ exactly, as it must be).
 
 ### 1.4b The score's location, per config, on the normalised level (added 2026-10-22)
 
-- **Effort:** 1–2 days, offline for the fit and the paired evaluation (the harness
+**Status: DONE (2026-10-22). One arm works and comes with its mechanism; the other closes.**  Recorded in
+companion doc **26.2** (the rule was 26.1, committed before the run); the tool is
+`tools/decision_policy/score_location.py`, the outputs `score_location.json` and `score_location_report.md`.
+- **`measuring_hate_speech` (K = 3, the only score config with human labels): the location works and
+  transfers.**  One `b = -2.203` takes the pool's out-of-fold TVD **0.4106 → 0.3299** (paired
+  **-0.0807 [-0.1012, -0.0590]**) and the jev-bench sample's **0.4963 → 0.3961** (**-0.1001
+  [-0.1405, -0.0554]**); the five folds fit -1.90 to -2.36. It is the noul's story again (§24): a signed
+  offset, movable by a location, **population-specific** - so no constant ships.
+- **`helpsteer2_helpfulness` and `_verbosity` (K = 5): the rule passes and it is not a calibration.**  Their
+  labels are gold-only, and "predict the population's mean level" beats the fitted map on verbosity (mean
+  |level error| 0.431 against 0.648) while helpfulness gains 0.062 levels with an interval through zero and
+  folds scattered 3.5 to 5.3. This line closes for those configs until a 5-level **human** distribution
+  exists.
+- **The unit was not the mechanism.**  Inside one config the normalised axis and the raw level index are the
+  same one-parameter family (26.1 said so before the run); what 1.4 got wrong was sharing one `b` across
+  K = 3, 4 and 5, not the index.
+- **The 235 is reported, not judged**: 59 score items at T = 1, mean |level error| 0.306, accuracy 0.780; no
+  arm is applied, because none of its configs is a jev config.
+
+- **Effort:** 1-2 days, offline for the fit and the paired evaluation (the harness
   and the arms exist); a GPU run only if the fitted map is then measured live.
 - **Why:** 1.4 showed the score's error is opposite in sign between its 5-level
   configs at T = 1, and that the level index is the wrong unit across K. The map to
