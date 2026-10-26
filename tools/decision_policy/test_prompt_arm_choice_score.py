@@ -37,6 +37,14 @@ class Arith(unittest.TestCase):
         self.assertAlmostEqual(A.expected_level({"0": 0.0, "1": 0.5, "2": 0.5}, 3), 1.5)
         self.assertAlmostEqual(A.expected_level({"0": 0.2, "1": 0.3, "2": 0.5}, 3), 1.3)
 
+    def test_the_paired_interval_holds_a_constant(self):
+        lo, hi = A.paired_ci([0.05] * 30)
+        self.assertAlmostEqual(lo, 0.05)
+        self.assertAlmostEqual(hi, 0.05)
+        lo, hi = A.paired_ci([-0.1] * 20 + [0.3] * 20)
+        self.assertLess(lo, 0.1)
+        self.assertGreater(hi, 0.1)
+
 
 class ChoiceBlock(unittest.TestCase):
     def items(self):
@@ -128,7 +136,8 @@ class Rules(unittest.TestCase):
         good = {"soft": {"d_tvd": 0.02, "tvd_base": 0.3, "tvd_arm": 0.28,
                          "top_mass_base": 0.8, "top_mass_arm": 0.7, "top_mass_humans": 0.6,
                          "picks_moved": 0, "n_both": 250, "pick_matches_base": 200,
-                         "pick_matches_arm": 200, "acc_items_lost": 0},
+                         "pick_matches_arm": 200, "acc_items_lost": 0,
+                         "tvd_ci": [0.01, 0.03]},
                 "hard": {"items_lost": 0, "d_ece_max": 0.001, "acc_base": 0.8,
                          "acc_arm": 0.8, "n_both": 250},
                 "hard_per_config": {}}
@@ -141,6 +150,7 @@ class Rules(unittest.TestCase):
                         "tvd_base": 0.4, "tvd_arm": 0.45, "d_tvd": -0.05,
                         "top_matches_base": 200, "top_matches_arm": 200,
                         "top_items_lost": 0, "n_both": 250,
+                        "signed_ci": [-0.3, -0.1], "tvd_ci": [-0.06, -0.04],
                         "mean_level_prior": 0.7, "mean_level_prior_mae": 0.4,
                         "mae_base": 0.3, "mae_arm": 0.5},
                 "hard_per_config": {}}

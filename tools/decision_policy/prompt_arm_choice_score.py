@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import subprocess
 import sys
 from pathlib import Path
@@ -66,6 +67,18 @@ def argmax(d: dict, keys: list[str] | None = None) -> str:
     return max(use, key=lambda k: float(d.get(k, 0.0)))
 
 
+def paired_ci(deltas: list[float], n: int = 1000, seed: int = 42) -> tuple[float, float]:
+    """The 95% interval of the mean of a paired per-item change, by an item bootstrap."""
+    if not deltas:
+        return 0.0, 0.0
+    rng = random.Random(seed)
+    means = []
+    for _ in range(n):
+        means.append(sum(deltas[rng.randrange(len(deltas))] for _ in deltas) / len(deltas))
+    means.sort()
+    return means[int(0.025 * n)], means[int(0.975 * n) - 1]
+
+
 def expected_level(p: dict, k: int) -> float:
     """The distribution's expected level on the item's own lowest-first order."""
     return sum(i * float(p.get(str(i), 0.0)) for i in range(k))
@@ -93,6 +106,8 @@ def choice_block(items: list[dict], base: dict, arm: dict) -> dict:
             "picks_moved": sum(1 for p, a in zip(bp, ap) if argmax(p) != argmax(a)),
         }
         out["soft"]["d_tvd"] = out["soft"]["tvd_base"] - out["soft"]["tvd_arm"]
+        out["soft"]["tvd_ci"] = list(paired_ci(
+            [tvd(b, h) - tvd(a, h) for b, a, h in zip(bp, ap, hs)]))
         out["soft"]["acc_items_lost"] = (out["soft"]["pick_matches_base"]
                                          - out["soft"]["pick_matches_arm"])
 
@@ -152,6 +167,11 @@ def score_block(items: list[dict], base: dict, arm: dict) -> dict:
         s["signed_arm"] = s["level_arm"] - s["level_humans"]
         s["d_signed_toward_zero"] = abs(s["signed_base"]) - abs(s["signed_arm"])
         s["d_tvd"] = s["tvd_base"] - s["tvd_arm"]
+        s["tvd_ci"] = list(paired_ci(
+            [tvd(base[it["id"]], h) - tvd(arm[it["id"]], h) for it, h in zip(both, hs)]))
+        s["signed_ci"] = list(paired_ci(
+            [abs(b - hl) - abs(a - hl)
+             for b, a, hl in zip(base_levels, arm_levels, human_levels)]))
         s["top_items_lost"] = s["top_matches_base"] - s["top_matches_arm"]
         # the baseline the rule names: one point prediction at the humans' mean level
         mean_level = sum(human_levels) / len(both)
@@ -190,7 +210,8 @@ def rule_choice(r: dict) -> list[str]:
         ok = s["d_tvd"] > MARGIN_TVD_CHOICE
         ok_all &= ok
         lines.append(f"(a) the mean TVD {s['tvd_base']:.4f} -> {s['tvd_arm']:.4f} "
-                     f"({s['d_tvd']:+.4f}); the margin is {MARGIN_TVD_CHOICE} -> "
+                     f"({s['d_tvd']:+.4f} [{s['tvd_ci'][0]:+.4f}, {s['tvd_ci'][1]:+.4f}]); "
+                     f"the margin is {MARGIN_TVD_CHOICE} -> "
                      f"{'PASS' if ok else 'FAIL'}")
         lines.append(f"    the top-label mass: the model {s['top_mass_base']:.4f} -> "
                      f"{s['top_mass_arm']:.4f}, the humans {s['top_mass_humans']:.4f} "
@@ -223,9 +244,11 @@ def rule_score(r: dict) -> list[str]:
         lines.append(f"(a) the location: the mean expected level {s['level_base']:.4f} -> "
                      f"{s['level_arm']:.4f}, the humans {s['level_humans']:.4f} "
                      f"({s['signed_base']:+.4f} -> {s['signed_arm']:+.4f}, toward zero by "
-                     f"{s['d_signed_toward_zero']:+.4f}); the TVD {s['tvd_base']:.4f} -> "
-                     f"{s['tvd_arm']:.4f} ({s['d_tvd']:+.4f}); the margins are {MARGIN_LEVEL} "
-                     f"and {MARGIN_TVD_SCORE} -> {'PASS' if ok else 'FAIL'}")
+                     f"{s['d_signed_toward_zero']:+.4f} "
+                     f"[{s['signed_ci'][0]:+.4f}, {s['signed_ci'][1]:+.4f}]); the TVD "
+                     f"{s['tvd_base']:.4f} -> {s['tvd_arm']:.4f} ({s['d_tvd']:+.4f} "
+                     f"[{s['tvd_ci'][0]:+.4f}, {s['tvd_ci'][1]:+.4f}]); the margins are "
+                     f"{MARGIN_LEVEL} and {MARGIN_TVD_SCORE} -> {'PASS' if ok else 'FAIL'}")
         lines.append(f"    the mean-level prior: predicting {s['mean_level_prior']:.4f} levels "
                      f"for every item gives a mean |error| of {s['mean_level_prior_mae']:.4f}; "
                      f"the base arm is {s['mae_base']:.4f}, this arm {s['mae_arm']:.4f}")
