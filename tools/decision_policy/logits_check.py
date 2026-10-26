@@ -106,7 +106,8 @@ def summarize(body: dict) -> str:
     parts = []
     for name, ans in (body.get("answers") or {}).items():
         if ans.get("type") == "noul":
-            parts.append(f"{name}=noul {ans.get('noul')}")
+            parts.append(f"{name}=noul {ans.get('noul')}"
+                         + (f" conf={ans.get('confidence')}" if "confidence" in ans else ""))
         elif ans.get("type") == "choice":
             top = max((ans.get("probabilities") or {}).values(), default=0.0)
             parts.append(f"{name}=choice {ans.get('choice')!r} p={top:.3f} "
