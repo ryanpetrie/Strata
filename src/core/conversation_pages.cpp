@@ -358,6 +358,16 @@ bool ConversationPagePool::open(bool writable, std::string& error) {
         fs::permissions(fs::path(tmp_path_), fs::perms::owner_all, fs::perm_options::replace, pe);
     }
 #endif
+    // A temporary file from an interrupted save or compaction is garbage.
+    {
+        std::error_code tec;
+        for (fs::directory_iterator it(fs::path(tmp_path_), tec), end; !tec && it != end; it.increment(tec)) {
+            const std::string leaf = it->path().filename().string();
+            if (leaf.size() < 4 || leaf.compare(leaf.size() - 4, 4, ".tmp") != 0) continue;
+            std::string ignored;
+            erase_file(it->path().string(), ignored);
+        }
+    }
 
     uint64_t size = 0;
     const bool exists = file_size(pool_path_, size);
