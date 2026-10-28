@@ -263,15 +263,25 @@ function renderConvDisk(c) {
     .map(([key, n]) => `${CC_REFUSALS[key] || key} ${fmt(n)}`).join(" · ");
   const last = c.disk_last_restore_ms != null
     ? `${fmt(c.disk_last_restore_ms, 1)} ms · ${fmt(c.disk_last_restore_mib_s)} MiB/s` : null;
+  const wrote = c.disk_last_write_mib != null
+    ? `${fmt(c.disk_last_write_mib)} MiB written · ${fmt(c.disk_last_reuse_mib)} MiB reused`
+      + (c.disk_last_write_share != null ? ` (${fmt(c.disk_last_write_share)}% new)` : "") : null;
+  const pool = c.disk_paged ? `${fmt(c.disk_pool_mib)} MiB` +
+    (c.disk_compactions ? ` · ${fmt(c.disk_compactions)} compaction${c.disk_compactions === 1 ? "" : "s"}` : "") : null;
   facts($("cc-disk-facts"), [
     ["Disk saved / restored", `${fmt(c.disk_saves)} / ${fmt(c.disk_restores)}`],
     ["Disk evictions", fmt(c.disk_evictions)],
     ["Last disk restore", last],
+    ["Last disk write", wrote],
+    ["Page pool", pool],
     ["Refused saves", reasons || "none"],
     ["Disk errors", c.disk_errors ? fmt(c.disk_errors) : null],
   ]);
   const where = c.disk_dir ? ` in ${c.disk_dir}` : "";
-  $("cc-disk-note").textContent = `Each conversation is one plaintext file${where}, in a folder private to your user. ` +
+  const shape = c.disk_paged
+    ? "The K/V is kept as content-addressed pages in one shared pool, so a turn writes only the pages that changed."
+    : "Each conversation is one plaintext file";
+  $("cc-disk-note").textContent = `${shape}${where}, in a folder private to your user. ` +
     "It is opt-in: add \"--conversation-cache-disk-mib\", \"32768\" and \"--conversation-cache-spill-dir\", \"<folder>\" " +
     "to the run config's args (docs/DISK_CACHE.md).";
 }
