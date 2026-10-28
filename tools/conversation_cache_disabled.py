@@ -46,10 +46,14 @@ def state_hashes(text, *, candidate=False):
 def common_args(cfg, spec):
     # Upstream has no conversation-cache options. Omit them from EVERY arm so
     # the candidates exercise their disabled default with identical arguments.
+    # --conversation-cache-disk-only is a switch: it has no value, so the
+    # argument after it is the next option, never its value.
     args, i = [], 0
     while i < len(cfg['args']):
         arg = cfg['args'][i]
-        if arg.startswith('--conversation-cache-'):
+        if arg == '--conversation-cache-disk-only':
+            i += 1
+        elif arg.startswith('--conversation-cache-'):
             require(i + 1 < len(cfg['args']), 'cache option lacks a value')
             i += 2
         else:

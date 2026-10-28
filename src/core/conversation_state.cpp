@@ -331,6 +331,12 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                    const QsaState& draft, std::string& error) {
+    return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
+}
+
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
+                                   const QsaState* draft, std::string& error) {
     if (!view_validate(view, ss, g, error) || !sync(error)) return false;
     SavedConversation captured;
     captured.geometry = geometry_key(g);
@@ -341,17 +347,17 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     if (!conversation_checkpoint_save(captured.live, ss, g, error)) return false;
     const int64_t upto = (int64_t) view.ids.size();
     const size_t layers = owned_qsa(ss);
-    std::vector<SessionKvSource> out(layers + 1);
+    std::vector<SessionKvSource> out(layers + (draft ? 1 : 0));
     for (size_t j = 0; j < layers; ++j)
         if (!conversation_kv_source(out[j], owned(ss, j), g, upto, true, error)) return false;
-    if (!conversation_kv_source(out.back(), draft, g, upto, false, error)) return false;
+    if (draft && !conversation_kv_source(out.back(), *draft, g, upto, false, error)) return false;
     meta = std::move(captured);
     sources = std::move(out);
     return true;
 }
 
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
-                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error) {
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, ss, z, error)) return false;
@@ -365,20 +371,28 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     SessionReadLimits l = limits;   // keeps the caller's admit / progress / max_file_bytes
     l.max_tokens = tokens;
     l.max_checkpoints = max_checkpoints;
-    l.max_kv_layers = layers + 1;
+    l.max_kv_layers = layers + (draft != nullptr ? 1 : 0);
     l.geometry = geometry_key(g);
     l.layer_range = std::make_pair(ss.layer_lo, ss.layer_hi);
     l.max_state_bytes = {z.gdn, ss.ple_hist ? z.ple : 0, tails, dead, block_pos};
-    l.max_kv_bytes.assign(layers + 1, {});
+    l.max_kv_bytes.assign(layers + (draft != nullptr ? 1 : 0), {});
     for (size_t j = 0; j < layers; ++j) {
         const auto& st = owned(ss, j);
         const int64_t upto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(st.max_cells, 0));
         if (!conversation_kv_part_sizes(st, g, upto, true, l.max_kv_bytes[j], error)) return false;
     }
-    const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft.max_cells, 0));
-    if (!conversation_kv_part_sizes(draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    if (draft != nullptr) {   // the draft layer's K/V is the last layer in the file, when the file has one
+        const int64_t dupto = (int64_t) std::min<uint64_t>(tokens, (uint64_t) std::max<int64_t>(draft->max_cells, 0));
+        if (!conversation_kv_part_sizes(*draft, g, dupto, false, l.max_kv_bytes.back(), error)) return false;
+    }
     limits = std::move(l);
     return true;
+}
+
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& ss, const ModelGeometry& g,
+                                      const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error) {
+    return conversation_session_read_limits(limits, ss, g, &draft, max_tokens, max_checkpoints, error);
 }
 
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
@@ -463,5 +477,64 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
     if (draft && !conversation_kv_restore_prefix(image.kv.back(), *draft, g, captured, upto, false, error))
         return ConversationRestore::transfer_failed;
     return ConversationRestore::restored;
+}
+
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
+                                                          const ModelGeometry& g, const QsaState* draft,
+                                                          int64_t upto, std::string& error) {
+    const SavedConversation& meta = reader.meta();
+    const auto invalid = [&error](const char* why) {
+        fail(error, why);
+        return ConversationRestore::invalid;
+    };
+    // the metadata checks conversation_snapshot_validate makes, before any layer is read or copied
+    if (!meta.live.stage_parts.empty())
+        return invalid("a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
+    if (meta.geometry != geometry_key(g)) return invalid("incompatible runtime geometry");
+    if (meta.layer_lo != ss.layer_lo || meta.layer_hi != ss.layer_hi)
+        return invalid("snapshot from another session layer range");
+    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec};
+    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(meta.live, ss, g, error))
+        return ConversationRestore::invalid;
+    const size_t layers = owned_qsa(ss);
+    if (reader.layers() != layers + (draft ? 1 : 0)) return invalid("invalid K/V layer count");
+    const int64_t captured = (int64_t) meta.live.ids.size();
+    const bool full = upto <= 0;
+    if (!full && (upto < 1 || upto > captured)) {
+        fail(error, "the borrowed prefix is not inside the parked conversation");
+        return ConversationRestore::invalid;
+    }
+    if (!sync(error)) return ConversationRestore::transfer_failed;
+    ConversationKv layer;   // the reader clears it before each read: one layer is live at a time
+    for (size_t j = 0; j < layers; ++j) {
+        if (!reader.next(layer, error)) return ConversationRestore::transfer_failed;
+        if (!conversation_kv_validate(layer, owned(ss, j), g, captured, true, error))
+            return ConversationRestore::invalid;
+        const bool ok = full ? conversation_kv_restore(layer, owned(ss, j), g, captured, true, error)
+                             : conversation_kv_restore_prefix(layer, owned(ss, j), g, captured, upto, true, error);
+        if (!ok) return ConversationRestore::transfer_failed;
+    }
+    if (draft) {   // the last layer in the file
+        if (!reader.next(layer, error)) return ConversationRestore::transfer_failed;
+        if (!conversation_kv_validate(layer, *draft, g, captured, false, error))
+            return ConversationRestore::invalid;
+        const bool ok = full ? conversation_kv_restore(layer, *draft, g, captured, false, error)
+                             : conversation_kv_restore_prefix(layer, *draft, g, captured, upto, false, error);
+        if (!ok) return ConversationRestore::transfer_failed;
+    }
+    // the payload hash covers every layer: until it passes, the file is not valid
+    if (!reader.finish(error)) return ConversationRestore::invalid;
+    if (full) {
+        // the live running checkpoint, as conversation_snapshot_restore does; a prefix borrow leaves it alone
+        if (!conversation_checkpoint_restore(meta.live, ss, g, error) || !sync(error))
+            return ConversationRestore::transfer_failed;
+    }
+    return ConversationRestore::restored;
+}
+
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
+                                                          const ModelGeometry& g, const QsaState& draft,
+                                                          int64_t upto, std::string& error) {
+    return conversation_snapshot_restore_stream(reader, ss, g, &draft, upto, error);
 }
 } // namespace strata::core

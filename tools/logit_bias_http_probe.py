@@ -14,7 +14,7 @@ import strata_tokenizer as ST
 cfg=json.loads(a.config.read_text())
 cfg={k:v for k,v in cfg.items() if k in ['args','tokenizer','gpu','lib_dirs','env']}
 args=list(cfg['args'])
-for flag in ['--conversation-cache-spill-dir','--conversation-cache-disk-mib','--mtp']:
+for flag in ['--conversation-cache-spill-dir','--conversation-cache-disk','--conversation-cache-disk-mib','--mtp']:
  if flag in args:i=args.index(flag);del args[i:i+2]
 args=[a for a in args if a!='--conversation-cache-disk-only']
 tp=Path(cfg['tokenizer']);vocab=json.loads((tp/'vocab.json').read_text());tokens=[None]*len(vocab)

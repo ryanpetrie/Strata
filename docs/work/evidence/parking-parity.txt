@@ -1,0 +1,11 @@
+   arm(live): A answer 99 tokens, first8=[760, 3712, 314, 279, 17933, 3379, 95451, 440], sha256=4aa18c5c8006e6cd
+   arm(A,B,A): A answer 99 tokens, first8=[760, 3712, 314, 279, 17933, 3379, 95451, 440], sha256=4aa18c5c8006e6cd
+no SNAPSHOT_VERIFY line: the draft ring was not read back
+live (reference): prompt A 3682 tokens, follow-up 3806 tokens, reused 3780, follow-up in 2.70 s; restore lines: none
+parked (A, B, A): prompt A 3682 tokens, follow-up 3806 tokens, reused 3675, follow-up in 4.51 s; restore lines: ['restored 3675 tokens from disk in 47.5 ms (5894 MiB/s); tier=disk parked=0 bytes=0']
+follow-up tokens: DIFFER at 66 (96 / 95)
+    live first10: [16, 13, 2972, 44, 30903, 3856, 92217, 1061, 85188, 5269]
+    parked first10: [16, 13, 2972, 44, 30903, 3856, 92217, 1061, 85188, 5269]
+    "1. **Movable Type**: This foundational technology originated in East Asia and served as the precursor to later European printing innovations.\n2. **Gutenberg's Press**: Developed in Mainz around 1450, "
+second park of A: 0 bytes of K/V reused (retained from its restore)
+restore tier: disk

@@ -52,6 +52,12 @@ bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, i
 // Disk sessions: the read limits this session can ever restore - its geometry and layer range, at most
 // min(max_tokens, its cells) tokens, `max_checkpoints` checkpoints, the exact running-state sizes and the K/V part
 // sizes at that many tokens - so session_file_read refuses an oversized or foreign file before it allocates.
+// `draft == nullptr`: a session with no drafter (`--mtp` absent), whose files hold the session's own QSA layers only:
+// max_kv_layers = owned QSA layers and no draft layer's part bounds.
+bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
+                                      const QsaState* draft, uint64_t max_tokens, uint64_t max_checkpoints,
+                                      std::string& error);
+// The same with the draft layer always present (one K/V layer more).
 bool conversation_session_read_limits(SessionReadLimits& limits, const SessionState& session, const ModelGeometry& g,
                                       const QsaState& draft, uint64_t max_tokens, uint64_t max_checkpoints,
                                       std::string& error);
@@ -103,8 +109,13 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
 // Disk save without capturing the K/V on the host: `meta` gets everything but the K/V (running state copied,
-// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  Caller has
-// synchronized and must not run the session until the file is written.
+// checkpoints as given by the view), `sources` one streamed source per QSA layer then the draft.  `draft == nullptr`
+// writes the session's own layers only (`sources.size() == owned_qsa(session)`): the no-`--mtp` session and a layer
+// split's later stage.  Caller has synchronized and must not run the session until the file is written.
+bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
+                                   const ConversationView& view, const SessionState& session,
+                                   const ModelGeometry& g, const QsaState* draft, std::string& error);
+// The same with the draft layer always present (the whole-session session-file save).
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
@@ -142,5 +153,18 @@ ConversationRestore conversation_snapshot_restore(const SavedConversation& image
 ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation& image, int64_t upto,
                                                           SessionState& session, const ModelGeometry& g,
                                                           const QsaState* draft, std::string& error);
+
+// Restores a session file that SessionFileStream reads, one K/V layer at a time, so peak host RAM is the
+// reader's metadata plus one layer, never the whole image.  upto <= 0 restores the whole live state
+// (all layers + the live running checkpoint); 1 <= upto <= live tokens restores only the K/V prefix for a
+// borrow and does NOT restore the live checkpoint state (the caller adopts the checkpoints it needs).
+// On any failure the session is not safe to decode from: the caller must discard it and read the prompt
+// from scratch.  finish() is called here; `restored` is returned only when the payload hash passed.
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& session,
+                                                         const ModelGeometry& g, const QsaState* draft,
+                                                         int64_t upto, std::string& error);
+ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& session,
+                                                         const ModelGeometry& g, const QsaState& draft,
+                                                         int64_t upto, std::string& error);
 
 } // namespace strata::core

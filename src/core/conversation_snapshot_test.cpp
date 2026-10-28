@@ -46,10 +46,10 @@ struct Fixture {
             cuda_check(cudaMalloc(&raw, n)); device.push_back(raw); p = static_cast<T*>(raw);
         }
     }
-    Fixture(int fmt, int mode) {
+    Fixture(int fmt, int mode, int pages = 24) {
         auto& st = state;
         st.kv_mode = mode; st.kv_int8 = fmt==kKvInt8; st.kv_q4 = fmt==kKvQ4; st.kv_hybrid = fmt==3;
-        st.n_pages = 24; st.n_slots = mode ? 4 : st.n_pages;
+        st.n_pages = pages; st.n_slots = mode ? 4 : st.n_pages;
         st.max_cells = st.n_pages * 4; st.idx_pooled_rows = mode==2 ? 2 : st.max_cells/4+2;
         const size_t per = fmt==kKvQ4 ? kv_q4_bytes_per_head((int)g.head_dim) : g.head_dim*((st.kv_int8 || st.kv_hybrid) ? 1:2);
         const size_t rows = st.max_cells*g.n_head_kv, slot_rows = st.n_slots*4*g.n_head_kv;
@@ -300,6 +300,285 @@ void full_session(int fmt, int mode, int experts) {
     check(spare==a.checkpoints[0].dead,"checkpoint rebuilds spare row over a later completed block");
     check(ss.ple_prev[0]==2 && ss.ple_prev[1]==3,"checkpoint PLE token window");
 }
+
+// The streaming restore: a session file read one K/V layer at a time into a live session.  The model is the same
+// 4-layer, whole-model carve as full_session (3 GDN + 1 QSA + the draft ring), with a longer token prefix so the
+// K/V payload outgrows the metadata and the reader's peak proves one layer is held, not the whole image.
+void stream_restore(int fmt, int mode) {
+    namespace fs = std::filesystem;
+    Fixture main(fmt, mode, 2048), draft(fmt, 0, 2048);
+    auto& g = main.g;
+    g.n_layers = 4; g.n_expert = 256;
+    g.ssm_state_size = 2; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
+    SessionState ss;
+    ss.max_cells = main.state.max_cells; ss.qsa_states = &main.state;
+    ss.layer_hi = g.n_layers; ss.gdn_alloc = g.n_gdn_layers(); ss.qsa_alloc = g.n_qsa_layers();
+    std::string err;
+    ConversationStateSizes sizes;
+    check(conversation_state_sizes(g, sizes, err), "stream: whole-session geometry sizes");
+    main.alloc(ss.gdn_state, sizes.gdn); main.alloc(ss.ple_hist, sizes.ple);
+    main.alloc(main.state.idx_tail, sizes.tail); main.alloc(main.state.idx_dead, sizes.dead);
+    main.alloc(main.state.idx_block_pos, sizes.block_pos);
+    const size_t captured = 4096;
+    std::vector<int32_t> ids(captured);
+    for (size_t i = 0; i < ids.size(); ++i) ids[i] = (int32_t) i + 1;
+    std::vector<ConversationImageKey> images;
+    auto fill = [&](uint8_t salt) {
+        main.fill(salt); draft.fill(salt);
+        for (const auto& [p, n] : std::vector<std::pair<void*, size_t>>{
+                 {ss.gdn_state, sizes.gdn}, {ss.ple_hist, sizes.ple}, {main.state.idx_tail, sizes.tail},
+                 {main.state.idx_dead, sizes.dead}, {main.state.idx_block_pos, sizes.block_pos}})
+            cuda_check(cudaMemset(p, salt, n));
+        // A real indexer maintains its spare pooled row as a copy of idx_dead.
+        cuda_check(cudaMemcpy(main.state.idx_pooled + (ids.size() / 4) * g.idx_key_dim,
+                              main.state.idx_dead, sizes.dead, cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    };
+    fill(13);
+    std::vector<ConversationCheckpoint> checkpoints;
+    for (size_t at : {size_t(5), size_t(2048)}) {
+        ConversationCheckpoint c;
+        c.ids.assign(ids.begin(), ids.begin() + at);
+        check(conversation_checkpoint_save(c, ss, g, err), "stream: save an interior checkpoint");
+        checkpoints.push_back(std::move(c));
+    }
+    const ConversationView view{ids, images, checkpoints, true};
+    SavedConversation a;
+    check(conversation_snapshot_save(a, view, ss, g, draft.state, err), "stream: capture the reference image");
+    check(a.kv.size() == (size_t) g.n_qsa_layers() + 1 && a.live.ids.size() == captured,
+          "stream: the QSA layers and the draft are in the image");
+
+    const SessionFileIdentity id{0x51a7c0de11223344ull, 0x99887766aabbccddull};
+    const fs::path dir = fs::temp_directory_path() / ("strata-snapshot-stream-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(dir);
+    const fs::path path = dir / "stream.bin";
+    SavedConversation meta;
+    std::vector<SessionKvSource> sources;
+    check(conversation_snapshot_sources(meta, sources, view, ss, g, draft.state, err),
+          "stream: disk-save sources");
+    size_t written = 0, read = 0;
+    check(session_file_write(path.string(), meta, sources, id, written, err), "stream: session file write");
+    SavedConversation file_image;
+    check(session_file_read(path.string(), id, file_image, read, err) && read == written,
+          "stream: the same file reads whole");
+    SessionReadLimits limits;
+    check(conversation_session_read_limits(limits, ss, g, draft.state, captured, checkpoints.size(), err),
+          "stream: this session's read limits");
+
+    // Full restore: all layers and the live running checkpoint, against the whole-image restore of the same file.
+    fill(177);
+    SessionFileStream reader;
+    SessionStatus st;
+    check(reader.open(path.string(), id, limits, err, &st) && st.error == SessionError::none,
+          "stream: open for a full restore");
+    check(reader.layers() == a.kv.size(), "stream: the reader counts the image's layers");
+    check(reader.meta().live.ids == ids && reader.meta().checkpoints.size() == checkpoints.size(),
+          "stream: the metadata carries the tokens and checkpoints, no K/V");
+    for (size_t i = 0; i < checkpoints.size(); ++i)
+        check(reader.meta().checkpoints[i].ids == checkpoints[i].ids, "stream: checkpoint token prefixes");
+    check(conversation_snapshot_restore_stream(reader, ss, g, draft.state, 0, err) ==
+              ConversationRestore::restored, "stream: full restore");
+    SavedConversation got;
+    check(conversation_snapshot_save(got, view, ss, g, draft.state, err), "stream: capture the full restore");
+    check(got.kv.size() == a.kv.size(), "stream: the restored layer count");
+    for (size_t i = 0; i < a.kv.size(); ++i)
+        check(equal(got.kv[i], a.kv[i]), "stream: every restored K/V part equals the image");
+    check(got.live.gdn == a.live.gdn && got.live.ple == a.live.ple && got.live.tails == a.live.tails &&
+          got.live.dead == a.live.dead && got.live.block_pos == a.live.block_pos,
+          "stream: the live running checkpoint equals the image");
+    check(ss.ple_prev[0] == ids[captured - 2] && ss.ple_prev[1] == ids[captured - 1],
+          "stream: the full restore rebuilds the PLE token window");
+    fill(177);
+    check(conversation_snapshot_restore(file_image, ss, g, draft.state, err) == ConversationRestore::restored,
+          "stream: whole-image restore of the same file");
+    SavedConversation plain;
+    check(conversation_snapshot_save(plain, view, ss, g, draft.state, err), "stream: capture the whole-image restore");
+    for (size_t i = 0; i < a.kv.size(); ++i)
+        check(equal(plain.kv[i], got.kv[i]), "stream: parity with the whole-image restore's K/V");
+    check(plain.live.gdn == got.live.gdn && plain.live.ple == got.live.ple && plain.live.tails == got.live.tails &&
+          plain.live.dead == got.live.dead && plain.live.block_pos == got.live.block_pos,
+          "stream: parity with the whole-image restore's running state");
+    // Bounded staging: the metadata plus the largest layer, never the whole image.
+    size_t total_kv = 0, largest_kv = 0;
+    for (const auto& k : a.kv) { total_kv += k.bytes(); largest_kv = std::max(largest_kv, k.bytes()); }
+    check(reader.peak_bytes() >= largest_kv, "stream: the peak covers the largest layer");
+    check(reader.peak_bytes() < total_kv, "stream: the peak is one layer, not the whole K/V image");
+
+    // A borrowed prefix: the image's first `upto` tokens, the session's live checkpoint state untouched.
+    for (int64_t upto : {int64_t(5), int64_t(2048)}) {
+        fill(201);
+        ss.ple_prev[0] = -7; ss.ple_prev[1] = -9;   // a marker the image's live state would overwrite
+        ConversationCheckpoint before, after;
+        before.ids = a.live.ids;
+        check(conversation_checkpoint_save(before, ss, g, err), "stream: capture the borrowed-session state");
+        SessionFileStream prefix;
+        check(prefix.open(path.string(), id, limits, err, &st), "stream: open for a prefix restore");
+        check(conversation_snapshot_restore_stream(prefix, ss, g, draft.state, upto, err) ==
+                  ConversationRestore::restored, "stream: prefix restore");
+        after.ids = a.live.ids;
+        check(conversation_checkpoint_save(after, ss, g, err), "stream: capture the state after the borrow");
+        check(after.gdn == before.gdn && after.ple == before.ple && after.tails == before.tails &&
+              after.dead == before.dead && after.block_pos == before.block_pos,
+              "stream: a prefix borrow leaves the live checkpoint state alone");
+        check(ss.ple_prev[0] == -7 && ss.ple_prev[1] == -9,
+              "stream: a prefix borrow leaves the PLE token window alone");
+        ConversationKv got_main, got_draft;
+        check(conversation_kv_save(got_main, main.state, g, upto, true, err) &&
+              conversation_kv_save(got_draft, draft.state, g, upto, false, err),
+              "stream: capture the borrowed prefix");
+        fill(201);
+        check(conversation_snapshot_restore_prefix(file_image, upto, ss, g, draft.state, err) ==
+                  ConversationRestore::restored, "stream: image prefix restore baseline");
+        ConversationKv want_main, want_draft;
+        check(conversation_kv_save(want_main, main.state, g, upto, true, err) &&
+              conversation_kv_save(want_draft, draft.state, g, upto, false, err),
+              "stream: capture the image's prefix");
+        check(equal(got_main, want_main) && equal(got_draft, want_draft),
+              "stream: the streamed prefix equals the image's prefix");
+        check(prefix.peak_bytes() < total_kv, "stream: a prefix restore also holds one layer");
+    }
+
+    // Fail closed: a corrupt trailer (payload hash) opens - the metadata is valid - and the restore refuses it.
+    // The reader holds the open file with FILE_SHARE_READ on Windows, so the corruption is made in a copy before
+    // open; open() then still accepts the metadata and the failure happens at finish().
+    const fs::path bad = dir / "bad-trailer.bin";
+    {
+        std::ifstream in(path, std::ios::binary);
+        std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        check(bytes.size() > 16, "stream: the file has a trailer");
+        bytes[bytes.size() - 16] ^= 0x20;
+        std::ofstream out(bad, std::ios::binary | std::ios::trunc);
+        out.write(bytes.data(), (std::streamsize) bytes.size());
+    }
+    {
+        SessionFileStream broken;
+        check(broken.open(bad.string(), id, limits, err, &st),
+              "stream: a corrupt trailer still opens (metadata is valid)");
+        err.clear();
+        check(conversation_snapshot_restore_stream(broken, ss, g, draft.state, 0, err) !=
+                  ConversationRestore::restored && !err.empty(),
+              "stream: a corrupt payload hash fails closed after the layers");
+
+        // Identity: another model or configuration is refused before any payload read.
+        for (const SessionFileIdentity wrong : {SessionFileIdentity{id.model ^ 1, id.config},
+                                                SessionFileIdentity{id.model, id.config ^ 1}}) {
+            SessionFileStream other;
+            SessionStatus ws;
+            check(!other.open(path.string(), wrong, limits, err, &ws) && ws.error == SessionError::invalid &&
+                      !err.empty(),
+                  "stream: another model or configuration is refused at open");
+        }
+    }
+    reader = SessionFileStream{};   // close the file before the test removes it (Windows holds it exclusively)
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    check(!ec && !fs::exists(dir), "stream: the test removes its temporary files");
+}
+
+// A session with no drafter (`--mtp` absent): the disk-save sources must hold the session's own layers and no draft
+// layer, and the stream restore with a null draft must read that file back into the same state.  The engine's
+// park_to_disk passes `use_mtp ? &mtp.kv_state() : nullptr`, so an extra or missing layer here is every no-`--mtp`
+// spill failing or restoring into the wrong state.
+void null_draft_sources(int fmt, int mode) {
+    namespace fs = std::filesystem;
+    Fixture main(fmt, mode, 2048);
+    auto& g = main.g;
+    g.n_layers = 4; g.n_expert = 256;
+    g.ssm_state_size = 2; g.ssm_v_heads = 2; g.ssm_conv_channels = 8;
+    SessionState ss;
+    ss.max_cells = main.state.max_cells; ss.qsa_states = &main.state;
+    ss.layer_hi = g.n_layers; ss.gdn_alloc = g.n_gdn_layers(); ss.qsa_alloc = g.n_qsa_layers();
+    std::string err;
+    ConversationStateSizes sizes;
+    check(conversation_state_sizes(g, sizes, err), "no-draft: whole-session geometry sizes");
+    main.alloc(ss.gdn_state, sizes.gdn); main.alloc(ss.ple_hist, sizes.ple);
+    main.alloc(main.state.idx_tail, sizes.tail); main.alloc(main.state.idx_dead, sizes.dead);
+    main.alloc(main.state.idx_block_pos, sizes.block_pos);
+    const size_t captured = 4096;
+    std::vector<int32_t> ids(captured);
+    for (size_t i = 0; i < ids.size(); ++i) ids[i] = (int32_t) i + 1;
+    std::vector<ConversationImageKey> images;
+    // The engine's read limits for a no-`--mtp` engine (park_to_disk's restore passes `use_mtp ? &mtp.kv_state() :
+    // nullptr`): a null draft is the session's own QSA layers and no draft layer's part bounds; a drafter adds
+    // exactly one.  An off-by-one here refuses every no-`--mtp` file, or bounds a draft layer that is not there.
+    {
+        SessionReadLimits none, with;
+        std::string lerr;
+        check(conversation_session_read_limits(none, ss, g, nullptr, (uint64_t) ss.max_cells, 1, lerr),
+              "no-draft: read limits without a draft layer");
+        check(none.max_kv_layers == (uint64_t) ss.qsa_alloc && none.max_kv_bytes.size() == (size_t) ss.qsa_alloc,
+              "no-draft: a null draft leaves the K/V layer count at the session's own layers");
+        lerr.clear();
+        check(conversation_session_read_limits(with, ss, g, &main.state, (uint64_t) ss.max_cells, 1, lerr),
+              "no-draft: read limits with a draft layer");
+        check(with.max_kv_layers == (uint64_t) ss.qsa_alloc + 1 &&
+                  with.max_kv_bytes.size() == (size_t) ss.qsa_alloc + 1,
+              "no-draft: a draft layer adds exactly one K/V layer limit");
+    }
+    auto fill = [&](uint8_t salt) {
+        main.fill(salt);
+        for (const auto& [p, n] : std::vector<std::pair<void*, size_t>>{
+                 {ss.gdn_state, sizes.gdn}, {ss.ple_hist, sizes.ple}, {main.state.idx_tail, sizes.tail},
+                 {main.state.idx_dead, sizes.dead}, {main.state.idx_block_pos, sizes.block_pos}})
+            cuda_check(cudaMemset(p, salt, n));
+        // A real indexer maintains its spare pooled row as a copy of idx_dead.
+        cuda_check(cudaMemcpy(main.state.idx_pooled + (ids.size() / 4) * g.idx_key_dim,
+                              main.state.idx_dead, sizes.dead, cudaMemcpyDeviceToDevice));
+        cuda_check(cudaDeviceSynchronize());
+    };
+    fill(13);
+    std::vector<ConversationCheckpoint> checkpoints;
+    for (size_t at : {size_t(5), size_t(2048)}) {
+        ConversationCheckpoint c;
+        c.ids.assign(ids.begin(), ids.begin() + at);
+        check(conversation_checkpoint_save(c, ss, g, err), "no-draft: save an interior checkpoint");
+        checkpoints.push_back(std::move(c));
+    }
+    const ConversationView view{ids, images, checkpoints, true};
+    const size_t layers = (size_t) g.n_qsa_layers();
+    SavedConversation want;
+    check(conversation_snapshot_save(want, view, ss, g, nullptr, err), "no-draft: capture without a draft layer");
+    check(want.kv.size() == layers, "no-draft: the captured image holds the session's own layers only");
+
+    SavedConversation meta;
+    std::vector<SessionKvSource> sources;
+    check(conversation_snapshot_sources(meta, sources, view, ss, g, nullptr, err),
+          "no-draft: sources without a draft layer");
+    check(meta.kv.empty() && sources.size() == layers, "no-draft: one source per owned QSA layer, no draft source");
+
+    const SessionFileIdentity id{0x6e756c6c64726166ull, 0x7400000000000001ull};
+    const fs::path dir = fs::temp_directory_path() / ("strata-snapshot-nodraft-" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(dir);
+    const fs::path path = dir / "no-draft.bin";
+    size_t written = 0;
+    check(session_file_write(path.string(), meta, sources, id, written, err), "no-draft: session file write");
+    check(written > 0, "no-draft: the file is not empty");
+
+    SessionReadLimits limits;   // this file has no draft layer; the engine's read limits still need a draft state
+    SessionStatus st;
+    SessionFileStream reader;
+    check(reader.open(path.string(), id, limits, err, &st) && st.error == SessionError::none,
+          "no-draft: open the file");
+    check(reader.layers() == layers, "no-draft: the file has no draft layer");
+    fill(177);
+    check(conversation_snapshot_restore_stream(reader, ss, g, nullptr, 0, err) == ConversationRestore::restored,
+          "no-draft: streamed full restore with a null draft");
+    SavedConversation got;
+    check(conversation_snapshot_save(got, view, ss, g, nullptr, err), "no-draft: capture the restore");
+    check(got.kv.size() == layers, "no-draft: the restore touched the session's own layers only");
+    for (size_t i = 0; i < layers; ++i)
+        check(equal(got.kv[i], want.kv[i]), "no-draft: the restored K/V equals the null-draft capture");
+    check(got.live.gdn == want.live.gdn && got.live.ple == want.live.ple && got.live.tails == want.live.tails &&
+          got.live.dead == want.live.dead && got.live.block_pos == want.live.block_pos,
+          "no-draft: the restored live checkpoint equals the null-draft capture");
+
+    reader = SessionFileStream{};   // close the file before the test removes it (Windows holds it exclusively)
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    check(!ec && !fs::exists(dir), "no-draft: the test removes its temporary files");
+}
 }
 
 int main() {
@@ -405,5 +684,8 @@ int main() {
     for (int fmt : {kKvF16,kKvInt8,kKvQ4}) for (int mode : {0,1}) for (int experts : {256,512})
         full_session(fmt,mode,experts);
     for (int experts : {256,512}) full_session(3,0,experts);
+    stream_restore(kKvInt8, 0);
+    null_draft_sources(kKvInt8, 0);
+    null_draft_sources(kKvF16, 1);
     std::printf("conversation_snapshot_test: %d checks passed\n",checks);
 }

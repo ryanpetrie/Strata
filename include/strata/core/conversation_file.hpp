@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -226,8 +227,10 @@ struct SessionReadLimits {
     // per K/V layer (the QSA layers, then the draft): the most bytes of each part (k, v, k_scale, v_scale, pooled).
     // A layer past the end of the list is bounded by the payload only.
     std::vector<std::array<uint64_t, 5>> max_kv_bytes;
-    // the RAM PREFLIGHT: asked once the header and identity match and before any payload allocation, with what the
-    // parse holds at its peak (session_read_peak_bytes); false refuses the file.  Not a reservation.
+    // the RAM PREFLIGHT: asked once the header and identity match; false refuses the file.  session_file_read asks
+    // before any payload allocation, with what its whole parse holds at peak (session_read_peak_bytes).
+    // SessionFileStream asks after reading the metadata, with that metadata + one layer + the file block.  Not a
+    // reservation.
     std::function<bool(uint64_t need_bytes, std::string& why)> admit;
     SessionProgress progress;
 };
@@ -242,6 +245,48 @@ uint64_t session_read_peak_bytes(uint64_t file_bytes);
 bool session_file_read(const std::string& path, const SessionFileIdentity& id, SavedConversation& image,
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
+
+// Reads a session file v1 one K/V layer at a time, for a restore whose whole host image would not fit in RAM.
+// open() validates the header, the identity, the size and the limits, reads everything before the K/V (the
+// metadata: geometry, live state, every checkpoint, the layer count) and then asks limits.admit for that metadata
+// plus one layer and the file block; next() reads exactly one layer into the caller's ConversationKv, releasing the
+// previous one first; finish() reads the trailer and checks the payload hash over every payload byte.  Until
+// finish() returns true the file is not valid.  Nothing is copied to the device: the caller passes each layer on
+// (that restore API is a later step).  Host staging is the metadata, the largest layer read and the fixed 16 MiB
+// file block - never the whole file.
+class SessionFileStream {
+public:
+    SessionFileStream();
+    ~SessionFileStream();
+    SessionFileStream(SessionFileStream&&) noexcept;
+    SessionFileStream& operator=(SessionFileStream&&) noexcept;
+    SessionFileStream(const SessionFileStream&) = delete;
+    SessionFileStream& operator=(const SessionFileStream&) = delete;
+
+    // On failure nothing stays open and meta()/layers() are empty; `status` says what kind of failure.
+    bool open(const std::string& path, const SessionFileIdentity& id, const SessionReadLimits& limits,
+              std::string& error, SessionStatus* status = nullptr);
+
+    const SavedConversation& meta() const;   // kv is empty; the checkpoints are complete (state arrays included)
+    size_t layers() const;                   // the file's K/V layer count
+    uint64_t bytes() const;                  // the file size
+
+    // Reads one layer: the 7 geometry fields and the 5 sized parts (k, v, k_scale, v_scale, pooled), applying
+    // limits.max_kv_bytes[layer_index] to each part.  `layer` is cleared first, so only one layer is live at a time.
+    bool next(ConversationKv& layer, std::string& error);
+
+    // After the last layer: the trailer, the payload hash over every payload byte and the end marker.  Refused
+    // while layers remain or when payload bytes are left.
+    bool finish(std::string& error);
+
+    // High-water host staging since open(): the metadata and the largest layer read, by the buffers' own accounting.
+    // open()'s admission estimate is this plus the fixed 16 MiB file block.  The caller's own buffers are not counted.
+    uint64_t peak_bytes() const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 // The folder the free-space preflight asks about for `path`, by the rules of Windows or of POSIX (exposed so both can
 // be tested anywhere).  Windows: backslashes and a trailing backslash, as GetDiskFreeSpaceExW requires for a UNC

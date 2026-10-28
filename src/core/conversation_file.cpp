@@ -762,7 +762,8 @@ bool get_checkpoint(In& in, ConversationCheckpoint& c) {
            in.vec(c.block_pos, m[4]) && in.u64(c.used);
 }
 
-bool get_payload(In& in, SavedConversation& s) {
+// Everything before the K/V layers: geometry, layer range, cvec, the live state, every checkpoint, the layer count.
+bool get_meta(In& in, SavedConversation& s, size_t& layers) {
     for (auto& g : s.geometry) if (!in.i64(g)) return false;
     // checked before any state array is read: a file of another geometry allocates nothing
     if (in.limits.geometry && *in.limits.geometry != s.geometry)
@@ -785,16 +786,28 @@ bool get_payload(In& in, SavedConversation& s) {
     s.checkpoints.resize((size_t) n);
     for (auto& c : s.checkpoints) if (!get_checkpoint(in, c)) return false;
     if (!in.count(n, 96, in.limits.max_kv_layers)) return false;
-    s.kv.resize((size_t) n);
-    for (auto& k : s.kv) {
-        in.kv_layer = (size_t) (&k - s.kv.data());
-        int64_t format = 0;
-        if (!in.i64(format) || !in.i64(k.cells) || !in.i64(k.heads) || !in.i64(k.head_dim) ||
-            !in.i64(k.page_size) || !in.i64(k.pooled_rows) || !in.i64(k.idx_dim)) return false;
-        if (format < INT32_MIN || format > INT32_MAX) return in.fail("invalid K/V format");
-        k.format = (int) format;
-        if (!in.buffer(k.k, 0) || !in.buffer(k.v, 1) || !in.buffer(k.k_scale, 2) || !in.buffer(k.v_scale, 3) ||
-            !in.buffer(k.pooled, 4)) return false;
+    layers = (size_t) n;
+    return true;
+}
+
+// One K/V layer: its 7 geometry fields and the 5 sized parts, in file order.
+bool get_kv_layer(In& in, ConversationKv& k) {
+    int64_t format = 0;
+    if (!in.i64(format) || !in.i64(k.cells) || !in.i64(k.heads) || !in.i64(k.head_dim) ||
+        !in.i64(k.page_size) || !in.i64(k.pooled_rows) || !in.i64(k.idx_dim)) return false;
+    if (format < INT32_MIN || format > INT32_MAX) return in.fail("invalid K/V format");
+    k.format = (int) format;
+    return in.buffer(k.k, 0) && in.buffer(k.v, 1) && in.buffer(k.k_scale, 2) && in.buffer(k.v_scale, 3) &&
+           in.buffer(k.pooled, 4);
+}
+
+bool get_payload(In& in, SavedConversation& s) {
+    size_t layers = 0;
+    if (!get_meta(in, s, layers)) return false;
+    s.kv.resize(layers);
+    for (size_t i = 0; i < layers; ++i) {
+        in.kv_layer = i;
+        if (!get_kv_layer(in, s.kv[i])) return false;
     }
     return true;
 }
@@ -1258,6 +1271,294 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
     }
     if (status) *status = st;
     return ok;
+}
+
+namespace {
+// The largest layer the limits allow, from the per-layer caps.  Without them a layer is bounded only by the payload,
+// so there is no layer bound to claim.
+uint64_t stream_largest_layer_bytes(const SessionReadLimits& l) {
+    if (l.max_kv_bytes.empty()) return UINT64_MAX;
+    uint64_t largest = 0;
+    for (const auto& cap : l.max_kv_bytes) {
+        uint64_t n = 7 * 8;
+        for (uint64_t b : cap) n = sat_add(n, sat_add(8, b));
+        largest = std::max(largest, n);
+    }
+    return largest;
+}
+
+// One layer's host bytes by the buffers' own accounting (segment and directory capacities).  The buffers were empty
+// before the read, so this is what that layer allocated.
+uint64_t layer_staging_bytes(const ConversationKv& k) {
+    uint64_t n = 0;
+    for (const ConversationBuffer* b : {&k.k, &k.v, &k.k_scale, &k.v_scale, &k.pooled})
+        n = sat_add(n, (uint64_t) b->allocation_peak(b->size()));
+    return n;
+}
+
+// Free the previous layer: resize(0) drops every 16 MiB segment, so one layer is live at a time.
+void clear_kv(ConversationKv& k) {
+    k.k.resize(0);
+    k.v.resize(0);
+    k.k_scale.resize(0);
+    k.v_scale.resize(0);
+    k.pooled.resize(0);
+    k.format = 0;
+    k.cells = 0;
+    k.heads = 0;
+    k.head_dim = 0;
+    k.page_size = 0;
+    k.pooled_rows = 0;
+    k.idx_dim = 0;
+}
+} // namespace
+
+// The open file and the parse's cursor.  The format's internals stay out of the header: nothing here is named there.
+struct SessionFileStream::Impl {
+    RawFile raw;
+    std::optional<FileSource> source;
+    SessionReadLimits limits;
+    SavedConversation meta;
+    SessionHasher hash;      // over every payload byte read so far
+    uint64_t left = 0;       // payload bytes not read yet
+    uint64_t size = 0;
+    size_t layers = 0, next_layer = 0;
+    uint64_t peak = 0;
+    bool finished = false, broken = false;   // broken: a failure left the rest of the file unreadable
+};
+
+SessionFileStream::SessionFileStream() = default;
+SessionFileStream::~SessionFileStream() = default;
+SessionFileStream::SessionFileStream(SessionFileStream&&) noexcept = default;
+SessionFileStream& SessionFileStream::operator=(SessionFileStream&&) noexcept = default;
+
+bool SessionFileStream::open(const std::string& path, const SessionFileIdentity& id, const SessionReadLimits& limits,
+                             std::string& error, SessionStatus* status) {
+    SessionStatus st;
+    st.error = SessionError::invalid;   // every refusal below, unless the step says otherwise
+    error.clear();
+    impl_.reset();   // a refusal leaves nothing usable behind
+    bool ok = false;
+    std::unique_ptr<Impl> s;
+    try {
+        s = std::make_unique<Impl>();
+        s->limits = limits;
+        // one check after another, as the whole-file read makes them: nothing is allocated for a file that fails one
+        auto run = [&]() -> bool {
+            uint64_t size = 0;
+            if (!s->raw.open_session(path, size)) {
+                st.error = s->raw.refused() ? SessionError::invalid : s->raw.kind();
+                error = "session file: " + path + ": " + s->raw.error();
+                return false;
+            }
+            if (size < kHeader + kTrailer) {
+                error = "session file: size " + std::to_string(size) + " is below the minimum";
+                return false;
+            }
+            const uint64_t max_size = session_read_max_file_bytes(s->limits);
+            if (size > max_size || size > (uint64_t) std::numeric_limits<size_t>::max()) {
+                error = "session file: size " + std::to_string(size) + " exceeds this engine's limit" +
+                        (max_size == UINT64_MAX ? std::string() : " of " + std::to_string(max_size));
+                return false;
+            }
+            s->source.emplace(s->raw);
+            if (!s->source->ok()) {
+                st.error = SessionError::memory;
+                error = "session file: " + s->source->error();
+                return false;
+            }
+            // installed before the first block (the header's) is read, as the whole-file read does
+            if (s->limits.progress) s->source->progress.emplace(s->limits.progress);
+            s->source->expected = size;
+            uint8_t h[kHeader];
+            uint32_t version = 0, hsize = 0;
+            uint64_t model = 0, config = 0, payload = 0, r0 = 0, r1 = 0, hh = 0;
+            if (!s->source->read(h, kHeader)) {
+                st.error = s->source->kind();
+                error = "session file: header read error: " + s->source->error();
+                return false;
+            }
+            std::memcpy(&version, h + 8, 4); std::memcpy(&hsize, h + 12, 4);
+            std::memcpy(&model, h + 16, 8); std::memcpy(&config, h + 24, 8); std::memcpy(&payload, h + 32, 8);
+            std::memcpy(&r0, h + 40, 8); std::memcpy(&r1, h + 48, 8); std::memcpy(&hh, h + 56, 8);
+            if (std::memcmp(h, kMagic, 8) != 0) {
+                error = "session file: not a Strata session file (magic)";
+                return false;
+            }
+            if (hh != session_hash64(h, 56, 0)) {
+                error = "session file: header checksum mismatch";
+                return false;
+            }
+            if (version != kVersion) {
+                error = "session file: unsupported version " + std::to_string(version);
+                return false;
+            }
+            if (hsize != kHeader || r0 || r1) {
+                error = "session file: invalid header fields";
+                return false;
+            }
+            if (model != id.model) {
+                error = "session file: saved with another model (model fingerprint differs)";
+                return false;
+            }
+            if (config != id.config) {
+                error = "session file: saved with another engine configuration (config fingerprint differs)";
+                return false;
+            }
+            if (payload > size || size - kHeader - kTrailer != payload) {
+                error = "session file: size " + std::to_string(size) + " does not match the header (" +
+                        std::to_string(kHeader + payload + kTrailer) + ")";
+                return false;
+            }
+            // Everything before the first K/V layer, with every count already bounded by the limits and the payload.
+            SavedConversation parsed;
+            In in{&*s->source, SessionHasher(0), payload, error, s->limits};
+            size_t layers = 0;
+            if (!get_meta(in, parsed, layers)) {
+                st.error = in.kind;
+                return false;
+            }
+            s->hash = in.hash;
+            s->left = in.left;
+            s->size = size;
+            s->layers = layers;
+            s->meta = std::move(parsed);
+            s->peak = (uint64_t) s->meta.bytes();   // metadata so far; each layer adds its own staging
+            // Admission on the metadata the file ACTUALLY holds, not on a bound built from max_checkpoints: the
+            // pre-parse bound charged every checkpoint the caller would ever accept (6 in the engine), so a file with
+            // one 123 MiB checkpoint was estimated at 7 x 123 MiB and refused against a 512 MiB budget.
+            // What this bounds before the ask: the parse above is itself bounded by the caller's limits
+            // (max_tokens, max_checkpoints, max_state_bytes, max_kv_layers) and by the file size, and it runs only
+            // after the header's identity check.  A corrupt but identity-matching file can therefore allocate up to
+            // those limits before this refuses it - bounded by the caller's own maxima, never by the whole file.  That
+            // is not covered by the staging budget, so a refusal here is not a promise that nothing was allocated.
+            if (s->limits.admit) {
+                const uint64_t need = sat_add(sat_add((uint64_t) s->meta.bytes(),
+                                                      stream_largest_layer_bytes(s->limits)), kBlock);
+                std::string why;
+                if (!s->limits.admit(need, why)) {
+                    st.error = SessionError::memory;
+                    error = "session file: " + why;
+                    return false;
+                }
+            }
+            st.error = SessionError::none;
+            return true;
+        };
+        ok = run();
+        if (ok) impl_ = std::move(s);
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while reading " + path;
+        st.error = SessionError::memory;
+        ok = false;
+        impl_.reset();
+    }
+    if (status) *status = st;
+    return ok;
+}
+
+const SavedConversation& SessionFileStream::meta() const {
+    static const SavedConversation empty;
+    return impl_ ? impl_->meta : empty;
+}
+
+size_t SessionFileStream::layers() const { return impl_ ? impl_->layers : 0; }
+
+uint64_t SessionFileStream::bytes() const { return impl_ ? impl_->size : 0; }
+
+uint64_t SessionFileStream::peak_bytes() const { return impl_ ? impl_->peak : 0; }
+
+bool SessionFileStream::next(ConversationKv& layer, std::string& error) {
+    error.clear();
+    clear_kv(layer);   // the caller's previous layer goes before the next one is read
+    if (!impl_) {
+        error = "session file: no file is open";
+        return false;
+    }
+    if (impl_->broken) {
+        error = "session file: the file cannot be read on after an earlier failure";
+        return false;
+    }
+    if (impl_->finished) {
+        error = "session file: the file is already complete";
+        return false;
+    }
+    if (impl_->next_layer >= impl_->layers) {
+        error = "session file: no more K/V layers (" + std::to_string(impl_->layers) + " in the file)";
+        return false;
+    }
+    bool ok = false;
+    try {
+        In in{&*impl_->source, impl_->hash, impl_->left, error, impl_->limits};
+        in.kv_layer = impl_->next_layer;
+        ok = get_kv_layer(in, layer);
+        impl_->hash = in.hash;
+        impl_->left = in.left;
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while reading a K/V layer";
+        ok = false;
+    }
+    if (!ok) {
+        impl_->broken = true;   // a short layer leaves the parse without a position it could trust
+        clear_kv(layer);        // never hand back a half layer
+        return false;
+    }
+    ++impl_->next_layer;
+    impl_->peak = std::max(impl_->peak, sat_add((uint64_t) impl_->meta.bytes(), layer_staging_bytes(layer)));
+    return true;
+}
+
+bool SessionFileStream::finish(std::string& error) {
+    error.clear();
+    if (!impl_) {
+        error = "session file: no file is open";
+        return false;
+    }
+    if (impl_->finished) return true;
+    if (impl_->broken) {
+        error = "session file: the file cannot be read on after an earlier failure";
+        return false;
+    }
+    if (impl_->next_layer < impl_->layers) {
+        error = "session file: " + std::to_string(impl_->layers - impl_->next_layer) +
+                " K/V layers were not read";
+        return false;
+    }
+    // The payload's length came from the header and open() checked it against the file, so bytes left here are extra
+    // payload bytes the file declared but this parse did not expect.
+    if (impl_->left) {
+        error = "session file: payload has " + std::to_string(impl_->left) + " unparsed bytes";
+        impl_->broken = true;
+        return false;
+    }
+    try {
+        uint8_t t[kTrailer];
+        if (!impl_->source->read(t, kTrailer)) {
+            const std::string why = impl_->source->error();
+            error = "session file: " + (why.empty() ? std::string("the file ends before its trailer")
+                                                    : "trailer read error: " + why);
+            impl_->broken = true;
+            return false;
+        }
+        uint64_t ph = 0;
+        std::memcpy(&ph, t, 8);
+        if (ph != impl_->hash.digest()) {
+            error = "session file: payload checksum mismatch";
+            impl_->broken = true;
+            return false;
+        }
+        if (std::memcmp(t + 8, kEnd, 8) != 0) {
+            error = "session file: bad end marker";
+            impl_->broken = true;
+            return false;
+        }
+    } catch (const std::bad_alloc&) {
+        error = "session file: out of memory while finishing the read";
+        impl_->broken = true;
+        return false;
+    }
+    impl_->finished = true;
+    return true;
 }
 
 } // namespace strata::core

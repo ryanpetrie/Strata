@@ -1,0 +1,67 @@
+{
+  "arm": "B",
+  "url": "http://127.0.0.1:8099",
+  "log": "build-cuda/parity-disk.log",
+  "steps": [
+    {
+      "step": "P1",
+      "reply": {
+        "seconds": 170.3,
+        "usage": {
+          "prompt_tokens": 194382,
+          "completion_tokens": 8,
+          "total_tokens": 194390,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "text": "m10m11m1"
+      },
+      "hash": {
+        "L": 194389,
+        "kv": "e6a4962191ebb2e5",
+        "line": "strata serve: STATE_HASH L=194389 gdn=79252c50f68b1569 ple=29bc15f5506d61e2 tail=457aee5284743531 pooled=130846b4f7f11a1c kv=e6a4962191ebb2e5 mtp=b8651503921af702 stale=8367f0f4d06e7983 dead=1c8984c934f7dd56 pooled_full=4a0d745fbaf0e09d ple_prev=16,76"
+      }
+    },
+    {
+      "step": "SUB",
+      "reply": {
+        "seconds": 6.55,
+        "usage": {
+          "prompt_tokens": 1414,
+          "completion_tokens": 3,
+          "total_tokens": 1417,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        },
+        "text": "Acknowledged"
+      },
+      "hash": {
+        "L": 1418,
+        "kv": "80002afebe8eeac6",
+        "line": "strata serve: STATE_HASH L=1418 gdn=683cfe7130406bb1 ple=16344110f444d28d tail=09d42bb12678bd73 pooled=22981842ce45fc51 kv=80002afebe8eeac6 mtp=d3f392ed865ab26e stale=6cb587b3399b9b17 dead=6f936324318116fb pooled_full=994e11f03fffd6cd ple_prev=248046,198"
+      }
+    },
+    {
+      "step": "P2",
+      "reply": {
+        "seconds": 14.41,
+        "usage": {
+          "prompt_tokens": 194476,
+          "completion_tokens": 2,
+          "total_tokens": 194478,
+          "prompt_tokens_details": {
+            "cached_tokens": 194375
+          }
+        },
+        "text": "ok"
+      },
+      "hash": {
+        "L": 194481,
+        "kv": "37402fc68c49a6e4",
+        "line": "strata serve: STATE_HASH L=194481 gdn=8a0881c272ed8e81 ple=a4ff96404df2c540 tail=8b944379bc67da9e pooled=0e4567e1c3b3131f kv=37402fc68c49a6e4 mtp=070321bfc025b7da stale=8367f0f4d06e7983 dead=1c8984c934f7dd56 pooled_full=52d209b6196a349a ple_prev=248045,846"
+      }
+    }
+  ]
+}
