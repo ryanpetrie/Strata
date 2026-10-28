@@ -115,6 +115,10 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+// Streamed K/V sources over an already-captured image's host buffers: the L1 -> L2 demotion path, where the K/V is
+// in RAM (a parked conversation) rather than in a live session.  The image must outlive the sources.
+bool conversation_kv_image_sources(const SavedConversation& image, std::vector<SessionKvSource>& sources,
+                                   std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 enum class ConversationRestore { restored, invalid, transfer_failed };
@@ -161,6 +165,13 @@ ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& read
                                                          int64_t upto, std::string& error);
 ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& session,
                                                          const ModelGeometry& g, const QsaState& draft,
+                                                         int64_t upto, std::string& error);
+
+// The same restore for any reader that yields one K/V layer at a time: a session file, or the disk tier's page pool.
+// The contract is the stream's: the reader is open, its metadata has been validated against this session here, and
+// finish() is called before `restored` is returned.
+ConversationRestore conversation_snapshot_restore_layers(ConversationKvLayers& reader, SessionState& session,
+                                                         const ModelGeometry& g, const QsaState* draft,
                                                          int64_t upto, std::string& error);
 
 } // namespace strata::core

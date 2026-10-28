@@ -238,6 +238,21 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
 
+// A saved conversation whose K/V is read one layer at a time: a session file (SessionFileStream) or the shared page
+// pool of the disk cache (ConversationPageReader).  The restore path is the same for both (conversation_snapshot.hpp,
+// conversation_snapshot_restore_layers): meta() is complete when the reader has opened, next() yields exactly one
+// layer, and nothing is valid until finish() returns true.
+class ConversationKvLayers {
+public:
+    virtual ~ConversationKvLayers() = default;
+    virtual const SavedConversation& meta() const = 0;
+    virtual size_t layers() const = 0;
+    virtual bool next(ConversationKv& layer, std::string& error) = 0;
+    virtual bool finish(std::string& error) = 0;
+    // The file's (or the paged entry's) bytes: for a report, not for a budget.
+    virtual uint64_t bytes() const = 0;
+};
+
 // Reads a session file v1 one K/V layer at a time, for a restore whose whole host image would not fit in RAM.
 // open() validates the header, the identity, the size and the limits, reads everything before the K/V (the
 // metadata: geometry, live state, every checkpoint, the layer count) and then asks limits.admit for that metadata
@@ -246,7 +261,7 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
 // finish() returns true the file is not valid.  Nothing is copied to the device: the caller passes each layer on
 // (that restore API is a later step).  Host staging is the metadata, the largest layer read and the fixed 16 MiB
 // file block - never the whole file.
-class SessionFileStream {
+class SessionFileStream : public ConversationKvLayers {
 public:
     SessionFileStream();
     ~SessionFileStream();
@@ -259,17 +274,17 @@ public:
     bool open(const std::string& path, const SessionFileIdentity& id, const SessionReadLimits& limits,
               std::string& error, SessionStatus* status = nullptr);
 
-    const SavedConversation& meta() const;   // kv is empty; the checkpoints are complete (state arrays included)
-    size_t layers() const;                   // the file's K/V layer count
-    uint64_t bytes() const;                  // the file size
+    const SavedConversation& meta() const override;   // kv is empty; the checkpoints are complete (state arrays included)
+    size_t layers() const override;                   // the file's K/V layer count
+    uint64_t bytes() const override;                  // the file size
 
     // Reads one layer: the 7 geometry fields and the 5 sized parts (k, v, k_scale, v_scale, pooled), applying
     // limits.max_kv_bytes[layer_index] to each part.  `layer` is cleared first, so only one layer is live at a time.
-    bool next(ConversationKv& layer, std::string& error);
+    bool next(ConversationKv& layer, std::string& error) override;
 
     // After the last layer: the trailer, the payload hash over every payload byte and the end marker.  Refused
     // while layers remain or when payload bytes are left.
-    bool finish(std::string& error);
+    bool finish(std::string& error) override;
 
     // High-water host staging since open(): the metadata and the largest layer read, by the buffers' own accounting.
     // open()'s admission estimate is this plus the fixed 16 MiB file block.  The caller's own buffers are not counted.

@@ -145,7 +145,7 @@ if(STRATA_BUILD_CONVERSATION_TESTS)
   target_include_directories(conversation_stream_test PRIVATE include)
   add_test(NAME conversation_stream_test COMMAND conversation_stream_test)
   add_executable(conversation_disk_test src/core/conversation_disk_test.cpp src/core/conversation_disk.cpp
-                 src/core/conversation_file.cpp)
+                 src/core/conversation_file.cpp src/core/conversation_pages.cpp)
   target_include_directories(conversation_disk_test PRIVATE include)
   add_test(NAME conversation_disk_test COMMAND conversation_disk_test)
   add_executable(session_save_reclaim_test src/core/session_save_reclaim_test.cpp src/core/conversation_file.cpp)
@@ -592,7 +592,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
-    src/core/conversation_disk.cpp)
+    src/core/conversation_disk.cpp src/core/conversation_pages.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)

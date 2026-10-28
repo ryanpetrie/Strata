@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 
 namespace strata::core {
 namespace {
@@ -333,6 +334,37 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
 }
 
+bool conversation_kv_image_sources(const SavedConversation& image, std::vector<SessionKvSource>& sources,
+                                   std::string& error) {
+    sources.clear();
+    sources.reserve(image.kv.size());
+    for (const auto& kv : image.kv) {
+        SessionKvSource s;
+        s.format = kv.format;
+        s.cells = kv.cells;
+        s.heads = kv.heads;
+        s.head_dim = kv.head_dim;
+        s.page_size = kv.page_size;
+        s.pooled_rows = kv.pooled_rows;
+        s.idx_dim = kv.idx_dim;
+        s.sizes = {kv.k.size(), kv.v.size(), kv.k_scale.size(), kv.v_scale.size(), kv.pooled.size()};
+        const std::array<const ConversationBuffer*, 5> parts = {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+        auto why = std::make_shared<std::string>();
+        const auto sizes = s.sizes;
+        s.read = [parts, sizes, why](size_t part, size_t offset, void* dst, size_t n) {
+            if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) {
+                *why = "K/V image read out of range";
+                return false;
+            }
+            return parts[part]->read(dst, offset, n);
+        };
+        s.error = [why] { return *why; };
+        sources.push_back(std::move(s));
+    }
+    if (sources.empty()) { error = "the image has no K/V layers"; return false; }
+    return true;
+}
+
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                    const QsaState* draft, std::string& error) {
@@ -480,6 +512,12 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
 ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
                                                           const ModelGeometry& g, const QsaState* draft,
                                                           int64_t upto, std::string& error) {
+    return conversation_snapshot_restore_layers(reader, ss, g, draft, upto, error);
+}
+
+ConversationRestore conversation_snapshot_restore_layers(ConversationKvLayers& reader, SessionState& ss,
+                                                         const ModelGeometry& g, const QsaState* draft,
+                                                         int64_t upto, std::string& error) {
     const SavedConversation& meta = reader.meta();
     const auto invalid = [&error](const char* why) {
         fail(error, why);
