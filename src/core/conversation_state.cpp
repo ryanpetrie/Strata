@@ -493,7 +493,7 @@ ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& read
     if (meta.geometry != geometry_key(g)) return invalid("incompatible runtime geometry");
     if (meta.layer_lo != ss.layer_lo || meta.layer_hi != ss.layer_hi)
         return invalid("snapshot from another session layer range");
-    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec};
+    const ConversationView view{meta.live.ids, meta.live.imgs, meta.checkpoints, meta.cvec, meta.lora};
     if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(meta.live, ss, g, error))
         return ConversationRestore::invalid;
     const size_t layers = owned_qsa(ss);

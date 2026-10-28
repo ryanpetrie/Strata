@@ -38,8 +38,12 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kMagic[8] = {'S', 'T', 'R', 'D', 'I', 'S', 'K', '\x01'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;   // 2: the adapter state joined the cvec and pin flags (v1 manifests are refused)
 constexpr uint32_t kFlagCvec = 1, kFlagPinned = 2;
+// The adapter state the cells were computed with, as two bits of the flags word (ConversationLora): neither bit is
+// "no adapter resident", and an entry with both is refused.  Flags a reader does not know are refused too, so a
+// v2 manifest never silently reads as v1 with the state dropped.
+constexpr uint32_t kFlagLoraOff = 4, kFlagLoraOn = 8;
 // A manifest is a few hundred KB for a 200K-token conversation; the file cap bounds what a corrupt or foreign file
 // can make the start-up scan allocate.  The count caps bound one list before its array is sized.
 constexpr uint64_t kMaxManifestBytes = 16u << 20;
@@ -290,7 +294,8 @@ bool encode_manifest(const ManifestData& m, std::string& out, std::string& error
     out.clear();
     out.append(kMagic, sizeof kMagic);
     put_u32(out, kVersion);
-    put_u32(out, (m.meta.cvec ? kFlagCvec : 0u) | (m.pinned ? kFlagPinned : 0u));
+    put_u32(out, (m.meta.cvec ? kFlagCvec : 0u) | (m.pinned ? kFlagPinned : 0u) |
+                    (m.meta.lora == kLoraOff ? kFlagLoraOff : m.meta.lora == kLoraOn ? kFlagLoraOn : 0u));
     put_u64(out, m.model);
     put_u64(out, m.config);
     put_u64(out, m.created);
@@ -381,7 +386,14 @@ bool decode_manifest(const std::string& bytes, ManifestData& m, std::string& err
         return false;
     }
     uint32_t flags = 0, name_length = 0, checkpoints = 0;
-    if (!r.u32(flags) || (flags & ~(kFlagCvec | kFlagPinned)) != 0) { error = "unknown manifest flags"; return false; }
+    if (!r.u32(flags) || (flags & ~(kFlagCvec | kFlagPinned | kFlagLoraOff | kFlagLoraOn)) != 0) {
+        error = "unknown manifest flags";
+        return false;
+    }
+    if ((flags & kFlagLoraOff) && (flags & kFlagLoraOn)) {
+        error = "the manifest names two adapter states";
+        return false;
+    }
     if (!r.u64(m.model) || !r.u64(m.config) || !r.u64(m.created) || !r.u64(m.last_used) || !r.u64(m.payload_bytes)) {
         error = "the manifest is truncated";
         return false;
@@ -413,6 +425,7 @@ bool decode_manifest(const std::string& bytes, ManifestData& m, std::string& err
     if (!r.done()) { error = "trailing bytes after the manifest"; return false; }
     m.meta.cvec = (flags & kFlagCvec) != 0;
     m.pinned = (flags & kFlagPinned) != 0;
+    m.meta.lora = (flags & kFlagLoraOff) ? kLoraOff : (flags & kFlagLoraOn) ? kLoraOn : kLoraNone;
     return true;
 }
 
@@ -774,6 +787,7 @@ bool ConversationDiskStore::save(const ConversationDiskMeta& meta, uint64_t esti
         md.meta.ids = meta.ids;
         md.meta.images = meta.images;
         md.meta.cvec = meta.cvec;
+        md.meta.lora = meta.lora;
         md.meta.checkpoints.reserve(meta.checkpoints.size());
         for (const auto& c : meta.checkpoints) {
             ConversationCheckpoint slim;

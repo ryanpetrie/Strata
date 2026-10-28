@@ -9723,7 +9723,7 @@ int main(int argc, char** argv) {
             }
             try {
                 // --conversation-cache-disk-park-gain: a disk copy a few tokens behind is not worth a whole file
-                const auto best = disk.best(live, live_imgs, cvec_cached);
+                const auto best = disk.best(live, live_imgs, cvec_cached, lora_cached);
                 const int64_t gain = o.conversation_disk_park_gain >= 0 ? o.conversation_disk_park_gain
                                                                         : o.conversation_cache_park_gain;
                 if (best.live && best.tokens > 0 && (int64_t) live.size() < best.tokens + gain) {
@@ -9772,7 +9772,11 @@ int main(int argc, char** argv) {
                 dmeta.images = live_imgs;
                 dmeta.checkpoints = std::move(disk_checks);
                 dmeta.cvec = cvec_cached;
-                const strata::core::ConversationView dview{live, live_imgs, dmeta.checkpoints, cvec_cached};
+                dmeta.lora = lora_cached;
+                // the view's adapter state rides into the payload's own record (SavedConversation::lora): the
+                // manifest's copy lets matching refuse the wrong state, the file's copy is what a restore re-
+                // checks and hands back to the live session.
+                const strata::core::ConversationView dview{live, live_imgs, dmeta.checkpoints, cvec_cached, lora_cached};
                 strata::core::SavedConversation meta;
                 std::vector<strata::core::SessionKvSource> sources;
                 // a step that blocks in one call gets an explicit watchdog allowance, named so a stall report says so
@@ -9801,15 +9805,16 @@ int main(int argc, char** argv) {
                     return false;
                 }
                 // The exact file size from the metadata and the sources (64 header, 16 trailer, 18 geometry i64, the
-                // layer range and cvec, the live state, each checkpoint's counts/ids/images/state arrays/used, the
-                // layer count, then 7 header i64 and 5 sized parts per layer).  The store preflights this figure; a
-                // host-capture estimate counts allocations, not file bytes.
+                // layer range, cvec and the adapter state, the live state, each checkpoint's counts/ids/images/state
+                // arrays/used, the layer count, then 7 header i64 and 5 sized parts per layer - the session writer's
+                // arithmetic, conversation_file.cpp).  The store preflights this figure; a host-capture estimate
+                // counts allocations, not file bytes.
                 auto checkpoint_bytes = [](const strata::core::ConversationCheckpoint& c) {
                     uint64_t n = 8 + 4ull * c.ids.size() + 8 + 16ull * c.imgs.size() + 8;   // ids, images, used
                     for (const auto* v : {&c.gdn, &c.ple, &c.tails, &c.dead, &c.block_pos}) n += 8 + v->size();
                     return n;
                 };
-                uint64_t estimate = 64 + 16 + 18 * 8 + 3 * 8;
+                uint64_t estimate = 64 + 16 + 18 * 8 + 4 * 8;
                 estimate += checkpoint_bytes(meta.live) + 8;   // the live state, then the checkpoint count
                 for (const auto& c : meta.checkpoints) estimate += checkpoint_bytes(c);
                 estimate += 8;                                 // the layer count
@@ -13243,7 +13248,7 @@ int main(int argc, char** argv) {
             std::string disk_payload;
             uint64_t disk_serial = 0;
             if (disk.enabled() && stages.empty() && slot_source < 0 && o.batch == 0) {
-                dparked = disk.best(ids, req_imgs, want_cvec);
+                dparked = disk.best(ids, req_imgs, want_cvec, want_lora_key);
                 const int64_t floor = std::max(resume, slot_tokens);
                 if (dparked.tokens > floor && dparked.tokens > parked.tokens) {   // strictly longer; ties prefer L1
                     const auto* e = disk.find(dparked.serial);
@@ -13358,6 +13363,19 @@ int main(int argc, char** argv) {
                     disk.remove(disk_serial, rerr);
                     use_disk = false;
                     err.clear();
+                }
+                if (use_disk && (disk_stream.meta().cvec != want_cvec || disk_stream.meta().lora != want_lora_key)) {
+                    // The manifest's record let matching promise this file carries the request's control vector and
+                    // adapter state, and the file's own record says otherwise: an overwritten or swapped-in payload.
+                    // The file is the state's authority, so the entry goes - the same posture as a refused open:
+                    // nothing has touched the session, the prompt is read from token 0.  Resuming these cells under
+                    // `want` is exactly the silent reuse the adapter key exists to refuse.
+                    std::fprintf(stderr, "strata serve: conversation cache: disk restore failed (the file's control "
+                                         "vector or adapter state is not the manifest's); reading the prompt\n");
+                    disk.note_restore_failure();
+                    std::string rerr;
+                    disk.remove(disk_serial, rerr);
+                    use_disk = false;
                 }
             }
             if (use_disk) {
@@ -13493,6 +13511,8 @@ int main(int argc, char** argv) {
                         from_live = dparked.live;
                     }
                     cvec_cached = dmeta.cvec;
+                    lora_cached = dmeta.lora;   // the cells were computed by this model state; the check above
+                                                 // promised it is the one this request asked for
                     resume = dparked.tokens;
                     lent_slot = -1;
                     const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();

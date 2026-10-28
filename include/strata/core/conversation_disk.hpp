@@ -10,11 +10,13 @@
 // refused, and nothing is followed.
 //
 // Manifest layout (little endian; the file is refused on a big-endian build):
-//   magic "STRDISK\x01" (8), u32 version (1), u32 flags (1 = cvec, 2 = pinned), u64 identity model,
+//   magic "STRDISK\x01" (8), u32 version (2), u32 flags (1 = cvec, 2 = pinned, 4 = adapter state OFF,
+//   8 = adapter state ON; neither = no adapter; both = refused), u64 identity model,
 //   u64 identity config, u64 created, u64 last_used, u64 payload bytes, u32 name length, payload file name,
 //   u32 live ids, i32 ids[], u32 live images, (i64 start, u64 hash) images[], u32 checkpoints,
 //   per checkpoint: u32 ids, i32 ids[], u32 images, (i64 start, u64 hash) images[], u64 used, u32 flags (1 = pinned);
 //   u64 checksum of every byte before it.
+// Version 1 had no adapter state in the flags; it is refused, not migrated - the disk tier has shipped nothing.
 // The payload keeps its own checksum (its format's), so the manifest binds its name and size instead of hashing
 // gigabytes of K/V a second time.  Every length is checked against the bytes left before it is allocated.
 #pragma once
@@ -48,6 +50,10 @@ struct ConversationDiskMeta {
     std::vector<ConversationImageKey> images;
     std::vector<ConversationCheckpoint> checkpoints;   // ids, imgs, used and pinned only
     bool cvec = true;
+    // the adapter state the cells were computed with, the third part of every cache key
+    // (`ConversationLora`, conversation_cache.hpp): matching on it is what stops the disk tier handing
+    // base-model cells to an adapted request when the RAM cache correctly refused them.
+    ConversationLora lora = kLoraNone;
 };
 
 // conversation_prefix() (conversation_cache.hpp) reads a checkpoint; a manifest keeps the live state's ids and images
@@ -108,16 +114,17 @@ public:
     size_t slots() const;      // the configured cap (0 = unlimited)
     Stats stats() const;
 
-    // The longest match in the index, by the rule of ConversationCache::best(): cvec must agree, only a strict
-    // longer prefix replaces the match, and the index runs newest to oldest so a tie keeps the most recently used
-    // entry.  `index` is the entry's position at match time.
+    // The longest match in the index, by the rule of ConversationCache::best(): the control vector's setting and the
+    // adapter state must agree, only a strict longer prefix replaces the match, and the index runs newest to oldest
+    // so a tie keeps the most recently used entry.  `index` is the entry's position at match time.
     template<class Token>
-    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec,
+               ConversationLora lora) const {
         std::lock_guard<std::mutex> lock(mu_);
         Match best;
         for (size_t i = entries_.size(); i-- > 0;) {
             const Entry& e = entries_[i];
-            if (e.meta.cvec != cvec) continue;
+            if (e.meta.cvec != cvec || e.meta.lora != lora) continue;
             const int64_t live = conversation_disk_live_prefix(e.meta.ids, e.meta.images, prompt, images);
             if (live > best.tokens) best = {i, live, true, e.serial};
             for (const auto& c : e.meta.checkpoints) {

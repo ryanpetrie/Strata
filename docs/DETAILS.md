@@ -671,7 +671,12 @@ flags absent the RAM cache alone behaves exactly as before.
   checkpoints, so a new conversation cannot borrow an interior prefix from a disk entry; it can resume at the deepest
   one. The RAM cache still borrows from its own entries as before.
 - A file is bound to the model files and to the settings a session file records (engine version, backend, KV format,
-  context, rope, control vector and the arithmetic switches). After one of them changes, the old files are not read.
+  context, rope, control vector, a loaded adapter and the arithmetic switches). After one of them changes, the old
+  files are not read.
+- Each entry records the adapter state its cells were computed with - no adapter, an adapter that the request left
+  off, or an adapter that ran - and only a request of the same state may read it, the RAM cache's rule. Without it the
+  disk tier would hand base-model cells to an adapted request at the exact moment the RAM cache refuses one. A file
+  whose own record disagrees with its manifest is dropped as corrupt.
 - A `park=0` request (the decision endpoint, `"strata_checkpoint": false`) is never written.
 - Single GPU only. `--layer-split`, `--batch` and `--peer-device` turn the disk tier off with a log line, and the RAM
   cache serves alone.
@@ -719,7 +724,7 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   that continues the restored conversation reuses its state; a short tail may be read again. Only the deepest checkpoint is saved.
 - A file is bound to the model files (sampled by size and first and last MiB, not by path) and to the settings that change what
   the cells mean (engine version, CUDA or HIP, `--kv`, `STRATA_KV_ROT`, `--kv-resident`, `--max-context`, `--mtp-window`, the
-  rope configuration, a loaded control vector and the arithmetic switches). Sampling, seeds, draft tuning and the expert
+  rope configuration, a loaded control vector, a loaded adapter and the arithmetic switches). Sampling, seeds, draft tuning and the expert
   tier are not in it. Do not change model files while their sessions are kept. The hash detects accidental corruption and does
   not authenticate a file: restore only files this engine wrote.
 - Errors: `501` without `--slot-save-path` or with parallel requests; `400` for a slot other than 0, an unknown action, a refused

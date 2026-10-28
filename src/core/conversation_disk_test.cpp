@@ -35,10 +35,12 @@ ConversationDiskOptions options(const fs::path& dir, uint64_t budget, size_t slo
     return o;
 }
 
-ConversationDiskMeta meta(std::initializer_list<int32_t> ids, bool cvec = true) {
+ConversationDiskMeta meta(std::initializer_list<int32_t> ids, bool cvec = true,
+                          ConversationLora lora = kLoraNone) {
     ConversationDiskMeta m;
     m.ids = ids;
     m.cvec = cvec;
+    m.lora = lora;
     return m;
 }
 
@@ -158,10 +160,10 @@ int main() {
 
             const std::vector<int32_t> prompt = {1, 2, 3, 4, 5, 6};
             const std::vector<ConversationImageKey> images = {{2, 0xabc}};
-            auto match = s.best(prompt, images, false);
+            auto match = s.best(prompt, images, false, kLoraNone);
             check(match.tokens == 5 && match.live, "the live state matches");
-            check(s.best(prompt, images, true).tokens == 0, "cvec is part of the key");
-            auto without_image = s.best(prompt, {}, false);
+            check(s.best(prompt, images, true, kLoraNone).tokens == 0, "cvec is part of the key");
+            auto without_image = s.best(prompt, {}, false, kLoraNone);
             check(without_image.tokens == 4 && !without_image.live, "the live image keys are part of its key");
             const auto* e = s.find(match.serial);
             check(e != nullptr, "find returns the saved entry");
@@ -182,22 +184,37 @@ int main() {
             const uint64_t last_used = e->last_used;
             const std::string payload = e->payload;
 
+            // The adapted twin: the same conversation's prefix under another adapter state.  Before the state
+            // joined the key this save silently replaced the one above for every later request.
+            ConversationDiskMeta twin = m;
+            twin.lora = kLoraOn;
+            check(s.save(twin, 400, writer(400), bytes, err), "the same prefix saves under another adapter state");
+            check(s.best(prompt, images, false, kLoraNone).serial == match.serial,
+                  "the older entry still answers its own state, though the twin is the newer tie");
+            check(s.best(prompt, images, false, kLoraOn).tokens == 5, "the twin answers its state");
+            check(s.best(prompt, images, false, kLoraOff).tokens == 0, "off is neither none nor on");
+
             ConversationDiskStore reopened(o, identity(), err);
             check(reopened.enabled() && err.empty(), "the startup scan opens the same directory");
-            check(reopened.entries() == 1 && reopened.bytes() == 400, "the startup scan rebuilds the index");
-            auto again = reopened.best(prompt, images, false);
+            check(reopened.entries() == 2 && reopened.bytes() == 800, "the startup scan rebuilds the index");
+            auto again = reopened.best(prompt, images, false, kLoraNone);
             check(again.tokens == 5 && again.live && again.serial != 0, "the rebuilt index matches");
             const auto* r = reopened.find(again.serial);
             check(r != nullptr && r->meta.ids == m.ids && r->meta.images == m.images && !r->meta.cvec && r->pinned,
                   "the manifest round-trips ids, images, cvec and the pin");
+            check(r != nullptr && r->meta.lora == kLoraNone, "the manifest round-trips the adapter state");
             check(r != nullptr && r->meta.checkpoints.size() == 2 &&
                       r->meta.checkpoints[1].ids == m.checkpoints[1].ids && r->meta.checkpoints[1].used == 9 &&
                       r->meta.checkpoints[1].pinned,
                   "the manifest round-trips the checkpoints");
             check(r != nullptr && r->last_used == last_used, "the manifest round-trips last_used");
             check(r != nullptr && r->payload == payload && r->bytes == 400, "the rebuilt entry names the same payload");
+            const auto* on = reopened.find(reopened.best(prompt, images, false, kLoraOn).serial);
+            check(on != nullptr && on->meta.lora == kLoraOn && on->payload != payload,
+                  "the twin survives the restart under its own state and payload");
+            check(reopened.best(prompt, images, false, kLoraOff).tokens == 0, "off still matches neither after restart");
         }
-        check(manifest_files(root).size() == 1, "one manifest was written");
+        check(manifest_files(root).size() == 2, "both manifests were written");
         fs::remove_all(root);
     }
 
@@ -212,7 +229,7 @@ int main() {
             check(s.save(meta({1, 2, 3}), 100, writer(100), bytes, err), "save before the version test");
         }
         check(manifest_files(root).size() == 1, "one manifest before the version test");
-        poke(manifest_files(root)[0], 8, 2);   // u32 version, after the 8-byte magic
+        poke(manifest_files(root)[0], 8, 3);   // u32 version, after the 8-byte magic: 3 is no build's kVersion
         {
             ConversationDiskStore s(o, identity(), err);
             check(s.enabled() && s.entries() == 0, "an unknown manifest version is refused");
@@ -220,6 +237,38 @@ int main() {
         }
         check(manifest_files(root).empty() && files_with_suffix(root / "conversations", ".payload").empty(),
               "the refused manifest and its payload are deleted");
+        fs::remove_all(root);
+    }
+
+    // ---- the flags word: a state that names two adapters and a bit this build does not know are both refused ----
+    {
+        const fs::path root = unique_root();
+        ConversationDiskOptions o = options(root, 1u << 20);
+        std::string err;
+        uint64_t bytes = 0;
+        {
+            ConversationDiskStore s(o, identity(), err);
+            check(s.save(meta({1, 2, 3}, true, kLoraOn), 100, writer(100), bytes, err), "save before the flags test");
+        }
+        poke(manifest_files(root)[0], 12, 1 | 4 | 8);   // u32 flags, after the magic and version: cvec and both states
+        {
+            ConversationDiskStore s(o, identity(), err);
+            check(s.enabled() && s.entries() == 0, "a manifest naming two adapter states is refused");
+            check(s.stats().errors == 1, "the refused flags manifest is counted");
+        }
+        check(manifest_files(root).empty() && files_with_suffix(root / "conversations", ".payload").empty(),
+              "the flags-refused manifest and its payload are deleted");
+        {
+            ConversationDiskStore s(o, identity(), err);
+            check(s.save(meta({1, 2, 3}, true, kLoraOn), 100, writer(100), bytes, err), "save before the unknown bit");
+        }
+        poke(manifest_files(root)[0], 12, 1 | 16);   // cvec plus a flag this build does not know
+        {
+            ConversationDiskStore s(o, identity(), err);
+            check(s.enabled() && s.entries() == 0, "an unknown manifest flag is refused");
+            check(s.stats().errors == 1, "the unknown-flag manifest is counted");
+        }
+        check(manifest_files(root).empty(), "the unknown-flag manifest is deleted");
         fs::remove_all(root);
     }
     {
@@ -272,7 +321,7 @@ int main() {
         const std::string payload = [&] {
             ConversationDiskStore s(o, identity(1, 2), err);
             check(s.save(meta({1, 2, 3}), 100, writer(100), bytes, err), "save under the first identity");
-            auto m = s.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true);
+            auto m = s.best(std::vector<int32_t>{1, 2, 3, 4}, {}, true, kLoraNone);
             return s.find(m.serial)->payload;
         }();
         {
@@ -311,25 +360,34 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1u << 20), identity(), err);
         check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save A");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({1, 2, 3, 4}), 100, writer(100), bytes, err), "save B");
-        const uint64_t b = s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true).serial;
+        const uint64_t b = s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone).serial;
         check(a != 0 && b != 0 && a != b, "each entry has its own serial");
-        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true).tokens == 4, "the longest prefix wins");
-        check(s.best(std::vector<int32_t>{1, 2, 9}, {}, true).tokens == 2, "the shorter entry still matches");
-        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, false).tokens == 0, "cvec must agree");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone).tokens == 4, "the longest prefix wins");
+        check(s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).tokens == 2, "the shorter entry still matches");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, false, kLoraNone).tokens == 0, "cvec must agree");
 
         check(s.save(meta({1, 2, 3, 4}, false), 100, writer(100), bytes, err), "save C with the other cvec");
-        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, false).tokens == 4, "C answers the other cvec");
-        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true).serial == b, "a longer entry still wins over C");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, false, kLoraNone).tokens == 4, "C answers the other cvec");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone).serial == b, "a longer entry still wins over C");
+
+        check(s.save(meta({1, 2, 3, 4}, true, kLoraOff), 100, writer(100), bytes, err), "save D, the same prefix off the adapter");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone).serial == b,
+              "a newer entry under another adapter state does not steal B's tie");
+        const uint64_t d = s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraOff).serial;
+        const uint64_t b2 = s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone).serial;
+        check(d != b && d != 0, "D answers the off request");
+        check(b2 == b, "B still answers the none request");
+        check(s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraOn).tokens == 0, "an on request reads none of them");
 
         check(s.save(meta({30, 31}), 100, writer(100), bytes, err), "save E for the tie");
-        const uint64_t e_serial = s.best(std::vector<int32_t>{30, 31, 99}, {}, true).serial;
+        const uint64_t e_serial = s.best(std::vector<int32_t>{30, 31, 99}, {}, true, kLoraNone).serial;
         check(s.save(meta({30, 31}), 100, writer(100), bytes, err), "save F with the same prefix");
-        const uint64_t f_serial = s.best(std::vector<int32_t>{30, 31, 99}, {}, true).serial;
+        const uint64_t f_serial = s.best(std::vector<int32_t>{30, 31, 99}, {}, true, kLoraNone).serial;
         check(f_serial != e_serial, "a tie keeps the newest entry");
         check(s.touch(e_serial), "touch the older equal entry");
-        check(s.best(std::vector<int32_t>{30, 31, 99}, {}, true).serial == e_serial,
+        check(s.best(std::vector<int32_t>{30, 31, 99}, {}, true, kLoraNone).serial == e_serial,
               "a touched entry wins the next tie");
         check(!s.touch(123456), "touch of an unknown serial fails");
         check(s.find(e_serial) != nullptr && s.find(999999) == nullptr, "find looks up by serial");
@@ -346,9 +404,9 @@ int main() {
         m.images = {{3, 0x1234}};
         check(s.save(m, 100, writer(100), bytes, err), "save a conversation with an image key");
         const std::vector<int32_t> prompt = {1, 2, 3, 4, 9};
-        check(s.best(prompt, {{3, 0x1234}}, true).tokens == 4, "the same image key matches");
-        check(s.best(prompt, {{3, 0x9999}}, true).tokens == 0, "another image hash does not match");
-        check(s.best(prompt, {}, true).tokens == 0, "a prompt without the image does not match");
+        check(s.best(prompt, {{3, 0x1234}}, true, kLoraNone).tokens == 4, "the same image key matches");
+        check(s.best(prompt, {{3, 0x9999}}, true, kLoraNone).tokens == 0, "another image hash does not match");
+        check(s.best(prompt, {}, true, kLoraNone).tokens == 0, "a prompt without the image does not match");
         fs::remove_all(root);
     }
 
@@ -363,13 +421,13 @@ int main() {
         m.checkpoints.push_back(checkpoint({1, 2, 3, 4, 5, 6, 7, 8}, 9));
         check(s.save(m, 100, writer(100), bytes, err), "save a conversation with two checkpoints");
 
-        auto interior = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 99}, {}, true);
+        auto interior = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 99}, {}, true, kLoraNone);
         check(interior.tokens == 5 && !interior.live, "an interior checkpoint matches");
         check(s.borrows(interior), "an interior checkpoint is borrowed");
-        auto live = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99}, {}, true);
+        auto live = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 99}, {}, true, kLoraNone);
         check(live.tokens == 10 && live.live, "the live state matches");
         check(!s.borrows(live), "the live state is taken, not borrowed");
-        auto deepest = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7, 8, 99}, {}, true);
+        auto deepest = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 7, 8, 99}, {}, true, kLoraNone);
         check(deepest.tokens == 8 && !deepest.live, "the deepest checkpoint matches");
         check(!s.borrows(deepest), "the deepest checkpoint is taken, not borrowed");
         auto stale = interior;
@@ -381,7 +439,7 @@ int main() {
         ConversationDiskMeta pinned = meta({10, 11, 12, 13});
         pinned.checkpoints.push_back(checkpoint({10, 11, 12}, 1, true));
         check(s.save(pinned, 100, writer(100), bytes, err), "save a pinned checkpoint");
-        auto blocked = s.best(std::vector<int32_t>{10, 11, 12, 99}, {}, true);
+        auto blocked = s.best(std::vector<int32_t>{10, 11, 12, 99}, {}, true, kLoraNone);
         check(blocked.tokens == 3 && !blocked.live, "the pinned checkpoint matches");
         check(!s.borrows(blocked), "a pinned checkpoint at the match blocks the borrow");
         fs::remove_all(root);
@@ -394,9 +452,9 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1000), identity(), err);
         check(s.save(meta({1, 2}), 400, writer(400), bytes, err), "save A for LRU");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({3, 4}), 400, writer(400), bytes, err), "save B for LRU");
-        const uint64_t b = s.best(std::vector<int32_t>{3, 4, 9}, {}, true).serial;
+        const uint64_t b = s.best(std::vector<int32_t>{3, 4, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({5, 6}), 400, writer(400), bytes, err), "save C over the budget");
         check(s.find(a) == nullptr && s.find(b) != nullptr, "the least recently used entry is evicted");
         check(s.entries() == 2 && s.bytes() == 800 && s.stats().evictions == 1, "eviction keeps the byte count right");
@@ -408,9 +466,9 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1000), identity(), err);
         check(s.save(meta({1, 2}), 400, writer(400), bytes, err), "save A before the touch");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({3, 4}), 400, writer(400), bytes, err), "save B before the touch");
-        const uint64_t b = s.best(std::vector<int32_t>{3, 4, 9}, {}, true).serial;
+        const uint64_t b = s.best(std::vector<int32_t>{3, 4, 9}, {}, true, kLoraNone).serial;
         check(s.touch(a), "touch A before the eviction");
         check(s.save(meta({5, 6}), 400, writer(400), bytes, err), "save C after touching A");
         check(s.find(a) != nullptr && s.find(b) == nullptr, "the touched entry survives, the other is evicted");
@@ -424,7 +482,7 @@ int main() {
         ConversationDiskMeta pinned = meta({1, 2, 3});
         pinned.checkpoints.push_back(checkpoint({1, 2}, 1, true));
         check(s.save(pinned, 500, writer(500), bytes, err), "save a pinned entry");
-        const uint64_t p = s.best(std::vector<int32_t>{1, 2, 3, 9}, {}, true).serial;
+        const uint64_t p = s.best(std::vector<int32_t>{1, 2, 3, 9}, {}, true, kLoraNone).serial;
         std::string path;
         check(!s.save(meta({10, 11}), 400, writer(400, &path), bytes, err), "only pinned entries left: refuse");
         check(s.entries() == 1 && s.find(p) != nullptr, "the pinned entry is never evicted");
@@ -441,9 +499,9 @@ int main() {
         pinned.checkpoints.push_back(checkpoint({1, 2}, 1, true));
         check(s.save(pinned, 500, writer(500), bytes, err), "save the pinned entry beside a normal one");
         check(s.save(meta({4, 5, 6}), 300, writer(300), bytes, err), "save a normal entry 1");
-        const uint64_t n1 = s.best(std::vector<int32_t>{4, 5, 6, 9}, {}, true).serial;
+        const uint64_t n1 = s.best(std::vector<int32_t>{4, 5, 6, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({7, 8, 9}), 300, writer(300), bytes, err), "save a normal entry 2 over the budget");
-        check(s.find(n1) == nullptr && s.best(std::vector<int32_t>{1, 2, 3, 9}, {}, true).tokens == 3,
+        check(s.find(n1) == nullptr && s.best(std::vector<int32_t>{1, 2, 3, 9}, {}, true, kLoraNone).tokens == 3,
               "a normal entry is evicted before the pinned one");
         fs::remove_all(root);
     }
@@ -454,7 +512,7 @@ int main() {
         ConversationDiskStore s(options(root, 1u << 20, 2), identity(), err);
         check(s.slots() == 2, "the store reports its slot cap");
         check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save A for the slot cap");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         check(s.save(meta({3, 4}), 100, writer(100), bytes, err), "save B for the slot cap");
         check(s.save(meta({5, 6}), 100, writer(100), bytes, err), "save C over the slot cap");
         check(s.entries() == 2 && s.find(a) == nullptr, "the slot cap evicts the oldest entry");
@@ -468,7 +526,7 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1000), identity(), err);
         check(s.save(meta({1, 2}), 400, writer(400), bytes, err), "save before the estimate refusal");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         const std::string payload = s.find(a)->payload;
         std::string path;
         check(!s.save(meta({5, 6}), 1200, writer(1200, &path), bytes, err), "an estimate over the budget is refused");
@@ -490,7 +548,7 @@ int main() {
         o.min_free_bytes = UINT64_MAX;
         ConversationDiskStore s(o, identity(), err);
         check(s.entries() == 1, "the entry is loaded for the free-space refusal");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         std::string path;
         check(!s.save(meta({5, 6}), 100, writer(100, &path), bytes, err), "a huge free-space floor is refused");
         check(s.entries() == 1 && s.find(a) != nullptr && path.empty(), "the free-space refusal evicts nothing");
@@ -505,7 +563,7 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1u << 20), identity(), err);
         check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save before the writer failure");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         std::string path;
         check(!s.save(meta({3, 4}), 100, writer(100, &path, true), bytes, err), "a failing writer refuses the save");
         check(bytes == 0 && s.entries() == 1 && s.find(a) != nullptr, "a failed save adds no entry");
@@ -525,9 +583,9 @@ int main() {
         {
             ConversationDiskStore s(options(root, 1u << 20), identity(), err);
             check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save A for the startup scan");
-            a_payload = s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial)->payload;
+            a_payload = s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial)->payload;
             check(s.save(meta({3, 4}), 100, writer(100), bytes, err), "save B for the startup scan");
-            b_payload = s.find(s.best(std::vector<int32_t>{3, 4, 9}, {}, true).serial)->payload;
+            b_payload = s.find(s.best(std::vector<int32_t>{3, 4, 9}, {}, true, kLoraNone).serial)->payload;
         }
         make_tmp(root / "manifests", "stray.tmp");
         make_tmp(root / "conversations", "stray.tmp");
@@ -537,7 +595,7 @@ int main() {
         {
             ConversationDiskStore s(options(root, 1u << 20), identity(), err);
             check(s.entries() == 1 && s.bytes() == 100, "the entry with a missing payload is dropped");
-            check(s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial)->payload == a_payload,
+            check(s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial)->payload == a_payload,
                   "the other entry survives");
         }
         check(!fs::exists(root / "conversations" / "snap-0000000000000000.payload"),
@@ -556,7 +614,7 @@ int main() {
         {
             ConversationDiskStore s(options(root, 1u << 20), identity(), err);
             check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save A before the corruption");
-            const auto* e = s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial);
+            const auto* e = s.find(s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial);
             a_manifest = e->manifest;
             a_payload = e->payload;
             check(s.save(meta({3, 4}), 100, writer(100), bytes, err), "save B before the corruption");
@@ -566,7 +624,7 @@ int main() {
             ConversationDiskStore s(options(root, 1u << 20), identity(), err);
             check(s.entries() == 1, "a corrupt manifest is dropped and the other entry survives");
             check(s.stats().errors == 1, "the corrupt manifest is counted");
-            check(s.best(std::vector<int32_t>{1, 2, 9}, {}, true).tokens == 0, "the corrupt entry does not match");
+            check(s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).tokens == 0, "the corrupt entry does not match");
         }
         check(!fs::exists(a_manifest) && !fs::exists(a_payload), "the corrupt entry's files are deleted");
         check(manifest_files(root).size() == 1, "one manifest survives the corruption");
@@ -608,7 +666,7 @@ int main() {
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1u << 20), identity(), err);
         check(s.save(meta({1, 2}), 100, writer(100), bytes, err), "save for remove");
-        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true).serial;
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
         const std::string payload = s.find(a)->payload;
         check(s.remove(a, err), "remove an entry");
         check(s.entries() == 0 && s.bytes() == 0 && !fs::exists(payload), "remove deletes the payload");
