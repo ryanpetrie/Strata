@@ -51,7 +51,8 @@ def common_args(cfg, spec):
     args, i = [], 0
     while i < len(cfg['args']):
         arg = cfg['args'][i]
-        if arg == '--conversation-cache-disk-only':
+        if arg in ('--conversation-cache-disk-only', '--conversation-cache-disk-cow',
+                   '--conversation-cache-disk-whole-file', '--conversation-cache-disk-demote'):
             i += 1
         elif arg.startswith('--conversation-cache-'):
             require(i + 1 < len(cfg['args']), 'cache option lacks a value')

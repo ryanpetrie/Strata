@@ -22,7 +22,8 @@ for flag in ['--conversation-cache-spill-dir', '--conversation-cache-disk', '--c
     if flag in args:
         i = args.index(flag)
         del args[i:i+2]
-args = [x for x in args if x != '--conversation-cache-disk-only']
+args = [x for x in args if x not in ('--conversation-cache-disk-only', '--conversation-cache-disk-cow',
+                                      '--conversation-cache-disk-whole-file', '--conversation-cache-disk-demote')]
 cfg['args'] = args
 tp = Path(cfg['tokenizer'])
 vocab = json.loads((tp / 'vocab.json').read_text())

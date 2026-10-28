@@ -1,12 +1,69 @@
 # Disk conversation cache — implementation status
 
-Date: 2026-10-26
+Date: 2026-10-28
 Branch: `feat/disk-conversation-cache` (worktree `C:\tools\strata-disk`), based on `origin/main` `4b9e05a2`.
 Plan: [DISK_CONVERSATION_CACHE_PLAN.md](DISK_CONVERSATION_CACHE_PLAN.md).
 
-This is the resume point: what is implemented, what the reference-host run measured, and what remains. The
+This is the resume point: what is implemented, what the reference-host run measured, and what remains. The Phase 1
 measurement was made from commit `07f2b9fb` on the sm_89 build; the follow-up commits only change the staging default
-and record the evidence.
+and record the evidence. Phase 2 (the copy-on-write page pool) is implemented and unit-tested, but not measured on the
+reference host.
+
+## Phase 2: the page pool (copy-on-write, opt-in)
+
+With `--conversation-cache-disk-cow` the disk tier stores K/V in one shared, append-only pool of content-addressed
+64 KiB pages (`pool/pages.bin` + a rebuildable `pool/pages.idx`). Each conversation keeps a small manifest (tokens,
+checkpoints, identity) and a small metadata head in the session-file format with no K/V layers. The manifest lists the
+hash and length of each page, so:
+
+- a turn that advanced a little writes only the pages whose content changed; unchanged pages are reused by hash;
+- manifests never change when the pool is compacted, because a page is found by its hash, not by an offset;
+- a pool page is referenced by every conversation that names it, and pages with no reference are reclaimed by a
+  compaction (guards: at least 256 dead pages, at least 2 GiB dead, at least 25% of the pool);
+- a missing or corrupt page refuses the restore before the session is touched; every page's hash is checked as it is
+  read;
+- restore still happens one layer at a time, and now one page at a time: host staging is the head's metadata, one
+  layer and one page.
+
+Implementation:
+
+| File | What it holds |
+| --- | --- |
+| `include/strata/core/conversation_pages.hpp`, `src/core/conversation_pages.cpp` | The pool, the page writer, the layer-at-a-time page reader, the index and the compaction. |
+| `include/strata/core/conversation_disk.hpp`, `src/core/conversation_disk.cpp` | Manifest v2 (paged), `save_paged`, `open_paged`, page refcounts, startup scan, compaction stats, LRU and the free-space preflight. |
+| `include/strata/core/conversation_file.hpp` | `ConversationKvLayers`, the reader interface shared by a session file and the page pool. |
+| `include/strata/core/conversation_snapshot.hpp`, `src/core/conversation_state.cpp` | `conversation_snapshot_restore_layers` (the generic restore) and `conversation_kv_image_sources` (demotion from a parked L1 entry). |
+| `src/program/generate.cpp` | `--conversation-cache-disk-whole-file`, `--conversation-cache-disk-demote`, the compaction flags, the paged save and restore, the write/reuse log line, the demotion hook. |
+| `include/strata/core/conversation_cache.hpp` | `set_demote`: an optional callback before `evict_oldest` drops an entry. |
+| `serve/server.py`, `serve/web/app.js` | Write/reuse, pool and compaction fields in `/metrics` and the Monitor card. |
+
+Flags added: `--conversation-cache-disk-cow` (opt in to the page pool), `--conversation-cache-disk-whole-file`
+(explicit earlier format; the default), `--conversation-cache-disk-demote` (needs `-cow`, off by default),
+`--conversation-cache-disk-compact-min-mib` (default 2048), `--conversation-cache-disk-compact-min-pages`
+(default 256). The default path (the disk tier off) is unchanged: no pool, no pages, no new I/O. With the disk tier on
+but `-cow` absent, the Phase 1 one-file save/restore is used.
+
+### What was validated
+
+- `conversation_disk_test` (CPU): 195 checks, including a paged save, layer-at-a-time restore, an unchanged turn
+  writing zero page bytes, a one-byte change writing exactly one page, a restart, a missing-index rebuild, eviction of a
+  superseded entry, a compaction, a restart after compaction and a corrupt page refused. Passed.
+- `conversation_file_test`, `conversation_stream_test`, `conversation_cache_test` (CPU): passed.
+- `conversation_validation_test` (CUDA, host-only checks) and `conversation_snapshot_test` (CUDA, 4139 checks):
+  passed.
+- The engine (`build-cuda`, Windows CUDA 13.4, sm_89) builds with the new files and the changed restore path.
+
+### What was not run
+
+- No reference-host run of the page pool: write amplification per turn, save time, SSD bytes written and restore
+  time are **not measured**. The Phase 1 numbers below are for the one-file format.
+- The server tests (`serve/test_monitor.py`, `test_conversation_cache_disabled`) were not run here: the Python
+  environment has no `pytest`/`jinja2`. `serve/server.py` compiles.
+- HIP, SYCL and Metal were not built (no AMD/Mac hardware here).
+- Failure injection at the pool level (disk full mid-page, read-only pool, a page deleted between the scan and the
+  read) is covered by the preflight and hash checks, not by an injected run.
+- L1 demotion (`--conversation-cache-disk-demote`) is implemented and its sources are unit-tested only through the
+  shared page writer; no engine run exercised it.
 
 ## Commits
 
@@ -20,7 +77,10 @@ and record the evidence.
 | `d1d505bd` | Reader admission on the file's actual metadata (the old pre-parse bound over-charged checkpoints and refused a valid restore). |
 | `f2f60c34` | Phase D: `/metrics` and Monitor L1/L2 card, refusal reasons, disk eviction log, startup bytes/entries in INFO, tools and docs. |
 | `07f2b9fb` | Implementation status and the unrun-validation record that preceded the reference-host run. |
-| this commit | Measured evidence, test-tool fixes, and the staging default raised from 512 to 1024 MiB. |
+| `9eea39bc` | Measured evidence, test-tool fixes, and the staging default raised from 512 to 1024 MiB. |
+| `217c5288` | Phase 2: the content-addressed page pool, CoW saves, compaction, the page reader, demotion, flags and tests. |
+| `55de6d9c` | Phase 2 Monitor: write/reuse, pool and compaction fields. |
+| this commit | Phase 2 docs, status and tool updates. |
 
 ## Reference-host measurement
 
@@ -102,7 +162,8 @@ of the plan's 512 MiB bound fails; a private/committed reading passes. Both are 
   the draft K/V was correct; the explicit read-back log line exists only on the RAM path.
 - **One deepest checkpoint per file.** Interior checkpoints are not stored, so interior borrowing from a disk entry
   is not available yet.
-- **Full-file rewrite per save** (Phase 2 CoW is not implemented); no DirectStorage/GDS (Phase 3).
+- **Phase 2's page pool is implemented but unmeasured.** The one-file format is still available with
+  `--conversation-cache-disk-whole-file`; interior checkpoints are still not stored; DirectStorage/GDS is Phase 3.
 - **No-buffer I/O, failure injection (disk full/read-only), HIP/SYCL/Metal, and the default-off end-to-end comparison**
   remain. The unit suites cover the mechanisms.
 - The `build-cuda` directory must be configured for the card's architecture. On this 4090:

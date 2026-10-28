@@ -52,9 +52,12 @@ class Client:
 
 
 DISK_KEYS = ("disk_saves", "disk_restores", "disk_evictions", "disk_refusals", "disk_errors", "disk_bytes",
-             "disk_entries", "disk_last_save_ms", "disk_last_restore_ms", "disk_last_restore_mib_s", "last_tier")
+             "disk_entries", "disk_last_save_ms", "disk_last_restore_ms", "disk_last_restore_mib_s", "last_tier",
+             "disk_paged", "disk_pool_mib", "disk_last_write_mib", "disk_last_reuse_mib", "disk_last_write_share",
+             "disk_written_mib", "disk_reused_mib", "disk_compactions", "disk_compacted_mib", "disk_demotions")
 INFO_KEYS = ("model", "conversation_cache_mib", "conversation_cache_slots", "conversation_disk_mib",
-             "conversation_disk_dir", "conversation_disk_slots")
+             "conversation_disk_dir", "conversation_disk_slots", "conversation_disk_paged",
+             "conversation_disk_pool_bytes")
 
 
 def run(client, model, turns, main_words, sub_words, step_words=None):
@@ -105,9 +108,15 @@ def run(client, model, turns, main_words, sub_words, step_words=None):
             "cache_before": {key: before.get(key) for key in DISK_KEYS + ("refusals", "last_refusal")},
             "cache_after": {key: last.get(key) for key in DISK_KEYS + ("refusals", "last_refusal")},
             "spilled_this_run": saves, "restored_this_run": restores,
+            "pool": {"paged": last.get("disk_paged"), "mib": last.get("disk_pool_mib"),
+                     "written_mib": last.get("disk_written_mib"), "reused_mib": last.get("disk_reused_mib"),
+                     "last_write_share": last.get("disk_last_write_share"),
+                     "compactions": last.get("disk_compactions"),
+                     "compacted_mib": last.get("disk_compacted_mib")},
             "requests": rows,
             "note": "Numbers from this run only. The tool's author did not run it against a model; do not quote them "
-                    "as Strata's disk-cache speed or memory without your own measurement and hardware."}
+                    "as Strata's disk-cache speed, write amplification or memory without your own measurement and "
+                    "hardware."}
 
 
 def main():
@@ -140,7 +149,8 @@ def main():
             raise
         json.dump(result, output, indent=2)
         output.write("\n")
-    print(f"PASS: disk spill, disk restore and prompt reuse observed. Report: {args.output}")
+    print(f"PASS: disk spill, disk restore and prompt reuse observed. Last write: "
+          f"{result['pool']['last_write_share']}% new. Report: {args.output}")
 
 
 if __name__ == "__main__":
