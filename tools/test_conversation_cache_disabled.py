@@ -91,15 +91,19 @@ class DisabledCacheGateTest(unittest.TestCase):
         self.assertFalse(any(x.startswith('--conversation-cache-') for x in args))
 
     def test_the_disk_switch_does_not_swallow_the_next_option(self):
-        # --conversation-cache-disk-only takes no value: the next argument is an option, not its value
+        # --conversation-cache-disk-only, --...-whole-file and --...-demote take no value: the next argument is an
+        # option, not their value
         cfg = {'args': ['--pack', '/model', '--conversation-cache-disk-only', '--kv', 'int8',
                         '--conversation-cache-spill-dir', '/cache', '--conversation-cache-disk-mib', '32768',
-                        '--conversation-cache-disk-min-tokens', '4096']}
+                        '--conversation-cache-disk-min-tokens', '4096', '--conversation-cache-disk-cow',
+                        '--conversation-cache-disk-whole-file', '--conversation-cache-disk-demote',
+                        '--conversation-cache-disk-compact-min-pages', '64']}
         args = common_args(cfg, 4)
         self.assertEqual(args[:4], ['--pack', '/model', '--kv', 'int8'])
         self.assertFalse(any(x.startswith('--conversation-cache-') for x in args))
         self.assertNotIn('/cache', args)
         self.assertNotIn('4096', args)
+        self.assertNotIn('64', args)
 
     def test_dry_run_does_not_load_or_create_output(self):
         with tempfile.TemporaryDirectory() as tmp:

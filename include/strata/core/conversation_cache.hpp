@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <utility>
 #include <vector>
 
@@ -378,6 +379,9 @@ public:
         // the oldest entry that holds no pinned shared prefix and is not the guarded (borrowed) donor
         for (size_t i = 0; i < entries_.size(); ++i) {
             if (entries_[i].pinned() || (guarded_ != 0 && serials_[i] == guarded_)) continue;
+            // Phase 2's optional L1 -> L2 demotion: the entry keeps its place in the store while its RAM goes.  A
+            // failure is not the eviction's: the entry is dropped either way, exactly as before.
+            if (demote_) demote_(entries_[i]);
             bytes_ -= entries_[i].bytes();
             erase(i);
             ++evictions_;
@@ -385,6 +389,10 @@ public:
         }
         return false;
     }
+
+    /// Optional: called with an entry just before evict_oldest() drops it, so a caller with a disk tier can write it
+    /// there first.  The reference is valid only during the call; the callback must copy what it needs.
+    void set_demote(std::function<bool(const SavedConversation&)> demote) { demote_ = std::move(demote); }
 
     // #879: every parked conversation (pinned ones too) and the retained K/V go - after non-finite logits any of them
     // may carry the poison.  Returns how many were parked.
@@ -480,6 +488,7 @@ private:
     uint64_t next_serial_ = 1, guarded_ = 0;
     bool guard_blocked_ = false;
     ConversationKvReuse reuse_;
+    std::function<bool(const SavedConversation&)> demote_;
 };
 
 } // namespace strata::core

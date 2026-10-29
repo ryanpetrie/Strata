@@ -1,0 +1,123 @@
+ds_bench full run 2026-10-28 22:14 (all rounds verbatim)
+exe: build-cuda\ds_bench.exe  strata.exe build: 10/28/2026 22:11:54
+dstorage.dll: 1.3.2506.2501 / 1.3.2506.2501
+dstoragecore.dll: 1.3.2506.2501
+gpu: NVIDIA GeForce RTX 4090, 617.14
+gpu at run: 22720 MiB (a strata engine was serving throughout: VRAM was contended, PCIe was not)
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 512 pages, 32 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     14.8 ms (  2155 MiB/s)   fast      6.9 ms (  4616 MiB/s)
+round 2: portable     15.1 ms (  2116 MiB/s)   fast      6.8 ms (  4688 MiB/s)
+round 3: portable     15.8 ms (  2024 MiB/s)   fast      6.7 ms (  4746 MiB/s)
+best: portable 14.8 ms (2155 MiB/s)   fast 6.7 ms (4746 MiB/s)   ratio 2.20x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 1024 pages, 64 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     30.5 ms (  2101 MiB/s)   fast     12.9 ms (  4948 MiB/s)
+round 2: portable     29.9 ms (  2138 MiB/s)   fast     12.5 ms (  5120 MiB/s)
+round 3: portable     29.9 ms (  2144 MiB/s)   fast     12.7 ms (  5041 MiB/s)
+best: portable 29.9 ms (2144 MiB/s)   fast 12.5 ms (5120 MiB/s)   ratio 2.39x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 2048 pages, 128 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     63.0 ms (  2031 MiB/s)   fast     24.5 ms (  5221 MiB/s)
+round 2: portable     57.9 ms (  2209 MiB/s)   fast     24.3 ms (  5271 MiB/s)
+round 3: portable     59.1 ms (  2167 MiB/s)   fast     24.5 ms (  5230 MiB/s)
+best: portable 57.9 ms (2209 MiB/s)   fast 24.3 ms (5271 MiB/s)   ratio 2.39x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 4096 pages, 256 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    114.8 ms (  2230 MiB/s)   fast     48.1 ms (  5324 MiB/s)
+round 2: portable    116.1 ms (  2204 MiB/s)   fast     48.0 ms (  5335 MiB/s)
+round 3: portable    116.4 ms (  2200 MiB/s)   fast     48.7 ms (  5260 MiB/s)
+best: portable 114.8 ms (2230 MiB/s)   fast 48.0 ms (5335 MiB/s)   ratio 2.39x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 8192 pages, 512 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    247.0 ms (  2073 MiB/s)   fast     94.1 ms (  5443 MiB/s)
+round 2: portable    239.1 ms (  2141 MiB/s)   fast     94.9 ms (  5396 MiB/s)
+round 3: portable    238.4 ms (  2148 MiB/s)   fast     95.5 ms (  5361 MiB/s)
+best: portable 238.4 ms (2148 MiB/s)   fast 94.1 ms (5443 MiB/s)   ratio 2.53x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 16384 pages, 1024 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    571.2 ms (  1793 MiB/s)   fast    189.7 ms (  5398 MiB/s)
+round 2: portable    571.4 ms (  1792 MiB/s)   fast    189.9 ms (  5392 MiB/s)
+round 3: portable    566.7 ms (  1807 MiB/s)   fast    204.6 ms (  5004 MiB/s)
+best: portable 566.7 ms (1807 MiB/s)   fast 189.7 ms (5398 MiB/s)   ratio 2.99x
+ds_bench: 2 checks passed
+
+=== same binary, pool on C: (KINGSTON SNV2S1000G) 2026-10-28 22:23 ===
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 512 pages, 32 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     17.0 ms (  1883 MiB/s)   fast     19.1 ms (  1675 MiB/s)
+round 2: portable     17.2 ms (  1859 MiB/s)   fast     19.5 ms (  1644 MiB/s)
+round 3: portable     17.4 ms (  1843 MiB/s)   fast     19.5 ms (  1643 MiB/s)
+best: portable 17.0 ms (1883 MiB/s)   fast 19.1 ms (1675 MiB/s)   ratio 0.89x
+ds_bench: 2 checks passed
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 1024 pages, 64 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     35.2 ms (  1817 MiB/s)   fast     37.5 ms (  1708 MiB/s)
+round 2: portable     35.3 ms (  1811 MiB/s)   fast     37.4 ms (  1710 MiB/s)
+round 3: portable     34.5 ms (  1854 MiB/s)   fast     36.9 ms (  1732 MiB/s)
+best: portable 34.5 ms (1854 MiB/s)   fast 36.9 ms (1732 MiB/s)   ratio 0.93x
+ds_bench: 2 checks passed
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 2048 pages, 128 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable     74.3 ms (  1722 MiB/s)   fast     72.4 ms (  1767 MiB/s)
+round 2: portable     73.2 ms (  1749 MiB/s)   fast     72.7 ms (  1760 MiB/s)
+round 3: portable     75.2 ms (  1703 MiB/s)   fast     72.3 ms (  1770 MiB/s)
+best: portable 73.2 ms (1749 MiB/s)   fast 72.3 ms (1770 MiB/s)   ratio 1.01x
+ds_bench: 2 checks passed
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 4096 pages, 256 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    140.1 ms (  1827 MiB/s)   fast    143.8 ms (  1781 MiB/s)
+round 2: portable    128.6 ms (  1991 MiB/s)   fast    142.7 ms (  1794 MiB/s)
+round 3: portable    125.9 ms (  2034 MiB/s)   fast    143.3 ms (  1786 MiB/s)
+best: portable 125.9 ms (2034 MiB/s)   fast 142.7 ms (1794 MiB/s)   ratio 0.88x
+ds_bench: 2 checks passed
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 8192 pages, 512 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    277.8 ms (  1843 MiB/s)   fast    286.0 ms (  1790 MiB/s)
+round 2: portable    321.7 ms (  1592 MiB/s)   fast    327.4 ms (  1564 MiB/s)
+round 3: portable    265.3 ms (  1930 MiB/s)   fast    957.9 ms (   534 MiB/s)
+best: portable 265.3 ms (1930 MiB/s)   fast 286.0 ms (1790 MiB/s)   ratio 0.93x
+ds_bench: 2 checks passed
+
+ds_bench: pool C:\Users\ryanp\AppData\Local\Temp\strata_ds_bench_pool/pool/pages.bin, 16384 pages, 1024 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    598.8 ms (  1710 MiB/s)   fast    302.7 ms (  3383 MiB/s)
+round 2: portable    641.0 ms (  1597 MiB/s)   fast    361.7 ms (  2831 MiB/s)
+round 3: portable    598.6 ms (  1711 MiB/s)   fast    302.2 ms (  3389 MiB/s)
+best: portable 598.6 ms (1711 MiB/s)   fast 302.2 ms (3389 MiB/s)   ratio 1.98x
+ds_bench: 2 checks passed
+
+=== GPU idle (no engine resident), full sizes, 2026-10-29 09:33 ===
+gpu at run: 1304 MiB
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 24576 pages, 1536 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable    708.3 ms (  2169 MiB/s)   fast    324.7 ms (  4731 MiB/s)
+round 2: portable    707.7 ms (  2171 MiB/s)   fast    327.2 ms (  4694 MiB/s)
+round 3: portable    703.2 ms (  2184 MiB/s)   fast    329.7 ms (  4659 MiB/s)
+best: portable 703.2 ms (2184 MiB/s)   fast 324.7 ms (4731 MiB/s)   ratio 2.17x
+ds_bench: 2 checks passed
+
+ds_bench: pool D:\strata_ds_bench_pool/pool/pages.bin, 49152 pages, 3072 MiB
+ds_bench: fast path: directstorage staging=2x32MiB
+round 1: portable   1470.5 ms (  2089 MiB/s)   fast    612.3 ms (  5017 MiB/s)
+round 2: portable   1366.3 ms (  2248 MiB/s)   fast    611.0 ms (  5028 MiB/s)
+round 3: portable   1363.1 ms (  2254 MiB/s)   fast    613.0 ms (  5011 MiB/s)
+best: portable 1363.1 ms (2254 MiB/s)   fast 611.0 ms (5028 MiB/s)   ratio 2.23x
+ds_bench: 2 checks passed

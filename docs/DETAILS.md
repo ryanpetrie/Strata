@@ -644,9 +644,14 @@ prompt tokens the cache gave back; `/metrics` has the same under `"conversation_
 
 ### Disk tier (L2)
 
-An opt-in second tier beside the RAM cache: a conversation the RAM cache cannot keep is written to one file in a folder
-on disk instead, so it still does not read its whole prompt again when it comes back. It is off by default, and with the
-flags absent the RAM cache alone behaves exactly as before.
+An opt-in second tier beside the RAM cache: a conversation the RAM cache cannot keep is written to a folder on disk
+instead, so it still does not read its whole prompt again when it comes back. It is off by default, and with the flags
+absent the RAM cache alone behaves exactly as before.
+
+The K/V can be kept as content-addressed 64 KiB pages in one shared pool (`--conversation-cache-disk-cow`, Phase 2). A
+conversation is then a small manifest, a small metadata head (the running state and the deepest checkpoint), and the list
+of pages it uses. A turn that advanced a little rewrites only the pages whose bytes changed: the rest are looked up by
+their hash and reused. Without the flag the disk tier keeps the earlier one-file-per-conversation format.
 
 | Option | Effect |
 | --- | --- |
@@ -658,18 +663,31 @@ flags absent the RAM cache alone behaves exactly as before.
 | `--conversation-cache-disk-staging-mib N` | Host memory a save or a restore may copy at once; default 1024. |
 | `--conversation-cache-disk-park-gain N` | Write a conversation again only after it advanced N tokens past its disk copy. Default: `--conversation-cache-park-gain`. |
 | `--conversation-cache-disk-slots N` | At most N conversations on disk; `0` (the default) means no count limit (the budget still applies). |
+| `--conversation-cache-disk-whole-file` | One session file per conversation (the earlier format). This is the default; it is explicit for scripts and comparisons. |
+| `--conversation-cache-disk-cow` | Keep the K/V as content-addressed pages in one shared pool (Phase 2). |
+| `--conversation-cache-disk-demote` | When the RAM cache evicts a conversation, write it to disk instead of dropping it. Needs `--conversation-cache-disk-cow`; off by default. |
+| `--conversation-cache-disk-compact-min-mib N` | Dead page bytes before the pool is compacted; default 2048. |
+| `--conversation-cache-disk-compact-min-pages N` | Dead pages before the pool is compacted; default 256. |
 
-- Each conversation is one session file (the format of **Session files (disk)** below) plus a small manifest with its
-  tokens, checkpoints and identity. A manifest whose file is missing, truncated or from another model or configuration
-  is removed at startup, and so is a temporary file left by an interrupted save.
+- Each conversation is a manifest with its tokens, checkpoints and identity, a small metadata head in the session-file
+  format (no K/V layers), and its K/V pages in `pool/pages.bin`. The manifest is the commit point: a head or pages
+  without a manifest are garbage, and a manifest whose head is missing, truncated or from another model or
+  configuration is removed at startup, with any temporary file left by an interrupted save.
+- Pages are named by the hash of their bytes and their length, so the same page is stored once however many
+  conversations use it. A page is found by its hash in `pool/pages.idx`; manifests never change when the pool is
+  compacted.
 - Least recently used conversations go first when the budget or the slot count is reached. A save is checked against
   the free-space floor and the budget before any conversation is evicted, so a refusal leaves the RAM cache and the
-  disk files as they were.
-- A restore reads the file one K/V layer at a time: host memory stays at the staging size plus one layer, not the
-  whole conversation.
-- The file holds the live state and the deepest checkpoint, as the session-file save does. v1 does not store interior
-  checkpoints, so a new conversation cannot borrow an interior prefix from a disk entry; it can resume at the deepest
-  one. The RAM cache still borrows from its own entries as before.
+  disk files as they were. A save whose free space is short first tries a compaction of the pool's dead pages, then
+  refuses without evicting.
+- Compaction rewrites only the pages some conversation still names, when all three guards pass (dead pages, dead bytes
+  and the dead share of the pool). The new pool is flushed and renamed into place; the manifests do not change.
+- A restore reads the K/V one layer at a time, and each layer from its pages: host memory stays at the staging size
+  plus one layer and one page, not the whole conversation. Every page's hash is checked as it is read; a corrupt or
+  missing page refuses the restore and the prompt is read from token 0.
+- The head holds the live state and the deepest checkpoint, as the session-file save does. Interior checkpoints are not
+  stored, so a new conversation cannot borrow an interior prefix from a disk entry; it can resume at the deepest one.
+  The RAM cache still borrows from its own entries as before.
 - A file is bound to the model files and to the settings a session file records (engine version, backend, KV format,
   context, rope, control vector, a loaded adapter and the arithmetic switches). After one of them changes, the old
   files are not read.
@@ -683,8 +701,9 @@ flags absent the RAM cache alone behaves exactly as before.
 - Files are plaintext: engine state and token identity, not an encrypted archive and not a chat export. The folder is
   created 0700 and files 0600 on Linux and macOS; on Windows they inherit the user profile's permissions. Keep the
   folder private to your user and do not share it.
-- The save is synchronous: the next request waits for the write.
-- The Monitor card shows the disk tier separately (see [DISK_CACHE.md](DISK_CACHE.md)).
+- The save is synchronous: the next request waits for the pages to be written.
+- The Monitor card shows the disk tier separately (see [DISK_CACHE.md](DISK_CACHE.md)), including the bytes written and
+  reused by the last save and the pool's compactions.
 
 Measured on the reference host (Windows, RTX 4090 24 GB, 63.7 GiB RAM, Qwen3.8-Flash-Next UD-IQ4_XS, 194.4K-token
 conversation, Samsung 980 PRO NVMe) with the disk tier taking the conversation when the RAM cache was off or refused
@@ -693,7 +712,8 @@ took 4.14 s (the RAM-only cold turn took 166.6 s); the file was 3.06 GiB. The ca
 during the spill. The process working set rose about 2.9 GiB while the 3.0 GiB file was written, because the OS caches
 the file; that cache is reclaimable and the private count returned below the live level. VRAM rose 106-172 MiB. The
 save's copy fits 512 MiB, but the reader needs more than that for the metadata: an 11.7K-token restore already asked
-for 537 MiB, which is why the staging default is 1024 MiB. The evidence is in
+for 537 MiB, which is why the staging default is 1024 MiB. That run used the one-file format; the shared page pool's
+write amplification has not been measured yet. The evidence is in
 [work/evidence/disk-cache-200k.md](work/evidence/disk-cache-200k.md).
 
 The engine must be built for the card: on this 4090 a build configured with `CMAKE_CUDA_ARCHITECTURES=75` crashed on
@@ -735,7 +755,9 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
 - Not supported with `--layer-split`, `--peer-device`, `--batch` or `--prompt-cache 0`. The engine has been run on Linux and CUDA
   only for this feature. Exact token replay across restarts is not guaranteed: expert residency and CPU/GPU rounding can
   change later output.
-- The disk conversation cache writes the same file format with the same identity rules, and manages its own files; see
+- The disk conversation cache uses the same identity rules and, for its small metadata head, the same session-file
+  format (with no K/V layers); the K/V itself lives in its shared page pool by default, or in one session file per
+  conversation with `--conversation-cache-disk-whole-file`. It manages its own files; see
   [Disk tier (L2)](#disk-tier-l2) and [DISK_CACHE.md](DISK_CACHE.md).
 
 ### API request monitor

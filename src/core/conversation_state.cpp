@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <memory>
 
 namespace strata::core {
 namespace {
@@ -334,6 +335,37 @@ bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionK
     return conversation_snapshot_sources(meta, sources, view, ss, g, &draft, error);
 }
 
+bool conversation_kv_image_sources(const SavedConversation& image, std::vector<SessionKvSource>& sources,
+                                   std::string& error) {
+    sources.clear();
+    sources.reserve(image.kv.size());
+    for (const auto& kv : image.kv) {
+        SessionKvSource s;
+        s.format = kv.format;
+        s.cells = kv.cells;
+        s.heads = kv.heads;
+        s.head_dim = kv.head_dim;
+        s.page_size = kv.page_size;
+        s.pooled_rows = kv.pooled_rows;
+        s.idx_dim = kv.idx_dim;
+        s.sizes = {kv.k.size(), kv.v.size(), kv.k_scale.size(), kv.v_scale.size(), kv.pooled.size()};
+        const std::array<const ConversationBuffer*, 5> parts = {&kv.k, &kv.v, &kv.k_scale, &kv.v_scale, &kv.pooled};
+        auto why = std::make_shared<std::string>();
+        const auto sizes = s.sizes;
+        s.read = [parts, sizes, why](size_t part, size_t offset, void* dst, size_t n) {
+            if (part >= 5 || offset > sizes[part] || n > sizes[part] - offset) {
+                *why = "K/V image read out of range";
+                return false;
+            }
+            return parts[part]->read(dst, offset, n);
+        };
+        s.error = [why] { return *why; };
+        sources.push_back(std::move(s));
+    }
+    if (sources.empty()) { error = "the image has no K/V layers"; return false; }
+    return true;
+}
+
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& ss, const ModelGeometry& g,
                                    const QsaState* draft, std::string& error) {
@@ -482,6 +514,13 @@ ConversationRestore conversation_snapshot_restore_prefix(const SavedConversation
 ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& reader, SessionState& ss,
                                                           const ModelGeometry& g, const QsaState* draft,
                                                           int64_t upto, std::string& error) {
+    return conversation_snapshot_restore_layers(reader, ss, g, draft, upto, error);
+}
+
+ConversationRestore conversation_snapshot_restore_layers(ConversationKvLayers& reader, SessionState& ss,
+                                                         const ModelGeometry& g, const QsaState* draft,
+                                                         int64_t upto, std::string& error,
+                                                         const ConversationFastWrite& fast, bool* fast_used) {
     const SavedConversation& meta = reader.meta();
     const auto invalid = [&error](const char* why) {
         fail(error, why);
@@ -505,6 +544,96 @@ ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& read
         return ConversationRestore::invalid;
     }
     if (!sync(error)) return ConversationRestore::transfer_failed;
+    if (fast_used) *fast_used = false;
+    // The DirectStorage fast path (--conversation-cache-disk-fast-path, the disk tier's page pool).  Every refusal
+    // below that can still be a portable read is settled BEFORE the reader is consumed, so the portable loop at the
+    // bottom runs untouched; once pages have been staged, a failure fails closed like the portable path: the caller
+    // discards the session and reads the prompt from scratch.
+    if (fast) {
+        const size_t nlayers = layers + (draft ? 1 : 0);
+        const auto state_of = [&](size_t j) -> const QsaState& { return j < layers ? owned(ss, j) : *draft; };
+        std::vector<std::array<uint64_t, 5>> want(nlayers);   // the bytes each part may take (a borrow writes less)
+        std::vector<std::array<void*, 5>> land(nlayers);      //   and where they land
+        bool portable = false;
+        for (size_t j = 0; j < nlayers; ++j) {
+            const bool index = j < layers;
+            std::array<uint64_t, 5> sizes;
+            bool device = false;
+            if (!conversation_kv_fast_targets(state_of(j), g, captured, index, land[j].data(), sizes, device, error)) {
+                portable = true;   // the portable loop will fail the same way and report it as it always did
+                break;
+            }
+            if (!device) { portable = true; break; }   // host-mapped slots: DirectStorage cannot write there
+            if (!conversation_kv_part_sizes(state_of(j), g, full ? captured : upto, index, want[j], error)) {
+                portable = true;
+                break;
+            }
+        }
+        if (!portable) {
+            std::vector<ConversationDsPage> pages;
+            std::string pool_path;
+            bool consumed = false, supported = false, geom_bad = false;
+            bool ok = true;
+            for (size_t j = 0; j < nlayers && ok; ++j) {
+                std::vector<ConversationPageJob> jobs;
+                ConversationKvGeom geom;
+                std::string path;
+                if (!reader.next_page_jobs(jobs, geom, path, supported, error)) {
+                    ok = false;
+                    break;
+                }
+                consumed = true;
+                if (j == 0) pool_path = std::move(path);
+                if (!conversation_kv_fast_match(geom, state_of(j), g, captured, j < layers, error)) {
+                    geom_bad = true;
+                    ok = false;
+                    break;
+                }
+                for (const auto& job : jobs) {
+                    if (job.part < 0 || job.part >= 5 || job.bytes == 0 || job.bytes > UINT32_MAX) continue;
+                    // A borrowed prefix leaves the bytes past it unwritten, but the portable path reads and hashes
+                    // the whole layer, so the fast path stages and verifies them too (copy_bytes 0): a corrupt page
+                    // fails the restore either way.
+                    const uint64_t room = job.part_offset < want[j][(size_t) job.part]
+                                              ? want[j][(size_t) job.part] - job.part_offset : 0;
+                    ConversationDsPage p;
+                    p.dst = static_cast<uint8_t*>(land[j][(size_t) job.part]) + job.part_offset;
+                    p.file_offset = job.file_offset;
+                    p.bytes = (uint32_t) job.bytes;
+                    p.copy_bytes = (uint32_t) std::min<uint64_t>(job.bytes, room);
+                    p.expect_hash = job.expect_hash;
+                    pages.push_back(p);
+                }
+            }
+            if (ok) {
+                std::string werr;
+                if (fast_used) *fast_used = true;   // staged: whether this restore ran fast is answered even on failure
+                if (fast(pool_path, pages, werr)) {
+                    for (size_t j = 0; j < nlayers; ++j)
+                        if (!conversation_kv_refresh_residency(state_of(j), g, full ? captured : upto, error))
+                            return ConversationRestore::transfer_failed;
+                    if (!reader.finish(error)) return ConversationRestore::invalid;
+                    if (full) {
+                        if (!conversation_checkpoint_restore(meta.live, ss, g, error) || !sync(error))
+                            return ConversationRestore::transfer_failed;
+                    }
+                    return ConversationRestore::restored;
+                }
+                // staged (or tried to): the K/V may hold partial pages - fail closed, the portable read would
+                // re-read the same suspect file and the caller discards the session either way
+                error = werr.empty() ? std::string("conversation snapshot: the disk fast path refused the restore") : werr;
+                return ConversationRestore::transfer_failed;
+            }
+            if (consumed || supported) {
+                // the pages or the geometry are wrong: the portable path would fail on the same file, and a layer
+                // is already consumed, so the restore ends here with the portable path's own codes
+                return geom_bad ? ConversationRestore::invalid : ConversationRestore::transfer_failed;
+            }
+            error.clear();   // a whole-file reader: nothing consumed, nothing supported - the portable loop runs
+        } else {
+            error.clear();
+        }
+    }
     ConversationKv layer;   // the reader clears it before each read: one layer is live at a time
     for (size_t j = 0; j < layers; ++j) {
         if (!reader.next(layer, error)) return ConversationRestore::transfer_failed;

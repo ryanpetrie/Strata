@@ -5,9 +5,11 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -97,6 +99,26 @@ std::vector<fs::path> manifest_files(const fs::path& root) { return files_with_s
 std::string read_all(const fs::path& p) {
     std::ifstream f(p, std::ios::binary);
     return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+bool buffer_bytes(const ConversationBuffer& buffer, std::vector<uint8_t>& out) {
+    out.resize(buffer.size());
+    return buffer.size() == 0 || buffer.read(out.data(), 0, buffer.size());
+}
+
+// One synthetic paged entry: its single layer's first two parts are the saved bytes.
+bool paged_restore(ConversationDiskStore& store, uint64_t serial, const std::vector<std::vector<uint8_t>>& want,
+                   std::string& why) {
+    ConversationPageReader reader;
+    SessionReadLimits limits;
+    if (!store.open_paged(serial, reader, limits, why)) return false;
+    if (reader.layers() != 1) { why = "unexpected layer count"; return false; }
+    ConversationKv layer;
+    if (!reader.next(layer, why)) return false;
+    std::vector<uint8_t> a, b;
+    if (!buffer_bytes(layer.k, a) || !buffer_bytes(layer.v, b)) { why = "a restored part is unreadable"; return false; }
+    if (a != want[0] || b != want[1]) { why = "the restored K/V bytes differ"; return false; }
+    return reader.finish(why);
 }
 
 void write_all(const fs::path& p, const std::string& bytes) {
@@ -229,7 +251,7 @@ int main() {
             check(s.save(meta({1, 2, 3}), 100, writer(100), bytes, err), "save before the version test");
         }
         check(manifest_files(root).size() == 1, "one manifest before the version test");
-        poke(manifest_files(root)[0], 8, 3);   // u32 version, after the 8-byte magic: 3 is no build's kVersion
+        poke(manifest_files(root)[0], 8, 4);   // u32 version, after the 8-byte magic: 4 is no build's version
         {
             ConversationDiskStore s(o, identity(), err);
             check(s.enabled() && s.entries() == 0, "an unknown manifest version is refused");
@@ -629,6 +651,180 @@ int main() {
         check(!fs::exists(a_manifest) && !fs::exists(a_payload), "the corrupt entry's files are deleted");
         check(manifest_files(root).size() == 1, "one manifest survives the corruption");
         fs::remove_all(root);
+    }
+
+    // ---- Phase 2: the shared page pool, a CoW save, dedup, restore and compaction ----
+    {
+        const fs::path root = unique_root();
+        {
+        ConversationDiskOptions o = options(root, 16u << 20);
+        o.cow = true;
+        o.min_free_bytes = 0;
+        o.min_tokens = 1;
+        std::string err;
+        auto s_owner = std::make_unique<ConversationDiskStore>(o, identity(), err);
+        ConversationDiskStore& s = *s_owner;
+        check(s.enabled() && s.paged(), "the page pool opens with the store");
+
+        // Two synthetic layers: part 0 is 2.5 pages, part 1 is one page.
+        std::vector<std::vector<uint8_t>> parts(2);
+        parts[0].resize(kConversationPageBytes * 2 + kConversationPageBytes / 2);
+        parts[1].resize(kConversationPageBytes);
+        for (size_t i = 0; i < parts[0].size(); ++i) parts[0][i] = (uint8_t) (i * 7 + (i >> 9) + 3);
+        for (size_t i = 0; i < parts[1].size(); ++i) parts[1][i] = (uint8_t) (i * 11 + (i >> 10) + 5);
+        auto make_source = [](const std::vector<std::vector<uint8_t>>& p) {
+            SessionKvSource src;
+            src.format = 2;
+            src.cells = 128;
+            src.heads = 4;
+            src.head_dim = 64;
+            src.page_size = 4;
+            src.pooled_rows = 0;
+            src.idx_dim = 128;
+            src.sizes = {p[0].size(), p[1].size(), 0, 0, 0};
+            src.read = [p](size_t part, size_t offset, void* dst, size_t n) {
+                if (part >= p.size() || offset > p[part].size() || n > p[part].size() - offset) return false;
+                std::memcpy(dst, p[part].data() + offset, n);
+                return true;
+            };
+            return src;
+        };
+        auto head_for = [](const std::vector<int32_t>& ids) {
+            SavedConversation head;
+            head.geometry = {128, 2, 1, 0, 0, 0, 0, 0, 0, 4, 4, 64, 4, 128, 0, 0, 0, 0};
+            head.layer_lo = 0;
+            head.layer_hi = 1;
+            head.live.ids = ids;
+            head.live.imgs = {};
+            head.cvec = true;
+            return head;
+        };
+        ConversationDiskMeta dm;
+        dm.ids = {1, 2, 3, 4};
+        dm.cvec = true;
+        uint64_t bytes = 0, written = 0, reused = 0;
+        const std::vector<SessionKvSource> sources = {make_source(parts)};
+        const SavedConversation head = head_for(dm.ids);
+        const bool saved = s.save_paged(dm, head, sources, bytes, written, reused, err);
+        check(saved, "a paged save writes a head and pages");
+        auto match = s.best(std::vector<int32_t>{1, 2, 3, 4, 9}, {}, true, kLoraNone);
+        check(match.tokens == 4 && match.live, "the paged entry matches its live state");
+        const uint64_t serial = match.serial;
+        check(s.find(serial) != nullptr && s.find(serial)->paged && s.find(serial)->bytes == bytes &&
+                  bytes > parts[0].size() + parts[1].size(),
+              "the paged entry counts its head and K/V bytes");
+        check(written == parts[0].size() + parts[1].size() && reused == 0,
+              "the first paged save writes every page");
+
+        // Restore: one layer at a time, from the pool.
+        {
+            ConversationPageReader reader;
+            SessionReadLimits limits;
+            check(s.open_paged(serial, reader, limits, err), "the paged entry opens");
+            check(reader.meta().live.ids == dm.ids && reader.meta().cvec == dm.cvec,
+                  "the head's metadata round-trips");
+            check(reader.layers() == 1 && reader.bytes() == bytes, "the reader reports one layer and its bytes");
+            ConversationKv layer;
+            check(reader.next(layer, err), "the paged entry restores layer by layer");
+            std::vector<uint8_t> a, b;
+            check(buffer_bytes(layer.k, a) && buffer_bytes(layer.v, b), "the restored parts are readable");
+            check(a == parts[0] && b == parts[1], "the restored K/V bytes are the saved bytes");
+            check(reader.finish(err), "the paged reader finishes");
+        }
+
+        // A new turn with the same bytes but one more token: every page is reused.
+        ConversationDiskMeta dm2;
+        dm2.ids = {1, 2, 3, 4, 5};
+        dm2.cvec = true;
+        check(s.save_paged(dm2, head_for(dm2.ids), sources, bytes, written, reused, err), "the CoW save succeeds");
+        check(written == 0 && reused == parts[0].size() + parts[1].size(),
+              "an unchanged K/V writes no page bytes");
+
+        // Change one byte in the second page of part 0: exactly that page is written.
+        std::vector<std::vector<uint8_t>> changed = parts;
+        changed[0][kConversationPageBytes + 10] ^= 0xff;
+        ConversationDiskMeta dm3;
+        dm3.ids = {1, 2, 3, 4, 5, 6};
+        dm3.cvec = true;
+        const std::vector<SessionKvSource> changed_sources = {make_source(changed)};
+        check(s.save_paged(dm3, head_for(dm3.ids), changed_sources, bytes, written, reused, err),
+              "a changed page saves");
+        check(written == kConversationPageBytes, "only the changed page is written");
+        check(reused == parts[0].size() - kConversationPageBytes + parts[1].size(),
+              "the pages before and after it are reused");
+
+        // A restart rebuilds the index, the refcounts and the restore path from the manifests and the pool.
+        const uint64_t pool_before = (uint64_t) s.pool_bytes();
+        const size_t entries_before = s.entries();
+        {
+            ConversationDiskStore again(o, identity(), err);
+            check(again.enabled() && again.entries() == entries_before, "the startup scan loads the paged entries");
+            auto m = again.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 9}, {}, true, kLoraNone);
+            check(m.tokens == 6 && m.live, "the rebuilt index matches the newest paged entry");
+            check(paged_restore(again, m.serial, changed, err), "the rebuilt entry restores the changed K/V");
+            check(again.pool_bytes() == pool_before, "the restart keeps the pool's bytes");
+        }
+        // Without pages.idx the pool is scanned and the index is rebuilt: the index is a cache, not the truth.
+        {
+            std::error_code rec;
+            check(fs::remove(root / "pool" / "pages.idx", rec) && !rec, "the page index is deleted");
+            ConversationDiskStore rebuilt(o, identity(), err);
+            check(rebuilt.enabled() && rebuilt.entries() == entries_before, "a missing index is rebuilt by scanning");
+            check(paged_restore(rebuilt, serial, parts, err), "the scanned pool restores");
+            check(fs::exists(root / "pool" / "pages.idx"), "the scan writes a new page index");
+        }
+
+        // Remove the newest entry: the older one still restores, and its pages survive.
+        auto newest = s.best(std::vector<int32_t>{1, 2, 3, 4, 5, 6, 9}, {}, true, kLoraNone);
+        check(s.remove(newest.serial, err), "remove the newest paged entry");
+        check(s.entries() == entries_before - 1 && s.bytes() > 0, "the older paged entry stays");
+        check(s.find(serial) != nullptr, "the original entry survives a remove of another");
+        check(paged_restore(s, serial, parts, err), "the surviving entry restores unchanged");
+        s_owner.reset();   // one store per pool at a time (Windows keeps a rename-blocking handle)
+
+        // Compaction: the removed entry's pages are dead; the pool is rewritten and the survivor still restores.
+        ConversationDiskOptions tight = o;
+        tight.compact_min_bytes = 0;
+        tight.compact_min_pages = 1;
+        tight.compact_fragmentation = 0.0;
+        ConversationDiskStore compacting(tight, identity(), err);
+        check(compacting.entries() == entries_before - 1, "the compacting store loads the survivor");
+        const uint64_t before = compacting.pool_bytes();
+        const bool compacted = compacting.compact(err);
+        check(compacted, "the pool compacts");
+        check(compacting.stats().compactions == 1 && compacting.pool_bytes() < before,
+              "compaction shrinks the pool");
+        check(compacting.stats().last_compacted_bytes > 0, "the compaction reports the bytes it reclaimed");
+        check(paged_restore(compacting, serial, parts, err), "the survivor restores after compaction");
+        {
+            ConversationDiskStore reopened(tight, identity(), err);
+            check(reopened.entries() == entries_before - 1 && paged_restore(reopened, serial, parts, err),
+                  "the compacted pool restores after a restart");
+        }
+
+        // Corruption: a changed byte in a page is caught when the page is read.
+        {
+            const fs::path pool = root / "pool" / "pages.bin";
+            std::ifstream in(pool, std::ios::binary);
+            std::vector<char> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            check(data.size() > kConversationPageBytes + 32, "the pool has a page to corrupt");
+            data[kConversationPageBytes + 32] ^= 0x5a;   // inside the first page's data (after the 16-byte header)
+            std::ofstream out(pool, std::ios::binary | std::ios::trunc);
+            out.write(data.data(), (std::streamsize) data.size());
+        }
+        {
+            ConversationDiskStore corrupted(o, identity(), err);
+            check(corrupted.entries() == entries_before - 1,
+                  "the corrupt pool still indexes the entries: the manifest is the commit");
+            ConversationPageReader reader;
+            SessionReadLimits limits;
+            check(corrupted.open_paged(serial, reader, limits, err), "opening resolves the page offsets");
+            ConversationKv layer;
+            check(!reader.next(layer, err) && !err.empty(), "a corrupt page refuses the restore");
+        }
+        }   // the stores are closed before their folder is removed (Windows keeps open files)
+        std::error_code rec;
+        fs::remove_all(root, rec);
     }
 
     // ---- path safety ----

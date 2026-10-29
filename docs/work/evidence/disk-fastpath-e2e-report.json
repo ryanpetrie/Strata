@@ -1,0 +1,307 @@
+{
+  "config": "docs/work/evidence/disk-fastpath-e2e-config.json",
+  "base": "http://127.0.0.1:8099",
+  "engine": {
+    "conversation_disk_fast_path": 1,
+    "conversation_disk_paged": 1,
+    "conversation_disk_mib": 8192,
+    "conversation_cache_mib": 0
+  },
+  "turns": [
+    {
+      "turn": "A-cold",
+      "expect": "cold read; A parks when B arrives",
+      "wall_s": 4.534,
+      "reply": "Lines are all identical",
+      "usage": {
+        "prompt_tokens": 9398,
+        "completion_tokens": 5,
+        "total_tokens": 9403,
+        "prompt_tokens_details": {
+          "cached_tokens": 9391
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: spilled 9495 tokens to disk in 476.0 ms; file=480 MiB tier=disk entries=3 bytes=1518385076 written=0 MiB reused=254 MiB pages=35/4102 pool=323 MiB",
+        "strata serve: STATE_HASH L=9402 gdn=e1a744bd3a7b1942 ple=5c094c62b089b4c5 tail=fa00ff612ebf8aff pooled=2109ae06fae40e58 kv=9b3990f2544efc39 mtp=ef8588f6cfc4818a stale=1525069a9e36a7bf dead=d5a5d2f2b6e971d5 pooled_full=f9786d1eadac952a ple_prev=660,18922",
+        "strata serve: prompt 9398 tokens = 9391 reused + 7 read in 697 ms (10.0 tok/s), 5 generated in 104 ms (48.3 tok/s), drafts accepted 2 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 1,
+        "disk_restores": 0,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": null,
+      "spilled_line": "spilled 9495 tokens to disk in 476.0 ms; file=480 MiB tier=disk entries=3 bytes=1518385076 written=0 MiB reused=254 MiB pages=35/4102 pool=323 MiB",
+      "prompt": {
+        "tokens": 9398,
+        "reused": 9391,
+        "read": 7,
+        "prefill_ms": 697,
+        "generated": 5
+      },
+      "state_hashes": [
+        {
+          "L": 9402,
+          "kv": "9b3990f2544efc39"
+        }
+      ],
+      "failures": []
+    },
+    {
+      "turn": "B-cold",
+      "expect": "cold read; parks A to the disk tier",
+      "wall_s": 1.311,
+      "reply": "ready",
+      "usage": {
+        "prompt_tokens": 29,
+        "completion_tokens": 2,
+        "total_tokens": 31,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: spilled 9402 tokens to disk in 337.3 ms; file=477 MiB tier=disk entries=4 bytes=2019403584 written=1 MiB reused=250 MiB pages=38/4050 pool=325 MiB",
+        "strata serve: STATE_HASH L=33 gdn=cbf223c75d7dfc3d ple=5b227b739cc58f4a tail=a2c0e7c66ff61b9a pooled=9248b4d2ed5d6162 kv=2b7dd85183f0a3b6 mtp=613ccff462bff5a4 stale=3452ac1b08ca8383 dead=9ce40f3b4f591979 pooled_full=d1d8e5b478eee4ec ple_prev=198,248044",
+        "strata serve: prompt 29 tokens = 0 reused + 29 read in 974 ms (29.8 tok/s), 2 generated in 158 ms (12.7 tok/s), drafts accepted 3 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 1,
+        "disk_restores": 0,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": null,
+      "spilled_line": "spilled 9402 tokens to disk in 337.3 ms; file=477 MiB tier=disk entries=4 bytes=2019403584 written=1 MiB reused=250 MiB pages=38/4050 pool=325 MiB",
+      "prompt": {
+        "tokens": 29,
+        "reused": 0,
+        "read": 29,
+        "prefill_ms": 974,
+        "generated": 2
+      },
+      "state_hashes": [
+        {
+          "L": 33,
+          "kv": "2b7dd85183f0a3b6"
+        }
+      ],
+      "failures": []
+    },
+    {
+      "turn": "A-restore",
+      "expect": "restore of A, path=directstorage",
+      "wall_s": 4.391,
+      "reply": "240",
+      "usage": {
+        "prompt_tokens": 9429,
+        "completion_tokens": 4,
+        "total_tokens": 9433,
+        "prompt_tokens_details": {
+          "cached_tokens": 9402
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: restored 9402 tokens from disk in 78.5 ms (6079 MiB/s); tier=disk parked=0 bytes=0 path=directstorage",
+        "strata serve: STATE_HASH L=9433 gdn=513e9968a84854c9 ple=0f6997fc6981107a tail=aa5233519eccd82a pooled=8b7502a59419bb9a kv=d16344d84ad0600c mtp=8a90da08264612c5 stale=3452ac1b08ca8383 dead=d5a5d2f2b6e971d5 pooled_full=bb80642bd3a586e4 ple_prev=15,248046",
+        "strata serve: prompt 9429 tokens = 9402 reused + 27 read in 537 ms (50.3 tok/s), 4 generated in 98 ms (40.8 tok/s), drafts accepted 3 of 3, 2 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 0,
+        "disk_restores": 1,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": "restored 9402 tokens from disk in 78.5 ms (6079 MiB/s); tier=disk parked=0 bytes=0 path=directstorage",
+      "spilled_line": null,
+      "prompt": {
+        "tokens": 9429,
+        "reused": 9402,
+        "read": 27,
+        "prefill_ms": 537,
+        "generated": 4
+      },
+      "state_hashes": [
+        {
+          "L": 9433,
+          "kv": "d16344d84ad0600c"
+        }
+      ],
+      "failures": []
+    },
+    {
+      "turn": "B-restore",
+      "expect": "restore of B, path=directstorage",
+      "wall_s": 1.497,
+      "reply": "busy",
+      "usage": {
+        "prompt_tokens": 50,
+        "completion_tokens": 2,
+        "total_tokens": 52,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: spilled 9433 tokens to disk in 358.8 ms; file=478 MiB tier=disk entries=4 bytes=2020304952 written=2 MiB reused=250 MiB pages=64/4076 pool=328 MiB",
+        "strata serve: STATE_HASH L=53 gdn=5a6efa617f34b7bd ple=f6b224bb77a4e52e tail=c007f2f840056b74 pooled=3d8d7b12924377f4 kv=7e213084a5778f50 mtp=a97aa93b08646e85 stale=7fbe161196a40ab2 dead=626de74a9ed3a718 pooled_full=e56000af66e4f5df ple_prev=248046,198",
+        "strata serve: prompt 50 tokens = 0 reused + 50 read in 1175 ms (42.5 tok/s), 2 generated in 125 ms (15.9 tok/s), drafts accepted 2 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 1,
+        "disk_restores": 0,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": null,
+      "spilled_line": "spilled 9433 tokens to disk in 358.8 ms; file=478 MiB tier=disk entries=4 bytes=2020304952 written=2 MiB reused=250 MiB pages=64/4076 pool=328 MiB",
+      "prompt": {
+        "tokens": 50,
+        "reused": 0,
+        "read": 50,
+        "prefill_ms": 1175,
+        "generated": 2
+      },
+      "state_hashes": [
+        {
+          "L": 53,
+          "kv": "7e213084a5778f50"
+        }
+      ],
+      "failures": []
+    },
+    {
+      "turn": "A-corrupt",
+      "expect": "the restore must fail closed and the prompt be re-read",
+      "wall_s": 12.087,
+      "reply": "fox",
+      "usage": {
+        "prompt_tokens": 9460,
+        "completion_tokens": 2,
+        "total_tokens": 9462,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: disk restore failed (disk fast path: page hash mismatch (staging refused)); reading the prompt",
+        "strata serve: STATE_HASH L=9464 gdn=1f9b5599a54afeea ple=c0553bbbddfb13f3 tail=ff1fa1b09d597dc0 pooled=f3b73cebb429ec97 kv=dbc8063fb434ddb4 mtp=bb9c71e93354ecca stale=14650fb0739d0383 dead=d5a5d2f2b6e971d5 pooled_full=0079fd9f229e3e89 ple_prev=198,248044",
+        "strata serve: prompt 9460 tokens = 0 reused + 9460 read in 8134 ms (1163.1 tok/s), 2 generated in 166 ms (12.0 tok/s), drafts accepted 3 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 0,
+        "disk_restores": 0,
+        "disk_errors": 1,
+        "disk_refusals": 0
+      },
+      "restore_line": null,
+      "spilled_line": null,
+      "prompt": {
+        "tokens": 9460,
+        "reused": 0,
+        "read": 9460,
+        "prefill_ms": 8134,
+        "generated": 2
+      },
+      "state_hashes": [
+        {
+          "L": 9464,
+          "kv": "dbc8063fb434ddb4"
+        }
+      ],
+      "failures": [
+        "strata serve: conversation cache: disk restore failed (disk fast path: page hash mismatch (staging refused)); reading the prompt"
+      ]
+    },
+    {
+      "turn": "B-restore-2",
+      "expect": "restore of B (parks A)",
+      "wall_s": 1.879,
+      "reply": "idle",
+      "usage": {
+        "prompt_tokens": 71,
+        "completion_tokens": 2,
+        "total_tokens": 73,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: spilled 9464 tokens to disk in 396.4 ms; file=479 MiB tier=disk entries=3 bytes=1518385076 written=34 MiB reused=220 MiB pages=556/4076 pool=365 MiB",
+        "strata serve: STATE_HASH L=74 gdn=4c2ce22a90494f6c ple=2d12d4fe171369b4 tail=1b421068b7f9e66a pooled=7edd8d4c0ac8f378 kv=04a1a33937d9d394 mtp=43348926e522581a stale=70adaffa424b0af4 dead=887be537917138dd pooled_full=fb44ea2cd2251986 ple_prev=248046,198",
+        "strata serve: prompt 71 tokens = 0 reused + 71 read in 1548 ms (45.9 tok/s), 2 generated in 134 ms (15.0 tok/s), drafts accepted 2 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 1,
+        "disk_restores": 0,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": null,
+      "spilled_line": "spilled 9464 tokens to disk in 396.4 ms; file=479 MiB tier=disk entries=3 bytes=1518385076 written=34 MiB reused=220 MiB pages=556/4076 pool=365 MiB",
+      "prompt": {
+        "tokens": 71,
+        "reused": 0,
+        "read": 71,
+        "prefill_ms": 1548,
+        "generated": 2
+      },
+      "state_hashes": [
+        {
+          "L": 74,
+          "kv": "04a1a33937d9d394"
+        }
+      ],
+      "failures": []
+    },
+    {
+      "turn": "A-repeat",
+      "expect": "a cold read of the same messages as A-corrupt",
+      "wall_s": 4.2,
+      "reply": "fox",
+      "usage": {
+        "prompt_tokens": 9460,
+        "completion_tokens": 2,
+        "total_tokens": 9462,
+        "prompt_tokens_details": {
+          "cached_tokens": 9453
+        }
+      },
+      "cache_lines": [
+        "strata serve: conversation cache: restored 9453 tokens from disk in 83.2 ms (5760 MiB/s); tier=disk parked=0 bytes=0 path=directstorage",
+        "strata serve: STATE_HASH L=9464 gdn=e0e1b1e587bae438 ple=301b8a00e4c26f16 tail=8c46e2bef389f870 pooled=982088cba6e0e0b3 kv=bef48a983b75c24a mtp=e32d1220e7b0caaf stale=14650fb0739d0383 dead=d5a5d2f2b6e971d5 pooled_full=6fbb6dda05fcef8d ple_prev=198,248044",
+        "strata serve: prompt 9460 tokens = 9453 reused + 7 read in 293 ms (23.9 tok/s), 2 generated in 133 ms (15.1 tok/s), drafts accepted 3 of 3, 1 checkpoints"
+      ],
+      "metric_delta": {
+        "disk_saves": 0,
+        "disk_restores": 1,
+        "disk_errors": 0,
+        "disk_refusals": 0
+      },
+      "restore_line": "restored 9453 tokens from disk in 83.2 ms (5760 MiB/s); tier=disk parked=0 bytes=0 path=directstorage",
+      "spilled_line": null,
+      "prompt": {
+        "tokens": 9460,
+        "reused": 9453,
+        "read": 7,
+        "prefill_ms": 293,
+        "generated": 2
+      },
+      "state_hashes": [
+        {
+          "L": 9464,
+          "kv": "bef48a983b75c24a"
+        }
+      ],
+      "failures": []
+    }
+  ],
+  "flipped_bytes": [
+    25690112,
+    121339904,
+    287133696
+  ],
+  "fail_closed_reply_matches_cold": true
+}

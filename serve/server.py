@@ -820,7 +820,15 @@ class ConvCacheLog:
     DROPPED = re.compile(r"conversation cache: dropped \d+ superseded .*?parked=(\d+)")
     # the disk tier's own lines (generate.cpp: park_to_disk and the restore path)
     DISK_SPILL = re.compile(r"conversation cache: spilled (\d+) tokens to disk in ([\d.]+) ms; file=(\d+) MiB "
-                            r"tier=disk entries=(\d+) bytes=(\d+)")
+                            r"tier=disk entries=(\d+) bytes=(\d+)"
+                            r"(?: written=(\d+) MiB reused=(\d+) MiB pages=(\d+)/(\d+)"
+                            r"(?: pool=(\d+) MiB)?)?")
+    DISK_DEMOTE = re.compile(r"conversation cache: demoted (\d+) tokens from RAM to disk in ([\d.]+) ms; "
+                             r"file=(\d+) MiB written=(\d+) MiB reused=(\d+) MiB"
+                             r"(?: entries=(\d+) bytes=(\d+))?")
+    DISK_DEMOTE_FAIL = re.compile(r"conversation cache: skip disk demotion \((.+?)(?:; \d+ tokens)?\)")
+    DISK_COMPACT = re.compile(r"conversation cache: disk compacted the page pool in (\d+) ms; "
+                              r"freed=(\d+) MiB pool=(\d+) MiB")
     DISK_RESTORE = re.compile(r"conversation cache: restored (\d+) tokens from disk in ([\d.]+) ms "
                               r"\(([\d.]+) MiB/s\); tier=disk")
     DISK_REFUSE = re.compile(r"conversation cache: skip disk save \((.+?); (\d+) tokens(?:, ~(\d+) MiB)?\)")
@@ -842,6 +850,11 @@ class ConvCacheLog:
                       "disk_errors": 0, "disk_bytes": 0, "disk_entries": 0,
                       "disk_last_save_ms": None, "disk_last_restore_ms": None,
                       "disk_last_restore_mib_s": None, "last_tier": None,
+                      # Phase 2: page pool writes/reuse, demotion, compaction
+                      "disk_demotions": 0, "disk_compactions": 0, "disk_compacted_mib": 0,
+                      "disk_pool_mib": 0, "disk_last_write_mib": None, "disk_last_reuse_mib": None,
+                      "disk_last_write_share": None, "disk_written_mib": 0, "disk_reused_mib": 0,
+                      "disk_pages_written": None, "disk_pages_total": None,
                       "refusals": {key: 0 for key in REFUSAL_KEYS}, "last_refusal": None}
 
     def _refused(self, reason: str):
@@ -881,6 +894,41 @@ class ConvCacheLog:
                 st["disk_saves"] += 1
                 st["disk_last_save_ms"] = float(m.group(2))
                 st["disk_entries"], st["disk_bytes"] = int(m.group(4)), int(m.group(5))
+                st["last_tier"] = "disk"
+                if m.group(6) is not None:             # the Phase 2 paged line
+                    written, reused = int(m.group(6)), int(m.group(7))
+                    st["disk_last_write_mib"], st["disk_last_reuse_mib"] = written, reused
+                    st["disk_written_mib"] += written
+                    st["disk_reused_mib"] += reused
+                    st["disk_last_write_share"] = (100 * written / (written + reused)) if (written + reused) else None
+                    st["disk_pages_written"], st["disk_pages_total"] = int(m.group(8)), int(m.group(9))
+                    if m.group(10) is not None:
+                        st["disk_pool_mib"] = int(m.group(10))
+                continue
+            m = self.DISK_DEMOTE.search(line)
+            if m:
+                st["disk_demotions"] += 1
+                st["disk_saves"] += 1
+                st["disk_last_save_ms"] = float(m.group(2))
+                st["disk_last_write_mib"], st["disk_last_reuse_mib"] = int(m.group(4)), int(m.group(5))
+                st["disk_written_mib"] += int(m.group(4))
+                st["disk_reused_mib"] += int(m.group(5))
+                if m.group(6) is not None:
+                    st["disk_entries"], st["disk_bytes"] = int(m.group(6)), int(m.group(7))
+                st["last_tier"] = "disk"
+                continue
+            m = self.DISK_DEMOTE_FAIL.search(line)
+            if m:
+                st["disk_refusals"] += 1
+                if self._refused(m.group(1)) == "disk_other":
+                    st["disk_errors"] += 1
+                st["last_tier"] = "disk"
+                continue
+            m = self.DISK_COMPACT.search(line)
+            if m:
+                st["disk_compactions"] += 1
+                st["disk_compacted_mib"] += int(m.group(2))
+                st["disk_pool_mib"] = int(m.group(3))
                 st["last_tier"] = "disk"
                 continue
             m = self.DISK_RESTORE.search(line)
@@ -957,7 +1005,8 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
     # The INFO line reports the disk index the start-up scan found, before this run logs its first save. A save or an
     # eviction line carries the same store's newer state and is authoritative from then on. A restore-only log has no
     # disk bytes to report, so it must not zero a non-empty start-up cache.
-    log_has_disk = (parked.get("disk_saves") or 0) > 0 or (parked.get("disk_evictions") or 0) > 0
+    log_has_disk = ((parked.get("disk_saves") or 0) > 0 or (parked.get("disk_evictions") or 0) > 0 or
+                    (parked.get("disk_compactions") or 0) > 0 or (parked.get("disk_demotions") or 0) > 0)
     disk_bytes = parked.get("disk_bytes", 0) if log_has_disk else info.get("conversation_disk_bytes", 0)
     disk_entries = parked.get("disk_entries", 0) if log_has_disk else info.get("conversation_disk_entries", 0)
     return {"enabled": isinstance(mib, int) and mib > 0, "budget_mib": mib if isinstance(mib, int) else None,
@@ -978,6 +1027,24 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "disk_last_save_ms": parked.get("disk_last_save_ms"),
             "disk_last_restore_ms": parked.get("disk_last_restore_ms"),
             "disk_last_restore_mib_s": parked.get("disk_last_restore_mib_s"),
+            # Phase 2: the shared page pool's write reduction and compaction
+            "disk_paged": info.get("conversation_disk_paged"),
+            "disk_pool_mib": (parked.get("disk_pool_mib") if log_has_disk
+                              else ((info.get("conversation_disk_pool_bytes") or 0) >> 20)),
+            "disk_dead_bytes": info.get("conversation_disk_dead_bytes"),
+            # Phase 3: the DirectStorage fast path for the disk restore (0/1 from the INFO line; None when the
+            # engine predates it). Restore log lines may carry " path=directstorage", which the parse ignores.
+            "disk_fast_path": info.get("conversation_disk_fast_path"),
+            "disk_demotions": parked.get("disk_demotions", 0),
+            "disk_compactions": parked.get("disk_compactions", 0),
+            "disk_compacted_mib": parked.get("disk_compacted_mib", 0),
+            "disk_last_write_mib": parked.get("disk_last_write_mib"),
+            "disk_last_reuse_mib": parked.get("disk_last_reuse_mib"),
+            "disk_last_write_share": parked.get("disk_last_write_share"),
+            "disk_written_mib": parked.get("disk_written_mib", 0),
+            "disk_reused_mib": parked.get("disk_reused_mib", 0),
+            "disk_pages_written": parked.get("disk_pages_written"),
+            "disk_pages_total": parked.get("disk_pages_total"),
             "last_tier": parked.get("last_tier"),
             "refusals": parked.get("refusals") or {key: 0 for key in REFUSAL_KEYS},
             "last_refusal": parked.get("last_refusal")}

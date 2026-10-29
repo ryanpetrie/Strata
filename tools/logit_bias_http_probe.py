@@ -16,7 +16,7 @@ cfg={k:v for k,v in cfg.items() if k in ['args','tokenizer','gpu','lib_dirs','en
 args=list(cfg['args'])
 for flag in ['--conversation-cache-spill-dir','--conversation-cache-disk','--conversation-cache-disk-mib','--mtp']:
  if flag in args:i=args.index(flag);del args[i:i+2]
-args=[a for a in args if a!='--conversation-cache-disk-only']
+args=[a for a in args if a not in ('--conversation-cache-disk-only','--conversation-cache-disk-cow','--conversation-cache-disk-whole-file','--conversation-cache-disk-demote')]
 tp=Path(cfg['tokenizer']);vocab=json.loads((tp/'vocab.json').read_text());tokens=[None]*len(vocab)
 for t,i in vocab.items():tokens[i]=t
 tok=ST.Tokenizer(tokens,(tp/'merges.txt').read_text().split('\n'),json.loads((tp/'token_type.json').read_text()))
