@@ -19,6 +19,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <fcntl.h>   // _O_RDWR & friends for _open_osfhandle
 #include <io.h>
 #include <windows.h>
 #else
@@ -70,7 +71,34 @@ std::string last_error(DWORD code = GetLastError()) {
 std::FILE* open_file(const std::string& path, const wchar_t* mode) {
     std::wstring w;
     if (!wide(path, w)) return nullptr;
-    return _wfopen(w.c_str(), mode);
+    // CRT _wfopen omits FILE_SHARE_DELETE, which blocks any later DELETE-access open of the same file -
+    // a rename around a still-open handle fails, and the disk tier's DirectStorage fast path (which opens
+    // pool/pages.bin through the storage stack with DELETE access) refuses the live pool with a sharing
+    // violation.  Open through CreateFileW with full sharing and wrap it, so every reader that asks
+    // politely can open what the pool holds, and the byte semantics of the mode are unchanged.
+    const bool writable = wcschr(mode, L'w') || wcschr(mode, L'a') || wcschr(mode, L'+');
+    const bool read = wcschr(mode, L'r') || wcschr(mode, L'+');
+    const DWORD access = (read && writable) ? (GENERIC_READ | GENERIC_WRITE)
+                       : read ? GENERIC_READ : GENERIC_WRITE;
+    const DWORD creation = wcschr(mode, L'w') ? CREATE_ALWAYS
+                         : (wcschr(mode, L'a') ? OPEN_ALWAYS : OPEN_EXISTING);
+    const DWORD flags = FILE_ATTRIBUTE_NORMAL;
+    const HANDLE h = CreateFileW(w.c_str(), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, creation, flags, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return nullptr;
+    const int fd = _open_osfhandle((intptr_t) h, (read && writable ? _O_RDWR : read ? _O_RDONLY : _O_WRONLY) | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(h);
+        return nullptr;
+    }
+    std::string m;
+    for (const wchar_t* p = mode; *p; ++p) m.push_back((char) *p);   // the modes used here are pure ASCII
+    std::FILE* f = _fdopen(fd, m.c_str());
+    if (!f) {
+        _close(fd);   // closes h too
+        return nullptr;
+    }
+    return f;
 }
 bool file_size(const std::string& path, uint64_t& out) {
     std::wstring w;
@@ -489,6 +517,7 @@ bool ConversationPagePool::append(uint64_t hash, const void* data, uint32_t byte
     wrote = false;
     ref = ConversationPageRef{hash, bytes};
     std::lock_guard<std::mutex> lock(mu_);
+    if (fast_borrowed_) { error = "the page pool is lent to a fast read"; return false; }
     const auto it = index_.find(Key{hash, bytes});
     if (it != index_.end()) {
         ++impl_->reused_pages;
@@ -655,6 +684,28 @@ bool ConversationPagePool::compact(uint64_t min_dead_bytes, uint64_t min_dead_pa
     impl_->last_compacted_bytes = dead_bytes;
     impl_->last_compaction_ms = ms_since(started);
     return true;
+}
+
+bool ConversationPagePool::borrow_for_fast_read(std::string& error) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (fast_borrowed_) return true;
+    fast_borrowed_ = true;
+    if (impl_->pool.get() && !impl_->pool.open(pool_path_, L"rb", error)) {   // open() closes first: the
+        fast_borrowed_ = false;                                               //   write access is released
+        return false;
+    }
+    return true;
+}
+
+void ConversationPagePool::return_from_fast_read() {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (!fast_borrowed_) return;
+    fast_borrowed_ = false;
+    if (writable_ && impl_->pool.get()) {
+        std::string ignored;
+        if (!impl_->pool.open(pool_path_, L"r+b", ignored))
+            impl_->pool.close();   // leave no read-only handle: append reopens when it sees none
+    }
 }
 
 ConversationPageStats ConversationPagePool::stats() const {
@@ -847,6 +898,47 @@ bool ConversationPageReader::next(ConversationKv& layer, std::string& error) {
         error = "out of memory while restoring a K/V layer from the page pool";
         return false;
     }
+}
+
+bool ConversationPageReader::next_page_jobs(std::vector<ConversationPageJob>& jobs, ConversationKvGeom& geom,
+                                            std::string& pool_path, bool& supported, std::string& error) {
+    supported = true;
+    jobs.clear();
+    error.clear();
+    if (impl_->finished) { error = "the paged conversation is already finished"; return false; }
+    if (impl_->next_layer >= impl_->layout.layers.size()) { error = "no more K/V layers"; return false; }
+    const ConversationPageLayer& src = impl_->layout.layers[impl_->next_layer];
+    geom.format = src.format;
+    geom.cells = src.cells;
+    geom.heads = src.heads;
+    geom.head_dim = src.head_dim;
+    geom.page_size = src.page_size;
+    geom.pooled_rows = src.pooled_rows;
+    geom.idx_dim = src.idx_dim;
+    for (size_t part = 0; part < 5; ++part) {
+        const uint64_t size = src.sizes[part];
+        geom.sizes[part] = size;
+        if (size == 0) continue;
+        uint64_t covered = 0, offset = 0;
+        for (const auto& ref : src.parts[part]) covered += ref.bytes;
+        if (covered != size) { error = "the K/V page list does not cover its part"; jobs.clear(); return false; }
+        for (const auto& ref : src.parts[part]) {
+            // The same page next() would copy; the data bytes start at the record's offset, so a page file offset
+            // is exactly what next() hands to ConversationPagePool::read.  (A pool compaction that moves a page
+            // between here and the write is the caller's race to avoid: the engine restores while it saves nothing.)
+            ConversationPagePool::Page page;
+            if (!impl_->pool->lookup(ref.hash, ref.bytes, page)) {
+                error = "a K/V page of the disk cache is missing";
+                jobs.clear();
+                return false;
+            }
+            jobs.push_back({page.offset, ref.bytes, ref.hash, (int) part, offset});
+            offset += ref.bytes;
+        }
+    }
+    pool_path = impl_->pool->path();
+    ++impl_->next_layer;
+    return true;
 }
 
 bool ConversationPageReader::finish(std::string& error) {

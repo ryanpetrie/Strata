@@ -177,6 +177,9 @@ public:
     // Reclaims the pool's dead pages when the thresholds in the options are passed.  Manifests never change.
     bool compact(std::string& error);
     bool compact_needed() const;
+    // The page pool, or null in whole-file mode.  The disk fast path lends its file handle around a DirectStorage
+    // write (ConversationPagePool::borrow_for_fast_read); valid while this store is open and paged().
+    ConversationPagePool* pool() { return pool_.get(); }
     uint64_t pool_bytes() const;
     uint64_t pool_dead_bytes() const;
     // Moves an entry to the most recently used end of the index.  The order is kept in RAM, as the RAM cache's is: a

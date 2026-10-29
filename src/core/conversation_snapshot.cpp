@@ -180,6 +180,24 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
     return true;
 }
 
+namespace {
+// A saved layer's geometry and part sizes against a state's layout: the checks conversation_kv_validate makes on
+// a host image and conversation_kv_fast_match makes on a page manifest (one wording, one order, both paths).
+bool geom_match(const ConversationKvGeom& geom, const Layout& l, const ModelGeometry& g, std::string& error) {
+    const std::array<uint64_t, 5> sizes = {(uint64_t) l.data, (uint64_t) l.value_data, (uint64_t) l.scales,
+                                           (uint64_t) l.value_scales, (uint64_t) l.pooled};
+    if (geom.format != l.format || geom.cells != l.cells || geom.heads != g.n_head_kv ||
+        geom.head_dim != g.head_dim || geom.page_size != l.page_size || geom.pooled_rows != l.pooled_rows ||
+        geom.idx_dim != g.idx_key_dim) {
+        error = "conversation snapshot: incompatible K/V geometry";
+        return false;
+    }
+    for (size_t i = 0; i < sizes.size(); ++i)
+        if (geom.sizes[i] != sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
+    return true;
+}
+} // namespace
+
 bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, const ModelGeometry& g,
                               int64_t upto, bool index, std::string& error) {
     Layout l{};
@@ -187,14 +205,16 @@ bool conversation_kv_validate(const ConversationKv& image, const QsaState& st, c
     if (!valid(st, l, upto, error)) return false;
     const std::array<size_t,5> sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
-    if (image.format != l.format || image.cells != l.cells || image.heads != g.n_head_kv ||
-        image.head_dim != g.head_dim || image.page_size != l.page_size || image.pooled_rows != l.pooled_rows ||
-        image.idx_dim != g.idx_key_dim) {
-        error = "conversation snapshot: incompatible K/V geometry";
-        return false;
-    }
-    for (size_t i = 0; i < src.size(); ++i)
-        if (src[i]->size() != sizes[i]) { error = "conversation snapshot: invalid K/V payload size"; return false; }
+    ConversationKvGeom geom{};
+    geom.format = image.format;
+    geom.cells = image.cells;
+    geom.heads = image.heads;
+    geom.head_dim = image.head_dim;
+    geom.page_size = image.page_size;
+    geom.pooled_rows = image.pooled_rows;
+    geom.idx_dim = image.idx_dim;
+    for (size_t i = 0; i < src.size(); ++i) geom.sizes[i] = (uint64_t) src[i]->size();
+    if (!geom_match(geom, l, g, error)) return false;
     const auto dst = pools(st);
     for (size_t i = 0; i < src.size(); ++i)
         if (sizes[i] && !dst[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
@@ -290,6 +310,42 @@ bool conversation_kv_part_sizes(const QsaState& st, const ModelGeometry& g, int6
     if (!layout(st, g, upto, index, l, error)) return false;
     sizes = {l.data, l.value_data, l.scales, l.value_scales, l.pooled};
     return true;
+}
+
+bool conversation_kv_fast_targets(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index,
+                                  void* dst[5], std::array<uint64_t, 5>& sizes, bool& device, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    sizes = {(uint64_t) l.data, (uint64_t) l.value_data, (uint64_t) l.scales, (uint64_t) l.value_scales,
+             (uint64_t) l.pooled};
+    const auto pool = pools(st);
+    device = true;
+    for (size_t i = 0; i < sizes.size(); ++i) {
+        dst[i] = nullptr;
+        if (!sizes[i]) continue;
+        if (!pool[i]) { error = "conversation snapshot: missing target state buffer"; return false; }
+        dst[i] = pool[i];
+        // DirectStorage's DMA lands in device memory only: a streamed state's slots are host-mapped, and the
+        // restore of such a state stays on the portable path.  An unreadable pointer (plain host memory the
+        // runtime does not know) refuses the fast path the same way.
+        cudaPointerAttributes attrs{};
+        if (cudaPointerGetAttributes(&attrs, dst[i]) != cudaSuccess || attrs.type != cudaMemoryTypeDevice)
+            device = false;
+        cudaGetLastError();   // a host pointer is a plain refusal, never a sticky error to carry on
+    }
+    return true;
+}
+
+bool conversation_kv_fast_match(const ConversationKvGeom& geom, const QsaState& st, const ModelGeometry& g,
+                                int64_t upto, bool index, std::string& error) {
+    Layout l{};
+    if (!layout(st, g, upto, index, l, error) || !valid(st, l, upto, error)) return false;
+    return geom_match(geom, l, g, error);
+}
+
+bool conversation_kv_refresh_residency(const QsaState& st, const ModelGeometry& g, int64_t upto,
+                                       std::string& error) {
+    return refresh_residency(st, g, upto, error);
 }
 
 bool conversation_kv_source(SessionKvSource& out, const QsaState& st, const ModelGeometry& g,

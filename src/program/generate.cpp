@@ -754,6 +754,9 @@ struct Options {
     /// keeps the Phase 1 format (one session file per conversation).  `--conversation-cache-disk-demote` needs it.
     bool conversation_disk_cow = false;           // --conversation-cache-disk-cow
     bool conversation_disk_whole_file = false;    // --conversation-cache-disk-whole-file (explicit Phase 1)
+    /// Phase 3 (opt-in): restore the page pool with DirectStorage GPU DMA instead of the portable host path
+    /// (Windows + CUDA; capability-checked at startup, the portable path stays the default and the fallback).
+    bool conversation_disk_fast_path = false;     // --conversation-cache-disk-fast-path
     bool conversation_disk_demote = false;        // --conversation-cache-disk-demote: spill L1 evictions to L2
     int64_t conversation_disk_compact_min_mib = 2048;   // dead bytes before the pool is compacted
     int64_t conversation_disk_compact_min_pages = 256;  // dead pages before the pool is compacted
@@ -946,6 +949,9 @@ void usage() {
                  "  --conversation-cache-disk-slots N  --serve: at most N conversations on disk (default 0 = unlimited)\n"
                  "  --conversation-cache-disk-cow  --serve (opt-in): keep the K/V as content-addressed pages in one\n"
                  "                       shared pool; a turn writes only the pages that changed (Phase 2)\n"
+                 "  --conversation-cache-disk-fast-path  --serve (opt-in): restore the page pool with DirectStorage GPU\n"
+                 "                       DMA instead of the portable host path (Windows + CUDA; the portable path stays\n"
+                 "                       the default and runs whenever the fast path is unavailable or refuses)\n"
                  "  --conversation-cache-disk-whole-file  --serve: one session file per conversation (the Phase 1\n"
                  "                       format; this is the default without --conversation-cache-disk-cow)\n"
                  "  --conversation-cache-disk-demote  --serve: when the RAM cache evicts a conversation, write it to disk\n"
@@ -2754,6 +2760,7 @@ int main(int argc, char** argv) {
         else if (a == "--conversation-cache-disk-only") o.conversation_disk_only = true;
         else if (a == "--conversation-cache-disk-cow") o.conversation_disk_cow = true;
         else if (a == "--conversation-cache-disk-whole-file") o.conversation_disk_whole_file = true;
+        else if (a == "--conversation-cache-disk-fast-path") o.conversation_disk_fast_path = true;
         else if (a == "--conversation-cache-disk-demote") o.conversation_disk_demote = true;
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
@@ -9666,6 +9673,35 @@ int main(int argc, char** argv) {
         if (o.conversation_disk_only && !disk.enabled())
             std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-disk-only is set but the disk "
                                  "tier is off: no conversation will be parked\n");
+        // --conversation-cache-disk-fast-path (Phase 3, opt-in): restores of the page pool run through DirectStorage -
+        // GPU DMA from pool/pages.bin into a small shared VRAM ring, hash-verified on the device, scattered straight
+        // into the K/V pools.  Probed once here (library, adapter match, ring, queue): a refusal is a notice, never
+        // an error - every restore then runs the portable path, which is the default and the fallback and stays
+        // byte-identical.  The engine does not link dstorage.dll; it is loaded at runtime and may be absent.
+        std::unique_ptr<strata::core::ConversationDs> disk_fast;
+        int64_t conversation_disk_fast_path_info = 0;
+        if (o.conversation_disk_fast_path && !disk.enabled())
+            std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-disk-fast-path needs the disk "
+                                 "tier (--conversation-cache-disk-mib); it is off\n");
+        else if (o.conversation_disk_fast_path && !disk.paged())
+            std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-disk-fast-path needs the page "
+                                 "pool (--conversation-cache-disk-cow); it is off\n");
+        else if (o.conversation_disk_fast_path) {
+            std::string fast_why;
+            disk_fast = strata::core::ConversationDs::create(fast_why);
+            if (disk_fast) {
+                conversation_disk_fast_path_info = 1;
+                std::fprintf(stderr, "strata serve: conversation cache: disk fast path on: %s (staging %llu MiB)\n",
+                             disk_fast->describe().c_str(),
+                             (unsigned long long) (disk_fast->staging_bytes() >> 20));
+            } else {
+                std::fprintf(stderr, "strata serve: conversation cache: the disk fast path is off: %s; every restore "
+                                     "uses the portable path\n", fast_why.c_str());
+            }
+        }
+        // repeated fast-path failures stop the attempts (a broken queue must not slow every restore down); the
+        // portable path keeps serving
+        int disk_fast_failures = 0;
         // The disk tier's save: a conversation the RAM cache refuses (or every one, with --conversation-cache-disk-only)
         // becomes one session file under the spill folder.  Returns true only when the conversation is safely on disk
         // (a save, or a park-gain skip while a recent disk copy holds it), so the caller may leave the RAM cache as
@@ -11586,7 +11622,7 @@ int main(int argc, char** argv) {
                         "conversation_disk_mib=%lld conversation_disk_dir=%s conversation_disk_slots=%lld "
                         "conversation_disk_bytes=%llu conversation_disk_entries=%llu "
                         "conversation_disk_paged=%lld conversation_disk_pool_bytes=%llu "
-                        "conversation_disk_dead_bytes=%llu "
+                        "conversation_disk_dead_bytes=%llu conversation_disk_fast_path=%lld "
                         "tail_role_token=%lld vram_elastic=%d "
                         "prefill_cap=%lld prefill_stages=%d stream_all_min=%lld prefill_pipe=%g%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
@@ -11604,7 +11640,7 @@ int main(int argc, char** argv) {
                         (long long) conversation_disk_slots_info,
                         conversation_disk_bytes_info, conversation_disk_entries_info,
                         (long long) conversation_disk_paged_info, conversation_disk_pool_info,
-                        conversation_disk_dead_info,
+                        conversation_disk_dead_info, (long long) conversation_disk_fast_path_info,
                         (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         // the prompt path: its chunk cap (the VRAM command's relend can lower it later), the stages a
                         // prompt flows through, the chunk size from which a chunk streams every expert, --prefill-pipe
@@ -13444,9 +13480,33 @@ int main(int argc, char** argv) {
                 if (!grown) err = "the K/V cannot grow to the conversation on disk: no VRAM is left";
                 const auto t0 = Clock::now();
                 strata::core::ConversationRestore rr = strata::core::ConversationRestore::invalid;
+                // the fast path (opt-in, --conversation-cache-disk-fast-path): only a paged entry, only while the
+                // engine holds a working DirectStorage queue.  restore_layers decides fast vs portable and reports
+                // in disk_fast_used which path ran; a refusal or a failed write left the portable read untouched.
+                strata::core::ConversationFastWrite fast_write;
+                bool disk_fast_used = false;
+                if (disk_fast && disk_paged && disk_fast_failures < 3)
+                    fast_write = [&](const std::string& pool_path,
+                                     const std::vector<strata::core::ConversationDsPage>& pages, std::string& werr) {
+                        // the DirectStorage queue opens the pool file through the storage stack, which a write
+                        // handle refuses: lend the store's handle for the write (nothing else touches the pool
+                        // while a restore runs) and take it back after.
+                        strata::core::ConversationPagePool* pp = disk.pool();
+                        if (pp == nullptr) { werr = "the page pool is gone"; return false; }
+                        std::string berr;
+                        if (!pp->borrow_for_fast_read(berr)) { werr = berr; return false; }
+                        const bool ok = disk_fast->write(pool_path, pages, werr);
+                        pp->return_from_fast_read();
+                        return ok;
+                    };
                 if (grown)
                     rr = strata::core::conversation_snapshot_restore_layers(
-                        *disk_reader, ss, g, use_mtp ? &mtp.kv_state() : nullptr, disk_borrow ? dparked.tokens : 0, err);
+                        *disk_reader, ss, g, use_mtp ? &mtp.kv_state() : nullptr, disk_borrow ? dparked.tokens : 0,
+                        err, fast_write, &disk_fast_used);
+                if (grown && disk_fast_used && rr != strata::core::ConversationRestore::restored &&
+                    ++disk_fast_failures == 3)
+                    std::fprintf(stderr, "strata serve: conversation cache: the disk fast path failed 3 times in a "
+                                         "row; portable reads from here\n");
                 if (grown && rr == strata::core::ConversationRestore::restored) {
                     const auto& dmeta = disk_reader->meta();
                     // the retained K/V described the outgoing session (a park-gain or pin skip may have left it): the
@@ -13476,9 +13536,10 @@ int main(int argc, char** argv) {
                     disk.note_restore((uint64_t) ms, disk_reader->bytes());
                     const double mib = (double) (disk_reader->bytes() >> 20);
                     std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens from disk in %.1f ms "
-                                         "(%.0f MiB/s); tier=disk parked=%zu bytes=%zu\n",
+                                         "(%.0f MiB/s); tier=disk parked=%zu bytes=%zu%s\n",
                                  (long long) resume, ms, ms > 0 ? mib / (ms / 1000.0) : 0.0,
-                                 conversations.size(), conversations.bytes());
+                                 conversations.size(), conversations.bytes(),
+                                 disk_fast_used ? " path=directstorage" : "");
                 } else {
                     std::fprintf(stderr, "strata serve: conversation cache: disk restore failed (%s); reading the "
                                          "prompt\n", err.c_str());

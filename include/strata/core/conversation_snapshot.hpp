@@ -1,11 +1,14 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
+#include "strata/core/conversation_ds.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 
+#include <functional>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -49,6 +52,21 @@ bool conversation_kv_source(SessionKvSource& source, const QsaState& state, cons
 // The bytes of each K/V part (k, v, k_scale, v_scale, pooled) a snapshot of `upto` tokens holds: no state read.
 bool conversation_kv_part_sizes(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
                                 std::array<uint64_t, 5>& sizes, std::string& error);
+// The disk fast path's landing places (see conversation_snapshot_restore_layers' `fast`): the five authoritative
+// pool pointers a restore of `upto` tokens writes and their byte sizes, and whether every part that holds bytes is
+// device memory.  DirectStorage cannot write a streamed state's host-mapped slots, so `device` says false and the
+// restore uses the portable path; false is returned only when the state's layout itself is unusable.
+bool conversation_kv_fast_targets(const QsaState& state, const ModelGeometry& g, int64_t upto, bool include_index,
+                                  void* dst[5], std::array<uint64_t, 5>& sizes, bool& device, std::string& error);
+// conversation_kv_validate's geometry checks for a layer described by its manifest instead of host buffers: the
+// same refusals, made before the disk fast path stages that layer's pages to the pools.
+bool conversation_kv_fast_match(const ConversationKvGeom& geom, const QsaState& state, const ModelGeometry& g,
+                                int64_t upto, bool include_index, std::string& error);
+// The residency refresh conversation_kv_restore runs after the authoritative pools were rewritten - for the fast
+// path, which rewrites them with DirectStorage outside this file.  Caller synchronizes first; no attention may
+// read the state until this returns true.
+bool conversation_kv_refresh_residency(const QsaState& state, const ModelGeometry& g, int64_t upto,
+                                       std::string& error);
 // Disk sessions: the read limits this session can ever restore - its geometry and layer range, at most
 // min(max_tokens, its cells) tokens, `max_checkpoints` checkpoints, the exact running-state sizes and the K/V part
 // sizes at that many tokens - so session_file_read refuses an oversized or foreign file before it allocates.
@@ -167,11 +185,26 @@ ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& read
                                                          const ModelGeometry& g, const QsaState& draft,
                                                          int64_t upto, std::string& error);
 
+// The disk tier's fast-path write, bound by the caller (generate.cpp) to the engine's DirectStorage queue:
+// pages are pool-file bytes with a device destination, staged in one call, every page hash-verified on the
+// device before it scatters (fail closed).  Empty means the portable path; false discards the session, the
+// same contract as a failed page read.
+using ConversationFastWrite = std::function<bool(const std::string& pool_path,
+                                                 const std::vector<ConversationDsPage>& pages, std::string& error)>;
+
 // The same restore for any reader that yields one K/V layer at a time: a session file, or the disk tier's page pool.
 // The contract is the stream's: the reader is open, its metadata has been validated against this session here, and
 // finish() is called before `restored` is returned.
+// `fast` (optional, the disk tier's DirectStorage fast path, --conversation-cache-disk-fast-path): one call that
+// stages the whole restore's pages straight into the K/V pools, every page hash-verified on the device.  The fast
+// path runs only when it is set, the reader has a page table, and every layer's destinations are device memory;
+// any of those missing runs the portable path, byte for byte the one this function had before.  Once the fast
+// write has run and failed the session is discarded, the same contract as a failed page read.  `fast_used` (if
+// given) says which path ran.
 ConversationRestore conversation_snapshot_restore_layers(ConversationKvLayers& reader, SessionState& session,
                                                          const ModelGeometry& g, const QsaState* draft,
-                                                         int64_t upto, std::string& error);
+                                                         int64_t upto, std::string& error,
+                                                         const ConversationFastWrite& fast = {},
+                                                         bool* fast_used = nullptr);
 
 } // namespace strata::core

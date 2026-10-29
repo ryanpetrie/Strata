@@ -238,6 +238,31 @@ bool session_file_read(const std::string& path, const SessionFileIdentity& id, S
                        size_t& bytes, std::string& error, const SessionReadLimits& limits = {},
                        SessionStatus* status = nullptr);
 
+// A saved layer's geometry as its manifest describes it: the ConversationKv's seven fields and five part sizes,
+// without host buffers.  The disk fast path validates a layer against the session with this (the same checks
+// conversation_kv_validate makes) before staging any page to the K/V pools.
+struct ConversationKvGeom {
+    int64_t format = 0;
+    int64_t cells = 0;
+    int64_t heads = 0;
+    int64_t head_dim = 0;
+    int64_t page_size = 0;
+    int64_t pooled_rows = 0;
+    int64_t idx_dim = 0;
+    std::array<uint64_t, 5> sizes{};   // the byte counts of {k, v, k_scale, v_scale, pooled}
+};
+
+// One page of the disk fast path's next layer: the `bytes` at `file_offset` inside the pool file must hash to
+// `expect_hash` (session_hash64 with seed 0, the pool's content address) before the engine scatters them to `part`
+// at `part_offset` of the layer's destination set.  Where those bytes go is the restore's decision, not the reader's.
+struct ConversationPageJob {
+    uint64_t file_offset = 0;
+    uint64_t bytes = 0;
+    uint64_t expect_hash = 0;
+    int part = 0;
+    uint64_t part_offset = 0;
+};
+
 // A saved conversation whose K/V is read one layer at a time: a session file (SessionFileStream) or the shared page
 // pool of the disk cache (ConversationPageReader).  The restore path is the same for both (conversation_snapshot.hpp,
 // conversation_snapshot_restore_layers): meta() is complete when the reader has opened, next() yields exactly one
@@ -251,6 +276,19 @@ public:
     virtual bool finish(std::string& error) = 0;
     // The file's (or the paged entry's) bytes: for a report, not for a budget.
     virtual uint64_t bytes() const = 0;
+
+    // The disk fast path (conversation_snapshot.hpp): the next layer's pages as jobs into the pool file instead of
+    // host copies.  A true return fills `jobs`, the layer's `geom` and the pool file's `pool_path`, and advances
+    // exactly as next() does.  A reader whose bytes are not pages (the whole-file session format) sets `supported`
+    // false and consumes nothing, and the restore falls back to next(); a false return with `supported` true means
+    // the pages themselves are unreadable, which fails the restore the same way next() would.
+    virtual bool next_page_jobs(std::vector<ConversationPageJob>& jobs, ConversationKvGeom& geom,
+                                std::string& pool_path, bool& supported, std::string& error) {
+        (void) jobs; (void) geom; (void) pool_path;
+        supported = false;
+        error.clear();
+        return false;
+    }
 };
 
 // Reads a session file v1 one K/V layer at a time, for a restore whose whole host image would not fit in RAM.

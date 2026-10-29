@@ -118,6 +118,13 @@ public:
     uint64_t generation() const;
     const std::string& path() const { return pool_path_; }
 
+    // The Windows DirectStorage fast path (--conversation-cache-disk-fast-path): the storage stack opens the
+    // pool file while a write handle is held, and refuses it with a sharing violation.  Lend the held handle
+    // for one queued write (the file stays readable and append refuses while lent) and take it back when the
+    // fast read is over.  Where no write handle is held - or no fast path exists - this changes nothing.
+    bool borrow_for_fast_read(std::string& error);
+    void return_from_fast_read();
+
 private:
     struct Key {
         uint64_t hash = 0;
@@ -137,6 +144,7 @@ private:
     std::unique_ptr<Impl> impl_;
     std::string pool_path_, index_path_, tmp_path_;
     bool writable_ = false;
+    bool fast_borrowed_ = false;   // mu_: the pool handle is lent to the DirectStorage fast path
     uint64_t generation_ = 0, next_offset_ = 0;
     mutable std::mutex mu_;
     std::unordered_map<Key, Page, KeyHash> index_;
@@ -176,6 +184,9 @@ public:
     const SavedConversation& meta() const override;
     size_t layers() const override;
     bool next(ConversationKv& layer, std::string& error) override;
+    // The disk fast path: the same layer as jobs into the pool file (see ConversationKvLayers::next_page_jobs).
+    bool next_page_jobs(std::vector<ConversationPageJob>& jobs, ConversationKvGeom& geom, std::string& pool_path,
+                        bool& supported, std::string& error) override;
     bool finish(std::string& error) override;
     uint64_t bytes() const override;
 
