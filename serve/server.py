@@ -999,6 +999,9 @@ def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) 
             "disk_pool_mib": (parked.get("disk_pool_mib") if log_has_disk
                               else ((info.get("conversation_disk_pool_bytes") or 0) >> 20)),
             "disk_dead_bytes": info.get("conversation_disk_dead_bytes"),
+            # Phase 3: the DirectStorage fast path for the disk restore (0/1 from the INFO line; None when the
+            # engine predates it). Restore log lines may carry " path=directstorage", which the parse ignores.
+            "disk_fast_path": info.get("conversation_disk_fast_path"),
             "disk_demotions": parked.get("disk_demotions", 0),
             "disk_compactions": parked.get("disk_compactions", 0),
             "disk_compacted_mib": parked.get("disk_compacted_mib", 0),
