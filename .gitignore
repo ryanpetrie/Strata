@@ -63,6 +63,10 @@ build-vision-cuda12.bat
 /.ccache/
 /.rocm-win/
 
+# Optional MCP raster cache
+*.tool-media/
+/.tool-media/
+
 # local Windows HIP packaging output
 dist-hip/
 
@@ -102,3 +106,9 @@ node_modules/
 # a launch config's BACKUP holds the same API key as the config it backs up, and /strata-*.json does not
 # match a .bak: keep the backups out of git too.
 /strata-*.json.bak
+
+# DGX Spark build outputs and local venv (docs/DGX_SPARK_LINUX.md)
+/out-spark/
+/build-spark/
+/build-vision-spark/
+/.venv-build/
