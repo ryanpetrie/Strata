@@ -7,7 +7,81 @@ Plan: [DISK_CONVERSATION_CACHE_PLAN.md](DISK_CONVERSATION_CACHE_PLAN.md).
 This is the resume point: what is implemented, what the reference-host run measured, and what remains. The Phase 1
 measurement was made from commit `07f2b9fb` on the sm_89 build; the follow-up commits only change the staging default
 and record the evidence. Phase 2 (the copy-on-write page pool) is implemented and unit-tested, but not measured on the
-reference host.
+reference host. Phase 3 (the DirectStorage fast path) is implemented, unit-tested, and measured against the portable
+page read on two drives ([evidence](evidence/disk-fastpath.md)); no engine-end run of it was possible while a serving
+engine held the GPU.
+
+## Phase 3: the DirectStorage fast path (Windows + CUDA, opt-in)
+
+With `--conversation-cache-disk-fast-path` (needs `--conversation-cache-disk-mib` and `--conversation-cache-disk-cow`)
+a paged restore's page bytes travel by GPU DMA instead of through the host: DirectStorage reads the ranges straight
+out of `pool/pages.bin` into a 2×32 MiB shared D3D12/CUDA staging ring, signals a shared D3D12 fence that CUDA waits on
+as an imported external semaphore, and a kernel re-hashes every staged page (`session_hash64`, the pool's own content
+address) and scatters it into the live K/V pool **only on a match**. A corrupt or stale page therefore never reaches
+the K/V, and a failed fast write keeps the streaming restore's fail-closed contract: the session is discarded and the
+prompt is read from scratch.
+
+The fast path is opt-in and capability-checked at startup: the engine does **not** link `dstorage.dll` (it is loaded at
+runtime, telemetry disabled), a refusal prints one notice (`the disk fast path is off: …`) and every restore runs the
+portable path, which remains the default and the fallback. Refusals: not Windows+CUDA, no DirectStorage runtime, no
+D3D12 adapter matching the CUDA device, a non-paged disk tier, a whole-file entry, or a session whose K/V parts are not
+device memory (see the static-analysis note below). After 3 failed fast writes the attempts stop for the run.
+
+Implementation:
+
+| File | What it holds |
+| --- | --- |
+| `include/strata/core/conversation_ds.hpp`, `src/core/conversation_ds.cpp` | The engine: probe/create, the 2×32 MiB ring pipeline (queue → fence → semaphore → verify), the refusal stub on every other build. |
+| `include/strata/kernels/ds_pages.hpp`, `src/kernels/cuda/ds_pages.cu` | The verify/scatter kernel: per-page hash equal to the host hasher, scatter only on match, `bad` flag, `copy_bytes` 0 for pages past a borrowed prefix (verified, not written). |
+| `include/strata/core/conversation_file.hpp` | `ConversationKvGeom`, `ConversationPageJob`, `ConversationKvLayers::next_page_jobs` (default: unsupported → portable). |
+| `include/strata/core/conversation_pages.hpp`, `src/core/conversation_pages.cpp` | `next_page_jobs` (the layer's pages as file jobs); Windows pool handles opened with `FILE_SHARE_DELETE` (DirectStorage's open needs it); `borrow_for_fast_read`/`return_from_fast_read` lend the pool handle around a fast write (`append` refuses while lent). |
+| `include/strata/core/conversation_snapshot.hpp`, `src/core/conversation_state.cpp` | `conversation_kv_fast_targets` (destinations + device check), `conversation_kv_fast_match` (manifest-vs-session), `conversation_kv_refresh_residency`; the fast branch in `conversation_snapshot_restore_layers` (all fast-vs-portable decisions settled **before** the reader is consumed; after staging, failures map to the portable path's own codes). |
+| `src/program/generate.cpp` | `--conversation-cache-disk-fast-path`, the startup probe and notices, the INFO field `conversation_disk_fast_path=0/1`, the failure counter, the `path=directstorage` token on the restore log line. |
+| `serve/server.py` | `disk_fast_path` in the Conversation-cache view. |
+| `src/core/ds_pages_test.cpp` | Kernel test (below). `src/core/ds_probe.cpp`, `src/core/ds_bench_main.cpp`: the manual probe and the benchmark tool. |
+| `third_party/directstorage/` | The MIT DirectStorage 1.3 SDK (NuGet `Microsoft.Direct3D.DirectStorage` 1.3.0): headers and the x64 redist DLLs, vendored unmodified, provenance in its README. Not link-bound. |
+
+### What was validated (2026-10-28, `build-cuda`, RTX 4090)
+
+- `ds_pages_test` (new, GPU): 55 checks — the kernel's hash equals the host `session_hash64` for lengths 1…65 536
+  (tail rounds and the avalanche), a one-byte corruption sets `bad` and scatters **nothing**, a good page beside it
+  scatters intact, prefix copies (`copy_bytes` < page) and zero-copy verify-without-write behave. Passed.
+- `conversation_disk_test` 195, `conversation_snapshot_test` 4139, `conversation_cache_test` 4772,
+  `conversation_file_test` 183, `conversation_stream_test` 135, `conversation_validation_test` 972: all passed after
+  every Phase 3 change (the pool-file handle change included — compaction and atomic replace run under the wider
+  sharing). The portable loop inside `conversation_snapshot_restore_layers` is untouched code; the fast branch runs
+  only when the caller supplies a fast write.
+- `ds_bench` (same pool file, same pages, same device destination, 3 alternating rounds): the fast shape measured
+  **4.6–5.5 GB/s against the portable shape's 1.7–2.2 GB/s on the 980 PRO — 2.20× at 32 MiB rising to 2.99× at
+  1 GiB**; on the OS drive (Kingston) roughly break-even to 512 MiB and 1.98× at 1 GiB (noisy: 0.74–1.93× across two
+  same-hour runs). Byte-equality checks passed every run. Full tables, caveats (warm cache, contended GPU, ≤1 GiB
+  sizes) and the drive disagreement: [evidence/disk-fastpath.md](evidence/disk-fastpath.md), raw rounds in
+  [evidence/disk-fastpath-ds-bench-raw.txt](evidence/disk-fastpath-ds-bench-raw.txt).
+- The bench's portable arm (1.7–2.2 GB/s) independently matches the engine's own Phase 1 disk restores
+  (1.77–2.07 GB/s) — the harness measures what the engine sees.
+- No performance claim is taken from ninfer, whose design inspired the pipeline; every number here was measured on
+  this PC with the committed binary.
+
+### Phase 3: what was not run
+
+- **Engine end-to-end `path=directstorage` restore** (a serve request restored through the fast path): not run. A
+  serving engine held ~22.7 GiB of the GPU for the whole session; the full harness A/B was left for a free GPU.
+- **The reference configuration cannot take the fast path (static analysis, unconfirmed):** with
+  `--kv int8 --kv-resident 32768` the K/V streams through host slots (`pools()` returns `st.host.*` when
+  `kv_mode != 0`), `conversation_kv_fast_targets` finds a non-device destination and the restore runs portable — the
+  expected outcome is the fallback, not the fast path, for that config. Not exercised at the engine end either way.
+- **3.06 GiB (the 194K entry size)** in `ds_bench`: not run (destination buffer would not fit beside the serving
+  engine). The 1 GiB ratios are not extrapolated.
+- **Cold-cache restores** (file not in the OS cache): not measured; both bench arms read a warm file.
+- **Linux GPUDirect Storage (`cuFile`)**: not implemented and not run — this worktree is Windows-only tooling; the
+  plan's Linux fast path remains open. The portable path serves Linux unchanged.
+- **HIP, SYCL, Metal builds**: not built here (no AMD/Mac hardware). `conversation_ds.cpp` is written to compile to a
+  runtime refusal stub outside Windows+CUDA, but no non-Windows-CUDA build has compiled it yet.
+- **Release packaging**: the two redist DLLs are not yet in the Windows engine package (`packaging/binary_deps.py`
+  follows PE imports and cannot see a dynamically loaded DLL). Without them the fast path prints its refusal notice
+  and everything runs portable — but shipping the win means adding them to the engine component. Not done here.
+- **Failure injection at the engine level** (corrupt a pool page between save and restore through the serve path):
+  covered at the kernel level (`ds_pages_test`) and at the pool level (Phase 2 corrupt-page test), not end to end.
 
 ## Phase 2: the page pool (copy-on-write, opt-in)
 
