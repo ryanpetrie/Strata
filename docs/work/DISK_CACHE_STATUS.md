@@ -53,35 +53,41 @@ Implementation:
   only when the caller supplies a fast write.
 - `ds_bench` (same pool file, same pages, same device destination, 3 alternating rounds): the fast shape measured
   **4.6–5.5 GB/s against the portable shape's 1.7–2.2 GB/s on the 980 PRO — 2.20× at 32 MiB rising to 2.99× at
-  1 GiB**; on the OS drive (Kingston) roughly break-even to 512 MiB and 1.98× at 1 GiB (noisy: 0.74–1.93× across two
-  same-hour runs). Byte-equality checks passed every run. Full tables, caveats (warm cache, contended GPU, ≤1 GiB
-  sizes) and the drive disagreement: [evidence/disk-fastpath.md](evidence/disk-fastpath.md), raw rounds in
+  1 GiB**; on an idle GPU the two larger sizes added **2.28× at 1.5 GiB and 2.31× at 3 GiB** (the reference entry's
+  size), so the ratio holds with size. On the OS drive (Kingston) roughly break-even to 512 MiB and 1.98× at 1 GiB
+  (noisy: 0.74–1.93× across two same-hour runs). Byte-equality checks passed every run. Full tables, caveats (warm
+  cache, up to 1 GiB beside a resident engine) and the drive disagreement:
+  [evidence/disk-fastpath.md](evidence/disk-fastpath.md), raw rounds in
   [evidence/disk-fastpath-ds-bench-raw.txt](evidence/disk-fastpath-ds-bench-raw.txt).
-- The bench's portable arm (1.7–2.2 GB/s) independently matches the engine's own Phase 1 disk restores
-  (1.77–2.07 GB/s) — the harness measures what the engine sees.
+- The bench's portable arm (1.7-2.2 GB/s) independently matches the engine's own Phase 1 disk restores
+  (1.77-2.07 GB/s) - the harness measures what the engine sees.
+- **The live engine, end to end** (2026-10-29, idle RTX 4090, spill dir on D:): a device-resident conversation's
+  restores ran through the fast path on every attempt (`path=directstorage`): **78.5 ms for 9,402 tokens / 480 MiB
+  (6,079 MiB/s)** and 83.2 ms (5,760 MiB/s). The same conversation on the same pool with the flag off restored
+  portably in **148.5 ms (3,212 MiB/s)** and 168.6 ms (2,841 MiB/s): **1.89x and 2.03x**, engine-to-engine. Note the
+  portable end-to-end rate is higher than the bench's portable shape (the engine reads a page at a time into staging
+  and uploads per layer), so the bench's ratios are the optimistic ones and 1.9-2.0x is the engine-level figure.
+- **Fail-closed, end to end, on both paths**: three data bytes of three of the conversation's pages were flipped on
+  disk. The fast path refused (`page hash mismatch (staging refused)`), the portable path refused
+  (`page checksum mismatch`); each re-read the prompt from scratch and answered identically to a later read of the
+  same messages. The corrupted bytes were put back.
 - No performance claim is taken from ninfer, whose design inspired the pipeline; every number here was measured on
   this PC with the committed binary.
 
 ### Phase 3: what was not run
 
-- **Engine end-to-end `path=directstorage` restore** (a serve request restored through the fast path): not run. A
-  serving engine held ~22.7 GiB of the GPU for the whole session; the full harness A/B was left for a free GPU.
-- **The reference configuration cannot take the fast path (static analysis, unconfirmed):** with
-  `--kv int8 --kv-resident 32768` the K/V streams through host slots (`pools()` returns `st.host.*` when
-  `kv_mode != 0`), `conversation_kv_fast_targets` finds a non-device destination and the restore runs portable — the
-  expected outcome is the fallback, not the fast path, for that config. Not exercised at the engine end either way.
-- **3.06 GiB (the 194K entry size)** in `ds_bench`: not run (destination buffer would not fit beside the serving
-  engine). The 1 GiB ratios are not extrapolated.
-- **Cold-cache restores** (file not in the OS cache): not measured; both bench arms read a warm file.
-- **Linux GPUDirect Storage (`cuFile`)**: not implemented and not run — this worktree is Windows-only tooling; the
+- **The reference configuration's fallback (static analysis):** with `--kv int8 --kv-resident 32768` the K/V streams
+  through host slots (`pools()` returns `st.host.*` when `kv_mode != 0`), `conversation_kv_fast_targets` finds a
+  non-device destination and the restore runs portable. The engine-end run above used a device-resident config, so
+  that fallback is still an expectation from reading the code, not a measured run of the reference config.
+- **Cold-cache restores** (file not in the OS cache): not measured; the bench and the engine runs read warm files.
+- **Linux GPUDirect Storage (`cuFile`)**: not implemented and not run - this worktree is Windows-only tooling; the
   plan's Linux fast path remains open. The portable path serves Linux unchanged.
 - **HIP, SYCL, Metal builds**: not built here (no AMD/Mac hardware). `conversation_ds.cpp` is written to compile to a
   runtime refusal stub outside Windows+CUDA, but no non-Windows-CUDA build has compiled it yet.
 - **Release packaging**: the two redist DLLs are not yet in the Windows engine package (`packaging/binary_deps.py`
   follows PE imports and cannot see a dynamically loaded DLL). Without them the fast path prints its refusal notice
-  and everything runs portable — but shipping the win means adding them to the engine component. Not done here.
-- **Failure injection at the engine level** (corrupt a pool page between save and restore through the serve path):
-  covered at the kernel level (`ds_pages_test`) and at the pool level (Phase 2 corrupt-page test), not end to end.
+  and everything runs portable - but shipping the win means adding them to the engine component. Not done here.
 
 ## Phase 2: the page pool (copy-on-write, opt-in)
 
