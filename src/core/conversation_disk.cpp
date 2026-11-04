@@ -1367,6 +1367,21 @@ bool ConversationDiskStore::remove(uint64_t serial, std::string& error) {
     return true;
 }
 
+void ConversationDiskStore::guard(uint64_t serial) {
+    std::lock_guard<std::mutex> lock(mu_);
+    guarded_ = serial;
+}
+
+void ConversationDiskStore::unguard() {
+    std::lock_guard<std::mutex> lock(mu_);
+    guarded_ = 0;
+}
+
+uint64_t ConversationDiskStore::guarded() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return guarded_;
+}
+
 void ConversationDiskStore::note_restore(uint64_t ms, uint64_t bytes) {
     std::lock_guard<std::mutex> lock(mu_);
     ++stats_.restores;
@@ -1398,7 +1413,7 @@ bool ConversationDiskStore::evict_until_fits(uint64_t need, std::string& why) {
     while (!fits()) {
         bool evicted = false;
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
-            if (it->pinned) continue;
+            if (it->pinned || (guarded_ != 0 && it->serial == guarded_)) continue;
             erase_files(*it);
             bytes_ -= it->bytes;
             entries_.erase(it);
@@ -1407,7 +1422,9 @@ bool ConversationDiskStore::evict_until_fits(uint64_t need, std::string& why) {
             break;
         }
         if (!evicted) {
-            why = "the disk cache has no unpinned entry left to evict";
+            why = guarded_ != 0
+                      ? "the disk cache has no entry left to evict (the one being restored is protected)"
+                      : "the disk cache has no unpinned entry left to evict";
             return false;
         }
     }
@@ -1421,7 +1438,7 @@ void ConversationDiskStore::enforce_limits() {
     while (over()) {
         bool evicted = false;
         for (auto it = entries_.begin(); it != entries_.end(); ++it) {
-            if (it->pinned) continue;
+            if (it->pinned || (guarded_ != 0 && it->serial == guarded_)) continue;
             erase_files(*it);
             bytes_ -= it->bytes;
             entries_.erase(it);
@@ -1429,7 +1446,7 @@ void ConversationDiskStore::enforce_limits() {
             evicted = true;
             break;
         }
-        if (!evicted) return;   // only pinned entries left: they stay, and the next save refuses until they can go
+        if (!evicted) return;   // only pinned/guarded entries left: they stay, and the next save refuses until they can go
     }
 }
 

@@ -230,6 +230,24 @@ of the plan's 512 MiB bound fails; a private/committed reading passes. Both are 
 | Default off unchanged | No store I/O, no fingerprint, no directory; the only visible change is the new INFO keys. Unit tests pass; not re-measured end to end in this run. |
 | Windows CUDA; HIP | Windows CUDA built and run. HIP/SYCL/Metal not built (no AMD GPU). |
 
+## Restore-time saves: two long conversations (2026-11-04)
+
+A request that restores an entry from disk used to park the outgoing conversation **into RAM only**: `DiskRestoreMark`
+set `disk_restoring` and `park_to_disk` returned before writing anything. That is safe when the outgoing conversation
+is small enough for L1, but with two conversations larger than the L1 budget alternating, the one that happened to be
+outgoing whenever the other was restored never got a disk copy at all. On the reference host with
+`--conversation-cache-mib 2048` (snapshots ~2.7-3.3 GiB), the log alternated a 2.3 s disk restore for one conversation
+with `prompt 169526 tokens = 0 reused + 169526 read in 67101 ms` for the other; its manifest was never written (the
+disk index held 91K, 108K, 138K, 182K and 229K-token copies, none at 169K). So one of the two agents re-read its whole
+prompt every turn.
+
+The store now guards the entry a restore is reading (`guard(serial)`): `evict_until_fits` treats it like a pinned
+entry, so the outgoing conversation's save proceeds when it fits beside it and refuses (with
+`no entry left to evict (the one being restored is protected)`) when it would need its room. `park_to_disk` no longer
+returns early for `disk_restoring`, and the new entry does not remove the guarded one. Unit-tested in
+`conversation_disk_test` (a guarded entry survives an eviction that would otherwise take it; a save that needs its
+room refuses and leaves it). Not yet measured end to end on the reference host.
+
 ## Remaining gaps and decisions
 
 - **Staging default is now 1024 MiB**, not 512: an 11.7K restore asked for 537 MiB (metadata + one layer + the 16 MiB

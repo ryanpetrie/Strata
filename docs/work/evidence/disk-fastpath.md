@@ -140,7 +140,12 @@ An observation from the run, by reading the code (not a defect): when a request 
 outgoing conversation is parked **into RAM only** (`DiskRestoreMark` suppresses the disk save), because that save
 could evict or supersede the entry being read. With the RAM cache off (`--conversation-cache-mib 0`) the outgoing
 conversation is therefore dropped, and the small second conversation used to force the parking was never itself
-saved — its turns in this driver were cold reads by design.
+saved - its turns in this driver were cold reads by design.
+
+**Follow-up (2026-11-04):** this suppression was a defect for two conversations larger than L1. The store now guards
+the entry being restored instead of refusing every save, so the outgoing conversation is written when it fits beside
+it (see [../DISK_CACHE_STATUS.md](../DISK_CACHE_STATUS.md#restore-time-saves-two-long-conversations-2026-11-04)).
+The observation above still describes the code this run was made with.
 
 ## What the portable baseline's level means
 

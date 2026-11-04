@@ -194,6 +194,12 @@ public:
     bool touch(uint64_t serial);
     // The manifest goes first, so an interrupted delete cannot come back at the next start.
     bool remove(uint64_t serial, std::string& error);
+    // The entry a restore is reading right now: a save may not evict it, so the outgoing conversation's park can be
+    // written to the tier (when it fits beside the entry) instead of being dropped for the whole turn.  A save that
+    // would need the guarded entry's room refuses, exactly as if only pinned entries were left.  0 clears it.
+    void guard(uint64_t serial);
+    void unguard();
+    uint64_t guarded() const;
     void note_restore(uint64_t ms, uint64_t bytes);
     void note_restore_failure();
     size_t clear();
@@ -207,6 +213,7 @@ private:
     std::deque<Entry> entries_;   // least recently used first
     uint64_t bytes_ = 0, clock_ = 0, next_serial_ = 1;
     bool saving_ = false;
+    uint64_t guarded_ = 0;   // the entry a restore is reading: never evicted by a save (see guard())
     Stats stats_;
     std::unique_ptr<ConversationPagePool> pool_;   // null in whole-file mode or when the tier is off
 

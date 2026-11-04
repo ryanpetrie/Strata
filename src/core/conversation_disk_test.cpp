@@ -517,6 +517,43 @@ int main() {
         std::string err;
         uint64_t bytes = 0;
         ConversationDiskStore s(options(root, 1000), identity(), err);
+        check(s.save(meta({1, 2}), 400, writer(400), bytes, err), "save A before the guard");
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
+        check(s.save(meta({3, 4}), 400, writer(400), bytes, err), "save B before the guard");
+        const uint64_t b = s.best(std::vector<int32_t>{3, 4, 9}, {}, true, kLoraNone).serial;
+        s.guard(a);
+        check(s.guarded() == a, "the store reports the guarded entry");
+        // C needs room: the guard sends the eviction to B, not to the entry a restore is reading
+        check(s.save(meta({5, 6}), 400, writer(400), bytes, err), "save C beside the guarded entry");
+        check(s.find(a) != nullptr && s.find(b) == nullptr, "the guarded entry survives, the other one is evicted");
+        s.unguard();
+        check(s.guarded() == 0, "unguard clears the guard");
+        fs::remove_all(root);
+    }
+    {
+        const fs::path root = unique_root();
+        std::string err;
+        uint64_t bytes = 0;
+        ConversationDiskStore s(options(root, 1000), identity(), err);
+        check(s.save(meta({1, 2}), 400, writer(400), bytes, err), "save the only entry before the guard");
+        const uint64_t a = s.best(std::vector<int32_t>{1, 2, 9}, {}, true, kLoraNone).serial;
+        s.guard(a);
+        // D cannot fit beside the guarded entry: the save refuses and the entry stays
+        std::string path;
+        check(!s.save(meta({7, 8}), 700, writer(700, &path), bytes, err), "a save that needs the guarded entry: refuse");
+        check(s.find(a) != nullptr && s.entries() == 1 && s.stats().evictions == 0,
+              "the refusal keeps the guarded entry and evicts nothing");
+        check(path.empty() || !fs::exists(path), "the refused guarded save wrote no payload");
+        s.unguard();
+        check(s.save(meta({7, 8}), 700, writer(700), bytes, err), "after unguard the save fits");
+        check(s.find(a) == nullptr, "the former guarded entry can be evicted after unguard");
+        fs::remove_all(root);
+    }
+    {
+        const fs::path root = unique_root();
+        std::string err;
+        uint64_t bytes = 0;
+        ConversationDiskStore s(options(root, 1000), identity(), err);
         ConversationDiskMeta pinned = meta({1, 2, 3});
         pinned.checkpoints.push_back(checkpoint({1, 2}, 1, true));
         check(s.save(pinned, 500, writer(500), bytes, err), "save the pinned entry beside a normal one");

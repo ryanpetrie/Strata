@@ -10688,18 +10688,31 @@ int main(int argc, char** argv) {
         // session until this returns.  A disk failure is a cache miss, never a fatal error, and it never touches the
         // RAM cache or the live state.
         // A restore from the disk tier is in flight (a request is about to read that entry): the outgoing
-        // conversation's park must not write to the tier, least of all evict the entry being restored.  L1 parking
-        // still runs, as it does for a borrow.  Set around the park only, by DiskRestoreMark below.
+        // conversation's park may still write to the tier, but it must not evict the entry being restored.  The store
+        // guards that serial for the park (see guard()), so a save that fits beside it proceeds and one that would
+        // need its room refuses; L1 parking runs as it does for a borrow either way.  Without the guard the outgoing
+        // conversation was dropped whenever the incoming one came from disk, and with two long conversations
+        // alternating the second one never got a disk copy and re-read its whole prompt every turn.
         bool disk_restoring = false;
         struct DiskRestoreMark {
             bool& flag;
-            explicit DiskRestoreMark(bool& f) : flag(f) { flag = true; }
-            ~DiskRestoreMark() { flag = false; }
+            strata::core::ConversationDiskStore& store;
+            uint64_t serial;
+            DiskRestoreMark(bool& f, strata::core::ConversationDiskStore& s, uint64_t ser)
+                : flag(f), store(s), serial(ser) {
+                flag = true;
+                store.guard(serial);
+            }
+            ~DiskRestoreMark() {
+                store.unguard();
+                flag = false;
+            }
         };
         // --conversation-cache-disk-demote: an entry the RAM cache is about to drop is written to the disk tier
         // instead.  Opt-in: the demotion copies the entry's metadata (not its K/V) and streams the K/V from the
         // entry's host buffers, so it costs the existing RAM, not a second copy of the conversation.  Not while a
-        // disk entry is being restored: the demotion's save could evict the very entry this request is reading.
+        // disk entry is being restored: the restore's own entry and page pool stay untouched (the store's guard
+        // would protect the entry from eviction too; keeping demotion off keeps the restore path as simple as it was).
         if (o.conversation_disk_demote && disk.enabled() && disk.paged()) {
             conversations.set_demote([&](const strata::core::SavedConversation& image) -> bool {
                 try {
@@ -10754,7 +10767,8 @@ int main(int argc, char** argv) {
             });
         }
         auto park_to_disk = [&]() -> bool {
-            if (disk_restoring) return false;
+            // A restore in flight does not stop this save: the store guards the entry being read, so a save that
+            // fits beside it succeeds and one that would evict it refuses (the same safe outcome as before).
             if (!disk.enabled() || !live_ok || live.empty() || !disk.wants((int64_t) live.size())) return false;
             if (!stages.empty() || o.batch > 0 || o.peer_device >= 1) {
                 // Start-up turned the tier off for these; kept so no future path reaches the writer with them.
@@ -10911,8 +10925,9 @@ int main(int argc, char** argv) {
                                  serr.c_str(), live.size(), (unsigned long long) (estimate >> 20));
                     return false;
                 }
-                // the new entry supersedes the disk copy of this same live conversation
-                if (best.live && best.tokens > 0) {
+                // the new entry supersedes the disk copy of this same live conversation - unless that copy is the
+                // one this request is restoring (guarded): the reader still needs it, so both stay for now
+                if (best.live && best.tokens > 0 && best.serial != disk.guarded()) {
                     std::string rerr;
                     disk.remove(best.serial, rerr);
                 }
@@ -14999,10 +15014,10 @@ int main(int argc, char** argv) {
                 };
             }
             if (use_disk) {
-                // the outgoing conversation is parked as for a borrow - into RAM only: the disk tier's own save would
-                // evict (or supersede) the entry this request is about to read
+                // the outgoing conversation is parked as for a borrow; the store guards the entry this request is
+                // about to read, so the disk tier may take the outgoing one when it fits beside it
                 if (!pin_sibling && park_worth) {
-                    DiskRestoreMark restoring(disk_restoring);
+                    DiskRestoreMark restoring(disk_restoring, disk, disk_serial);
                     if (!park_current(0)) {
                         std::printf("ERR %s\n", err.c_str());
                         return 1;
