@@ -7998,7 +7998,7 @@ int main(int argc, char **argv) try {
         auto park_source = [&](const ParkSource& src, size_t held) -> bool {
             // #342: before make_room evicts oldest-first, the copies of this conversation a turn back go (they hold
             // nothing the outgoing chain does not, apart from the tail this conversation rewrote)
-            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
+            if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec, strata::core::kLoraNone))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
@@ -9502,7 +9502,7 @@ int main(int argc, char **argv) try {
             };
             const bool in_main = live_ok && cvec_cached == sl.cvec && prefix_of(live) &&
                                  imgs_below(live_imgs, (int64_t) sl.ids.size()).empty();
-            if (in_main || conversations.holds(sl.ids, {}, sl.cvec)) return;
+            if (in_main || conversations.holds(sl.ids, {}, sl.cvec, strata::core::kLoraNone)) return;
             if (use_mtp && !batch_mtp) {   // no draft K/V of its own: an image without it would not restore beside the drafter
                 std::fprintf(stderr, "strata serve: conversation cache: slot %d not parked before its overwrite (its %zu tokens "
                                      "have no per-slot draft K/V without --batch-mtp)\n", b, sl.ids.size());
@@ -10391,7 +10391,7 @@ int main(int argc, char **argv) try {
                             slot_ck = &c;
                         }
                 }
-            const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            const auto parked = conversations.best(ids, req_imgs, want_cvec, strata::core::kLoraNone);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
             if (incoming) slot_source = -1;
