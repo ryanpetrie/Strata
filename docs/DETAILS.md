@@ -802,6 +802,8 @@ their hash and reused. Without the flag the disk tier keeps the earlier one-file
 | `--conversation-cache-disk-whole-file` | One session file per conversation (the earlier format). This is the default; it is explicit for scripts and comparisons. |
 | `--conversation-cache-disk-cow` | Keep the K/V as content-addressed pages in one shared pool (Phase 2). |
 | `--conversation-cache-disk-demote` | When the RAM cache evicts a conversation, write it to disk instead of dropping it. Needs `--conversation-cache-disk-cow`; off by default. |
+| `--conversation-cache-flush-min MIN` | Timed flush to the disk tier: between requests, and once more when the server stops, write the conversations that grew since their disk copy, so a clean stop re-reads at most one interval's turns. `0` (the default) is off: evictions stay the only writers. |
+| `--conversation-cache-flush-min-tokens N` | How far past its disk copy a conversation must have grown before an idle flush rewrites it; default 8192. The final round on stop skips only copies that are already exact. |
 | `--conversation-cache-disk-compact-min-mib N` | Dead page bytes before the pool is compacted; default 2048. |
 | `--conversation-cache-disk-compact-min-pages N` | Dead pages before the pool is compacted; default 256. |
 
@@ -834,6 +836,18 @@ their hash and reused. Without the flag the disk tier keeps the earlier one-file
 - A `park=0` request (the decision endpoint, `"strata_checkpoint": false`) is never written.
 - Single GPU only. `--layer-split`, `--batch` and `--peer-device` turn the disk tier off with a log line, and the RAM
   cache serves alone.
+
+Why a timed flush: the tier writes when the RAM cache evicts a conversation, but a conversation that was never
+evicted is lost when the server stops even if the disk tier has plenty of room. Measured 2026-11-12 (RTX 4090, whole-file
+tier, engine 0.1.59.1): a 207,893-token prompt read at 0 tokens reused in 83.8 s after a restart mid-session, against the
+same conversation restoring from disk in 2.9 s. `--conversation-cache-flush-min MIN` adds two writing points: between
+requests - the loop has just read a line, so no request runs and every conversation is at rest - and once more when
+`QUIT` arrives, so a clean stop leaves fresh disk copies behind. An idle round skips copies that are already exact or
+grew less than `--conversation-cache-flush-min-tokens` (default 8192) and runs at most once per interval. The round on
+stop waives the growth threshold, flushes the parked conversations smallest first so a bounded round commits the cheap
+ones before a 200K one, and gives up starting new flushes after 10 s; the server gives `QUIT` 20 s before escalating,
+and a save already underway finishes. A stop that never sends `QUIT` (terminate, kill, power loss) still loses what
+RAM alone held - but never anything half-written: the manifest commits last and the next start sweeps the rest.
 - Files are plaintext: engine state and token identity, not an encrypted archive and not a chat export. The folder is
   created 0700 and files 0600 on Linux and macOS; on Windows they inherit the user profile's permissions. Keep the
   folder private to your user and do not share it.

@@ -134,6 +134,18 @@ int main() {
         check(cache.put(image({5, 6})), "evict oldest by slot limit");
         check(cache.best(b, {}, true, kLoraNone).tokens == 0 && cache.best(a, {}, true, kLoraNone).tokens == 3, "B evicted before A");
         check(cache.evictions() == 1, "eviction counter");
+        size_t seen = 0, walked_tokens = 0;
+        std::vector<int32_t> first_ids;
+        bool first_seen = false;
+        cache.for_each([&](const auto& e) {
+            if (!first_seen) { first_seen = true; first_ids = e.live.ids; }
+            ++seen;
+            walked_tokens += e.live.ids.size();
+        });
+        check(seen == 2 && seen == cache.size() && walked_tokens == 5, "for_each visits every parked conversation once");
+        check(first_ids == std::vector<int32_t>({1, 2, 3}), "for_each walks oldest parked first");
+        check(cache.size() == 2 && cache.bytes() == image({1, 2, 3}).bytes() + image({5, 6}).bytes(),
+              "for_each leaves the cache untouched");
     }
     {
         // evict_oldest(): the physical-RAM admission gate in generate.cpp frees parked conversations

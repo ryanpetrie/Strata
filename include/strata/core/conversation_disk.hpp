@@ -110,6 +110,9 @@ public:
     };
     struct Stats {
         uint64_t saves = 0, evictions = 0, refusals = 0, errors = 0, restores = 0, restore_failures = 0;
+        // saved conversations the start-up scan deleted because another model, config or engine build wrote them:
+        // the identity (session_config_fingerprint) includes the engine version, so an upgrade forgets the folder
+        uint64_t stale = 0;
         uint64_t last_save_ms = 0, last_restore_ms = 0, last_restore_bytes = 0;
         // Phase 2: what the last save wrote and reused, and the pool's write amplification and compaction
         uint64_t last_save_written_bytes = 0, last_save_reused_bytes = 0;

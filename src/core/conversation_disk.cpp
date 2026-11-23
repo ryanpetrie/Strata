@@ -720,7 +720,8 @@ bool ConversationDiskStore::scan(std::string& error) {
             continue;
         }
         if (md.model != identity_.model || md.config != identity_.config) {
-            drop();
+            drop();   // another model, config or engine build saved it: it is stale, not corrupt
+            ++stats_.stale;
             continue;
         }
         Entry e;

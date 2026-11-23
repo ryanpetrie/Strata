@@ -262,6 +262,27 @@ int main() {
         fs::remove_all(root);
     }
 
+    // ---- what another identity saved is forgotten at the scan and counted as stale, not as an error ----
+    {
+        const fs::path root = unique_root();
+        ConversationDiskOptions o = options(root, 1u << 20);
+        std::string err;
+        uint64_t bytes = 0;
+        {
+            ConversationDiskStore s(o, identity(), err);
+            check(s.save(meta({1, 2, 3}), 100, writer(100), bytes, err), "save before the identity test");
+        }
+        check(manifest_files(root).size() == 1, "one manifest before the identity test");
+        {
+            ConversationDiskStore s(o, identity(7, 10), err);   // another config: the saved conversation is the other build's
+            check(s.enabled() && s.entries() == 0, "a manifest from another config is refused");
+            check(s.stats().stale == 1 && s.stats().errors == 0, "the forgotten conversation counts as stale, not as an error");
+        }
+        check(manifest_files(root).empty() && files_with_suffix(root / "conversations", ".payload").empty(),
+              "the stale manifest and its payload are deleted");
+        fs::remove_all(root);
+    }
+
     // ---- the flags word: a state that names two adapters and a bit this build does not know are both refused ----
     {
         const fs::path root = unique_root();

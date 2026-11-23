@@ -960,6 +960,15 @@ struct Options {
     /// (Windows + CUDA; capability-checked at startup, the portable path stays the default and the fallback).
     bool conversation_disk_fast_path = false;     // --conversation-cache-disk-fast-path
     bool conversation_disk_demote = false;        // --conversation-cache-disk-demote: spill L1 evictions to L2
+    /// --serve: minutes between timed flushes to the disk tier.  At the loop's safe points (between requests, and
+    /// on QUIT before the exit phase) the live conversation and the parked conversations that grew by more than
+    /// conversation_flush_min_tokens since their disk copy are spilled, so a clean stop costs at most one interval's
+    /// re-read instead of the whole prompt.  A flush that never finished leaves nothing half-written: the store
+    /// commits the manifest last and the scan sweeps everything else (conversation_disk.cpp).
+    int64_t conversation_flush_min = 0;           // --conversation-cache-flush-min, 0 = off (the default:
+                                                  // only evictions write to disk, exactly as before)
+    int64_t conversation_flush_min_tokens = 8192; // --conversation-cache-flush-min-tokens: the growth an idle
+                                                  // flush waits for; the final round on stop waives it
     int64_t conversation_disk_compact_min_mib = 2048;   // dead bytes before the pool is compacted
     int64_t conversation_disk_compact_min_pages = 256;  // dead pages before the pool is compacted
     /// --serve: park only conversations of at least this many tokens.  Every parked conversation costs one of
@@ -1181,6 +1190,13 @@ void usage() {
                  "                       format; this is the default without --conversation-cache-disk-cow)\n"
                  "  --conversation-cache-disk-demote  --serve: when the RAM cache evicts a conversation, write it to disk\n"
                  "                       instead of dropping it (default off; needs --conversation-cache-disk-cow)\n"
+                 "  --conversation-cache-flush-min MIN  --serve (opt-in): between requests and once more on stop, write\n"
+                 "                       the conversations that grew since their disk copy to the disk tier, so a clean\n"
+                 "                       stop re-reads at most one interval's turns, not the whole prompt\n"
+                 "                       (default 0 = off; needs --conversation-cache-disk-mib)\n"
+                 "  --conversation-cache-flush-min-tokens N  --serve: how far past its disk copy a conversation must\n"
+                 "                       have grown before an idle flush rewrites it (default 8192; the final round on\n"
+                 "                       stop skips only copies already exact)\n"
                  "  --conversation-cache-disk-compact-min-mib N  --serve: dead page bytes before the pool is compacted\n"
                  "                       (default 2048; a compaction also needs --conversation-cache-disk-compact-min-pages)\n"
                  "  --conversation-cache-disk-compact-min-pages N  --serve: dead pages before the pool is compacted\n"
@@ -3772,6 +3788,8 @@ int main(int argc, char** argv) {
         else if (a == "--conversation-cache-disk-whole-file") o.conversation_disk_whole_file = true;
         else if (a == "--conversation-cache-disk-fast-path") o.conversation_disk_fast_path = true;
         else if (a == "--conversation-cache-disk-demote") o.conversation_disk_demote = true;
+        else if (a == "--conversation-cache-flush-min") o.conversation_flush_min = std::max(0LL, std::atoll(next("--conversation-cache-flush-min")));
+        else if (a == "--conversation-cache-flush-min-tokens") o.conversation_flush_min_tokens = std::max(0LL, std::atoll(next("--conversation-cache-flush-min-tokens")));
         else if (a == "--prompt-cache-tail") o.prompt_cache_tail = true;
         else if (a == "--prompt-cache-spread") o.prompt_cache_spread = true;
         else if (a == "--prompt-cache-every") o.prompt_cache_every = std::max(0LL, std::atoll(next("--prompt-cache-every")));
@@ -12406,6 +12424,13 @@ int main(int argc, char** argv) {
                          (long long) o.conversation_disk_slots, (long long) o.conversation_disk_staging_mib,
                          (long long) o.conversation_disk_min_free_mib, disk.entries(), disk.paged() ? 1 : 0,
                          conversation_disk_pool_info >> 20);
+            // why the folder was not empty when the scan said entries=0: an engine upgrade changes the config
+            // fingerprint, so everything the previous build saved is deleted here.  Say so in one plain line.
+            if (disk.stats().stale > 0)
+                std::fprintf(stderr, "strata serve: conversation cache: refused %llu saved conversations from another "
+                                     "model, config or engine build; only the build that saved a conversation can "
+                                     "restore it\n",
+                             (unsigned long long) disk.stats().stale);
         } else if (disk_asked && disk_why.empty()) {
             std::fprintf(stderr, "strata serve: conversation cache: the disk tier is off: %s; serving with the RAM "
                                  "cache only\n",
@@ -12417,6 +12442,24 @@ int main(int argc, char** argv) {
         if (o.conversation_disk_only && !disk.enabled())
             std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-disk-only is set but the disk "
                                  "tier is off: no conversation will be parked\n");
+        // --conversation-cache-flush-min (opt-in): the timed flush, a periodic SAVE on the disk tier's own terms.
+        // It runs at the loop's safe points (between requests, and on QUIT before the exit phase), and only in a
+        // configuration where a live conversation can reach the disk tier at all - park_to_disk's own rule, checked
+        // once here so a cycle never has to say why it is off.
+        bool conversation_flush_on = false;
+        if (o.conversation_flush_min > 0 && !disk.enabled())
+            std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-flush-min needs the disk tier "
+                                 "(--conversation-cache-disk-mib); it is off\n");
+        else if (o.conversation_flush_min > 0 && (!stages.empty() || o.batch > 0 || o.peer_device >= 1))
+            std::fprintf(stderr, "strata serve: conversation cache: --conversation-cache-flush-min is off: this "
+                                 "configuration does not support the disk tier\n");
+        else if (o.conversation_flush_min > 0) {
+            conversation_flush_on = true;
+            std::fprintf(stderr, "strata serve: conversation cache: flush on: idle flushes every %lld min past %lld "
+                                 "tokens of growth, a final round on stop; conversations reach disk on eviction as "
+                                 "always\n",
+                         (long long) o.conversation_flush_min, (long long) o.conversation_flush_min_tokens);
+        }
         // --conversation-cache-disk-fast-path (Phase 3, opt-in): restores of the page pool run through DirectStorage -
         // GPU DMA from pool/pages.bin into a small shared VRAM ring, hash-verified on the device, scattered straight
         // into the K/V pools.  Probed once here (library, adapter match, ring, queue): a refusal is a notice, never
@@ -12727,6 +12770,147 @@ int main(int argc, char** argv) {
             }
             return false;
         };
+        // --conversation-cache-flush-min: spill one PARKED conversation (an idle session's RAM entry) to the disk
+        // tier without evicting it: the K/V streams from the host buffers the entry already holds, so a flush costs
+        // the RAM it already had, never a second copy of the conversation (the demote hook's streaming rule, reused).
+        // The whole-file branch is the session writer reading the same sources; the page branch is the demote path.
+        auto spill_image = [&](const strata::core::SavedConversation& image, const char* what) -> bool {
+            if (disk_restoring || image.live.ids.empty() || !disk.wants((int64_t) image.live.ids.size())) return false;
+            try {
+                strata::core::ConversationDiskMeta dm;
+                dm.ids = image.live.ids;
+                dm.images = image.live.imgs;
+                dm.cvec = image.cvec;
+                dm.lora = image.lora;   // the entry's own adapter state: a copy written adapted must never answer
+                                        // a base-model request, nor the reverse (the demote hook's key rule)
+                dm.checkpoints.reserve(image.checkpoints.size());
+                for (const auto& c : image.checkpoints) {
+                    strata::core::ConversationCheckpoint slim;
+                    slim.ids = c.ids;
+                    slim.imgs = c.imgs;
+                    slim.used = c.used;
+                    slim.pinned = c.pinned;
+                    dm.checkpoints.push_back(std::move(slim));
+                }
+                strata::core::SavedConversation head;   // the metadata and the running checkpoint, not the K/V
+                head.geometry = image.geometry;
+                head.layer_lo = image.layer_lo;
+                head.layer_hi = image.layer_hi;
+                head.live = image.live;
+                head.checkpoints = image.checkpoints;
+                head.cvec = image.cvec;
+                head.lora = image.lora;
+                std::vector<strata::core::SessionKvSource> sources;
+                std::string serr;
+                if (!strata::core::conversation_kv_image_sources(image, sources, serr)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip flush (%s; %zu tokens)\n",
+                                 serr.c_str(), image.live.ids.size());
+                    return false;
+                }
+                // park_to_disk's own file-size arithmetic (the session writer's format, conversation_file.cpp):
+                // the store preflights this figure and refuses a save that does not fit before evicting anything.
+                auto checkpoint_bytes = [](const strata::core::ConversationCheckpoint& c) {
+                    uint64_t n = 8 + 4ull * c.ids.size() + 8 + 16ull * c.imgs.size() + 8;   // ids, images, used
+                    for (const auto* v : {&c.gdn, &c.ple, &c.tails, &c.dead, &c.block_pos}) n += 8 + v->size();
+                    return n;
+                };
+                uint64_t estimate = 64 + 16 + 18 * 8 + 4 * 8;
+                estimate += checkpoint_bytes(head.live) + 8;   // the live state, then the checkpoint count
+                for (const auto& c : head.checkpoints) estimate += checkpoint_bytes(c);
+                estimate += 8;                                 // the layer count
+                for (const auto& k : sources) {
+                    estimate += 7 * 8;
+                    for (const uint64_t part : k.sizes) estimate += 8 + part;
+                }
+                // this conversation's copy on disk, if any: superseded by the save below (the same sentinel probe
+                // park_to_disk uses, so an exact copy matches).
+                std::vector<int32_t> probe = image.live.ids;
+                probe.push_back(-1);
+                const auto best = disk.best(probe, image.live.imgs, image.cvec, image.lora);
+                const auto t0 = Clock::now();
+                uint64_t bytes = 0;
+                std::string derr;
+                bool saved = false;
+                if (disk.paged()) {
+                    uint64_t written = 0, reused = 0;
+                    saved = disk.save_paged(dm, head, sources, bytes, written, reused, derr);
+                } else {
+                    auto writer = [&](const std::string& path, uint64_t& written, std::string& werr) {
+                        strata::core::SessionWriteOptions wo;
+                        wo.min_free_bytes = (uint64_t) o.conversation_disk_min_free_mib << 20;
+                        wo.durable = true;
+                        strata::core::SessionStatus st;
+                        size_t n = 0;
+                        const bool ok = strata::core::session_file_write(path, head, sources, disk_id, n, werr, wo, &st);
+                        written = (uint64_t) n;
+                        return ok;
+                    };
+                    saved = disk.save(dm, estimate, writer, bytes, derr);
+                }
+                if (!saved) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip flush (%s; %zu tokens)\n",
+                                 derr.c_str(), image.live.ids.size());
+                    return false;
+                }
+                if (best.live && best.tokens > 0 && best.serial != disk.guarded()) {
+                    std::string rerr;
+                    disk.remove(best.serial, rerr);   // this save supersedes it; guarded: a restore is still reading it
+                }
+                std::fprintf(stderr, "strata serve: conversation cache: flushed %zu tokens to disk (%s) in %.1f ms; "
+                                     "file=%llu MiB entries=%zu bytes=%zu\n",
+                             image.live.ids.size(), what,
+                             std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
+                             (unsigned long long) (bytes >> 20), disk.entries(), disk.bytes());
+                return true;
+            } catch (const std::bad_alloc&) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip flush (out of memory)\n");
+            } catch (...) {
+                std::fprintf(stderr, "strata serve: conversation cache: skip flush (an unknown error)\n");
+            }
+            return false;
+        };
+        // One flush cycle: the live conversation first (the session being served is the one a stop would lose),
+        // then the parked conversations smallest first, so a stop's bounded round commits the cheap conversations
+        // before anything touches a 200K one.  Freshness is park's rule with a bigger threshold: an exact copy is
+        // skipped quietly, and an idle copy that grew by less than --conversation-cache-flush-min-tokens too.  The
+        // final round waives the growth threshold (it skips only copies that are already exact) and gives up
+        // STARTING new flushes after 10 s - well inside the 20 s the server allows QUIT before it escalates
+        // (serve/server.py ENGINE_QUIT_WAIT_S); a save already underway always completes, and one it never started
+        // costs the next start a re-read, exactly the state of the art without this feature.
+        auto conversation_flush_cycle = [&](bool on_stop) {
+            const auto t_cycle = Clock::now();
+            const int64_t slack = on_stop ? 0 : o.conversation_flush_min_tokens;
+            if (live_ok && !live.empty() && disk.wants((int64_t) live.size())) {
+                std::vector<int32_t> probe = live;
+                probe.push_back(-1);
+                const auto best = disk.best(probe, live_imgs, cvec_cached, lora_cached);
+                if (!(best.live && best.tokens > 0) || (int64_t) live.size() > (int64_t) best.tokens + slack)
+                    park_to_disk();   // prints its own skip lines and the "spilled" success line
+            }
+            std::vector<const strata::core::SavedConversation*> parked;
+            conversations.for_each([&](const strata::core::SavedConversation& e) { parked.push_back(&e); });
+            std::sort(parked.begin(), parked.end(), [](const strata::core::SavedConversation* a,
+                                                       const strata::core::SavedConversation* b) {
+                return a->live.ids.size() < b->live.ids.size();
+            });
+            for (const auto* e : parked) {
+                if (e->live.ids.empty() || !disk.wants((int64_t) e->live.ids.size())) continue;
+                std::vector<int32_t> probe = e->live.ids;
+                probe.push_back(-1);
+                const auto best = disk.best(probe, e->live.imgs, e->cvec, e->lora);
+                if (best.live && best.tokens > 0 && (int64_t) e->live.ids.size() <= (int64_t) best.tokens + slack)
+                    continue;   // the copy on disk is fresh: quiet skip, whatever the round
+                if (on_stop && Clock::now() - t_cycle >= std::chrono::seconds(10)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: stop's flush budget of 10 s used; what "
+                                         "is left here waits for the next cycle, eviction and the next stop included\n");
+                    break;
+                }
+                spill_image(*e, on_stop ? "on stop" : "idle");
+            }
+        };
+        // When the last cycle ran (steady clock: a wall-clock change or a resumed laptop must not force or block a
+        // flush).  Started at engine start, so the first idle round runs after one full interval.
+        auto conversation_flushed_at = Clock::now();
         // What a park captures: the main session's conversation (park_current) or an idle batch slot's (park_slot:
         // the reply it decoded, before an admission overwrites it).  One budget / admission / snapshot path for both.
         struct ParkSource {
@@ -16184,6 +16368,19 @@ int main(int argc, char** argv) {
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
                 Clock::now() - profile_saved_at >= std::chrono::duration<double>(o.expert_profile_save_min * 60.0))
                 save_profile("periodic");
+            // --conversation-cache-flush-min: the same safe point as the profile above - the loop has just read a
+            // line, so no request is running and every conversation is at rest.  QUIT is one of those lines, so the
+            // final round runs here too and a clean stop leaves fresh disk copies behind; an idle round runs once
+            // the interval passed since the last one.  A cycle that a terminate escalated past leaves nothing half-
+            // written: the store commits the manifest last and the next scan sweeps the rest.
+            if (conversation_flush_on && !disk_restoring) {
+                const bool flushing_on_stop = line == "QUIT";
+                if (flushing_on_stop ||
+                    Clock::now() - conversation_flushed_at >= std::chrono::minutes(o.conversation_flush_min)) {
+                    conversation_flush_cycle(flushing_on_stop);
+                    conversation_flushed_at = Clock::now();
+                }
+            }
             if (line == "QUIT") break;
             // the watchdog watches a request from here until this iteration ends, whichever way it ends
             struct BusyScope {
