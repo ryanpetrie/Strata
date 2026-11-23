@@ -1,11 +1,13 @@
 ﻿# Which model? Sizes, versions and what fits
 
-This page helps you choose a model and check that your computer can run it. It covers DeepSeek V4.1-Flash,
-Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [INSTALL.md](INSTALL.md).
+This page helps you choose a model and check that your computer can run it. It covers
+Qwen3.8-Flash-Next (and its variants), Qwen3.6-35B-A3B, Tencent Hy4-Flash, and Inkling-2-Mini. For installing, see [INSTALL.md](INSTALL.md).
 
 > **On this page:** [Quick start](#quick-start) · [Pick by memory](#pick-by-memory) ·
-> [DeepSeek V4.1-Flash](#deepseek-v41-flash) · [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
-> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) · [Adding or switching models](#adding-or-switching-models) ·
+> [Qwen3.8-Flash-Next](#qwen38-flash-next) ·
+> [Qwen3.6-35B-A3B](#qwen36-35b-a3b) ·
+> [Tencent Hy4-Flash](#tencent-hy4-flash) ·
+> [Inkling-2-Mini](#inkling-2-mini) · [Adding or switching models](#adding-or-switching-models) ·
 > [History](#history--older-measurements)
 
 ## Quick start
@@ -22,7 +24,7 @@ Qwen3.8-Flash-Next (and its variants) and Qwen3.6-35B-A3B. For installing, see [
 **Provider order:** ISTA-DASLab, then Unsloth, then Gyro, then others, using the first compatible pack that fits the
 model and your hardware. ISTA-DASLab is the default recommendation. Gyro saves memory and is slower. Swift 1.5, NVFP4
 and OrcaRouter are other options. An explicit choice by the user always wins. The order applies within a model family:
-Qwen3.6 has Unsloth packs only, and DeepSeek has the ISTA-DAS sets. The order is a recommendation. It says nothing about which
+Qwen3.6 has Unsloth packs only. The order is a recommendation. It says nothing about which
 provider wins a given quality or speed comparison.
 
 Setup may preselect something else: a Swift or Gyro size at a low memory tier, or Unsloth on Strix Halo. Read the plan
@@ -45,75 +47,16 @@ They are estimates; a given context may still not fit.
 - **Less memory, coding only:** [Coder](#coder) runs around 32 GB of RAM with a suitable GPU.
 - **Less memory, general use:** compare Unsloth, then [Gyro](#gyro-s-and-gyro-m-agentionai), which uses the least memory and is slower.
 - **More memory:** [Unsloth's 4 to 8 bit files](#unsloths-files-ud-iq4_xs-to-q8_0) need 72 to 136 GB for all experts in RAM.
-- **A smaller model:** [Qwen3.6-35B-A3B](#qwen36-35b-a3b), 32 to 52 GB of RAM.
-- **A very large model:** [DeepSeek V4.1-Flash](#deepseek-v41-flash), 12 GB graphics card, 46 to 64 GB of RAM and 257 GB of disk.
+- **A smaller model:** [Qwen3.6-35B-A3B](#qwen36-35b-a3b) (32 to 52 GB of RAM) or [Inkling-2-Mini](#inkling-2-mini) (8 to 24 GB GPU / 16 to 32 GB RAM).
+- **Large native MoE:** [Tencent Hy4-Flash](#tencent-hy4-flash) (64 to 128 GB of RAM or unified memory, plus Engram shard on SSD).
 
 If RAM is short, setup can read experts from the SSD instead ([below](#will-it-fit)). That works and is much slower.
-
-## DeepSeek V4.1-Flash
-
-DeepSeek V4.1-Flash-1017 runs in the **desktop app** (pick it in the model list) and in the **Terminal** (`strata launch`).
-It uses its own engine, a separate download that the app and `strata launch` fetch for you.
-
-| Set (ISTA-DAS) | Download | Quality against the original model |
-| --- | ---: | --- |
-| 1.75 bpw | 239 GB | perplexity +21%; code and agent text +8.9% and +10.2%; weaker on plain prose |
-| 2.00 bpw | 257 GB | perplexity +16%; code and agent text +8.5% and +5.9% |
-| 2.25 bpw | 274 GB | perplexity +7.7% to +8.3%; code and agent text +3.5% and +2.5% |
-| ISTA-DAS Coder | 191 GB | ISTA-DAS's coding version: 192 of the 384 experts in every layer kept (72 GB of model instead of 138 GB); numbers against the original model are in [DEEPSEEK41.md](DEEPSEEK41.md#the-ista-das-coder) |
-
-The download includes the shared n-gram (Engram) table and the DSpark drafter. Pick 2.25 for coding and agent work if
-you have the disk. Perplexity is measured on a fixed set of 4,995 test texts; lower is closer to the original.
-
-**Supported hardware**
-
-| Hardware | Systems |
-| --- | --- |
-| NVIDIA RTX 30, 40 and 50 series, 12 GB or more | Windows, Linux |
-| AMD Radeon AI PRO R9700 | Linux |
-| AMD Ryzen AI Max (Strix Halo, gfx1151, 128 GB unified; 64 GB or more shared with Windows) | Windows |
-| Apple Silicon Mac, 64 GB or more, macOS 15 or newer ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md); text and pictures) | macOS |
-
-Tested on an RTX 3060 (Linux), an RTX 5070 (Windows), four R9700 cards (Linux) and a Ryzen AI Max+ 395 with 128 GB unified (Windows:
-14 to 16 tokens a second on code with the default Faster mode, 10 to 11 on chat, 78 tokens a second on a 4K prompt and 109 on
-8K). The RTX 30 kernels were also checked on an RTX A4000. Windows on RTX 30 and the RX 9070 are built but were not run. On a
-Mac it was run on an M5 Max with 128 GB ([DEEPSEEK_MAC.md](DEEPSEEK_MAC.md)). Strix Halo on Linux does not run it yet; on Strix Halo Windows the graphics memory is the RAM, so most of the experts are
-read from the SSD and an NVMe drive matters.
-
-RTX 40 cards are covered by the engine packages since 0.2.7 (sm_89 code); we have not run one ourselves, see [DEEPSEEK41.md](DEEPSEEK41.md#the-engine-package) for a user's measurement.
-
-**What you need:** a graphics card with 12 GB or more, 46 GB of RAM at least (64 GB is the tested comfortable size),
-an NVMe SSD, and the disk space above. Setup warns when disk or RAM is short and does not stop you.
-
-```sh
-strata launch --family deepseek41 --model ist-das-2.00bpw --plan
-strata launch --family deepseek41 --model ist-das-2.00bpw
-```
-
-`--model-path DIR` starts from files you already have. The context is 8192 tokens (8K), the size it was checked at.
-
-**Speed: Faster or Full quality.** The app asks, and the Terminal takes `--speed faster|full` (or `--full-quality`). Faster uses 5 of the
-model's 6 experts per word, a small quality change that is usually not noticeable. It is the default on a PC with 16 GB of graphics
-memory or less, on a Ryzen AI Max, and on a single Radeon RX 9000 / AI PRO R9700 card, and on several of them when together they hold half of the experts (three or more R9700 cards; two hold about 40% of the 2.25 set, so they keep 6). Full quality uses all 6. It needs DeepSeek engine 0.1.50 or newer, which the app and `strata launch` fetch.
-
-**Measured on:** ISTA-DAS 2.00 bpw, Strata 0.2.4 (before the Speed choice).
-
-| Hardware | Output | Prompt (8K) |
-| --- | ---: | ---: |
-| RTX 5070 12 GB, Ryzen 5 7600, 64 GB RAM | about 5 tokens/s (code) | 231 tokens/s |
-| RTX 3060 12 GB, 46 GB RAM | 6 to 9 tokens/s | about 103 tokens/s |
-| 4x Radeon AI PRO R9700 | about 31 tokens/s; 55 to 69 with DSpark | about 360 tokens/s (557 at 32K) |
-
-- The 2.25 bpw set reads 13% more data per token and is a little slower.
-- A slow SSD lowers every number, because 12 GB cards spend most of each token waiting on the SSD and the CPU.
-- DSpark (a small draft model) raised the RTX 3060 PC from 6.1-6.7 to 8.2-8.7 tokens/s and the R9700 box from about 31 to 55-69. It gave no gain on the RTX 5070 PC with a 6-core CPU, so `--dspark auto` leaves the drafter unloaded there.
-- Answers can differ between runs with the same prompt, because the experts on the card change from moment to moment.
 
 <a id="the-versions"></a><a id="the-sizes"></a>
 
 ## Qwen3.8-Flash-Next
 
-Four ISTA-DASLab sizes are the original model; the versions below are variants or other providers' packs of it.
+Four [ISTA-DASLab](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF) sizes are the original model; the versions below are variants or other providers' packs of it.
 Every version in setup's menu reads pictures. [Picture rules](#pictures).
 
 ### Will it fit?
@@ -190,7 +133,7 @@ strata launch --family swift --model IQ2_XS
 
 ### Unsloth's files: UD-IQ4_XS to Q8_0
 
-`--family unsloth` is Unsloth's 4 to 8 bit quantizations of the same model. They keep the experts at more bits than
+`--family unsloth` is [Unsloth's 4 to 8 bit quantizations](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF) of the same model. They keep the experts at more bits than
 the sizes above, so they need more RAM. Setup keeps every expert in RAM when they fit with 16 GB to spare. With less RAM
 it keeps as many as fit and reads the rest from the SSD (much slower), and for the bigger files it asks first.
 
@@ -214,7 +157,7 @@ strata launch --family unsloth --model UD-Q5_K_XL
 
 ### Gyro-S and Gyro-M (agentionai)
 
-`--family gyro` is agentionai's Gyro quantization: trellis-coded experts in a rotated basis. They are the smallest
+`--family gyro` is [agentionai's Gyro quantization](https://huggingface.co/agentionai/Qwen3.8-Flash-Next-Gyro-GGUF): trellis-coded experts in a rotated basis. They are the smallest
 options and never setup's default. The download includes the 28 GB n-gram table. The memory figure is VRAM and RAM together.
 
 | Size | Download | Memory (VRAM + RAM) | In plain words |
@@ -271,12 +214,18 @@ cards; the Intel Arc engine and the Mac engine do not run it. It reads pictures 
 
 | Size | File | RAM setup plans for | In plain words |
 | --- | ---: | ---: | --- |
-| **UD-Q4_K_XL** | 22.9 GB | 32 GB | 4-bit (Unsloth Dynamic), the smallest |
+| **UD-Q4_K_XL** | 22.9 GB | 32 GB | 4-bit (Unsloth Dynamic), the smallest; see the note below |
 | **UD-Q6_K_XL** | 32.6 GB | 44 GB | 6-bit, closer to the full model |
 | **Q8_0** | 37.8 GB | 52 GB | 8-bit, the closest to the full model |
 
 The picture reader file adds 0.9 GB. The engine keeps every expert it can on the graphics card and computes the rest on
-the CPU.
+the CPU. The "RAM setup plans for" figures are planning sizes for system RAM. They are not a promise that every machine
+with that much RAM runs the size comfortably. On a card that cannot hold most experts (for example 12 GB or 16 GB of
+graphics memory), a large host expert arena stays in system RAM. Free physical RAM after the OS and other programmes
+must cover that arena; if it does not, start can fail after the process has opened with `no host memory for the experts`.
+The decode table below was measured on a Radeon AI PRO R9700 with 32 GB of graphics memory, and on an RTX 3060 with
+12 GB and most experts on the CPU. Those rows are decode speed only. They do not measure how long start takes, and they
+do not describe a 16 GB card sharing 32 GB of system RAM with other large processes.
 
 **Measured on:** UD-Q4_K_XL, decode only.
 
@@ -289,6 +238,50 @@ Pictures, parallel requests, full measurements and limits: [QWEN36.md](QWEN36.md
 
 ```sh
 strata launch --family qwen36 --model UD-Q4_K_XL
+```
+
+## Tencent Hy4-Flash
+
+[Tencent Hy4-Flash](https://huggingface.co/tencent/Hy4-flash) runs on its dedicated Strata shape engine (`strata-hy4`) using
+[Strata's native `.strata` quantizations](https://huggingface.co/strata-engine/Hy4-Flash-Strata). It includes the built-in DFly2
+drafter, reads pictures (`Hy4-Flash-Vision.strata`, 0.93 GB), and streams its 67.6 GB Engram lookup shard (`Hy4-Flash-Engram-Q8.strata`)
+directly from the SSD.
+
+| Build | Model file | Engram shard (SSD) | Planning memory | In plain words |
+| --- | ---: | ---: | ---: | --- |
+| **SQ-64** | 62.0 GB | 67.6 GB | 64 GB RAM + 8+ GB GPU | flagship size; also supports 4-tier SSD cold-expert streaming on smaller RAM |
+| **SQ-96** | 89.6 GB | 67.6 GB | 96 GB RAM or 128 GB unified | higher precision, closer to the full model |
+| **SQ-128** | 113.7 GB | 67.6 GB | 128 GB RAM or 128 GB unified | highest precision native build |
+
+```sh
+strata launch --family hy4-flash --model SQ-64
+```
+
+## Inkling-2-Mini
+
+[Inkling-2-Mini](https://huggingface.co/thinkingmachines/Inkling-2-Mini) from Thinking Machines runs on its dedicated Strata shape
+engine (`strata-inkling`). Both [Strata's native `.strata` v1.1 builds](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata)
+and [Unsloth's Dynamic GGUFs](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF) are supported, with built-in DSpark speculative
+drafting and picture reading (`Inkling-2-Mini-Vision.strata`, 0.64 GB).
+
+**Strata native `.strata` builds**
+
+| Build | File size | Typical hardware | In plain words |
+| --- | ---: | --- | --- |
+| **SQ-10** | 10.5 GB | 12 GB GPU, 16 GB Mac, or 4–8 GB hybrid | compact high-speed build |
+| **SQ-15** | 14.3 GB | 16 GB GPU, 24 GB Mac, or 12 GB hybrid | flagship quality |
+| **SQ-20** | 19.3 GB | 24 GB GPU or 32+ GB unified | near-lossless native SF4+MX8 build |
+
+**Unsloth Dynamic GGUF builds** ([unsloth/Inkling-2-Mini-GGUF](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF), plus 0.40 GB companion DSpark drafter)
+
+| Range | File sizes | Typical hardware |
+| --- | ---: | --- |
+| **UD-IQ1\_S / UD-IQ1\_M / UD-IQ2\_XXS / UD-Q2\_K\_XL** | 7.8 – 9.1 GB | 4–12 GB GPUs and 16 GB RAM |
+| **UD-IQ3\_XXS / UD-Q3\_K\_XL / UD-IQ4\_XS / UD-Q4\_K\_M / UD-Q4\_K\_XL** | 11.7 – 17.6 GB | 8–24 GB GPUs or hybrid RAM |
+| **UD-Q8\_K\_XL** | 22.9 GB | 24+ GB GPUs or 32+ GB RAM |
+
+```sh
+strata launch --family inkling-2-mini --model SQ-15
 ```
 
 ## Adding or switching models
