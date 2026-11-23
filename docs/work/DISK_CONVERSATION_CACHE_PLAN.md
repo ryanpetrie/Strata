@@ -129,7 +129,7 @@ NVMe instead of competing with the experts for RAM.
 | Disk throughput | Report MB/s and ms for save and restore; target ≥ 1 GB/s on NVMe, but report what is measured. |
 | Safety | Corrupt, truncated, foreign, or missing files fall back to a full prompt read; no decode from partial state. |
 | Disk full | A full or read-only cache directory logs a refusal and leaves the RAM cache working; no crash. |
-| Default | `--conversation-cache-disk-mib 0` (default) is byte-identical to the current release; the comparison tools pass. |
+| Default | `--conversation-spill-mib 0` (default) is byte-identical to the current release; the comparison tools pass. |
 | Platform | Windows CUDA first; build and test HIP; SYCL/Metal only if the session-file code supports them. |
 
 ### 2.4 Reference workload
@@ -216,9 +216,9 @@ do not make it the disk cache.
 - `tools/harness_reuse_probe.py` — MAIN/SUB alternating probe; the exact pattern that fails today.
 - `tools/test_conversation_cache_disabled.py` — default-off comparison.
 
-The last two already mention future disk flags (`--conversation-cache-spill-dir`, `--conversation-cache-disk-mib`,
-`--conversation-cache-disk-only`, and `--conversation-cache-disk` in one test). Keep the parser, docs, and tools in
-sync; decide whether `--conversation-cache-disk` is an alias or update the tool.
+The last two already mention future disk flags (`--conversation-spill-dir`, `--conversation-spill-mib`,
+`--conversation-spill-only`, and `--conversation-spill-dir` in one test). Keep the parser, docs, and tools in
+sync; decide whether `--conversation-spill-dir` is an alias or update the tool.
 
 ---
 
@@ -234,7 +234,7 @@ request
 ```
 
 - L1 stays exactly as it is today.
-- L2 is opt-in and independent. `--conversation-cache-disk-only` disables L1 parking and uses L2 for everything above
+- L2 is opt-in and independent. `--conversation-spill-only` disables L1 parking and uses L2 for everything above
   the minimum.
 - Default policy: try L1; if the park is refused or the entry is evicted, write it to L2. On restore, prefer the
   longest match; prefer L1 for equal prefixes (faster).
@@ -356,11 +356,11 @@ If a layer is still too large for the staging budget, split the layer by part (`
 
 ### 4.7 Eviction, limits, and compaction
 
-- **L2 budget:** `--conversation-cache-disk-mib` (default 0 = off; example 32768).
-- **L2 minimum:** `--conversation-cache-disk-min-tokens` so small side requests do not churn the disk.
+- **L2 budget:** `--conversation-spill-mib` (default 0 = off; example 32768).
+- **L2 minimum:** `--conversation-spill-min-tokens` so small side requests do not churn the disk.
 - **Park gain:** do not rewrite a conversation that advanced fewer than N tokens since its last disk copy. Reuse or
   mirror `--conversation-cache-park-gain`.
-- **Free space:** `--conversation-cache-disk-min-free-mib` (default 4096, like the session-file floor).
+- **Free space:** `--conversation-spill-min-free-mib` (default 4096, like the session-file floor).
 - **Eviction:** LRU by `last_used`; pinned entries are protected; if only pinned entries remain, refuse the save.
   Prefer evicting smaller/shorter entries before the expensive 200K one if the measurement supports it. Do not evict
   a large entry for a save that then fails its free-space preflight.
@@ -433,18 +433,18 @@ Proposed engine flags (names chosen to match the existing test tooling):
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--conversation-cache-disk-mib N` | Disk budget; `0` = off | `0` |
-| `--conversation-cache-spill-dir DIR` | Cache directory | none; required when the budget > 0 |
-| `--conversation-cache-disk-only` | Skip L1 parking; disk only | off |
-| `--conversation-cache-disk-min-tokens N` | Do not write shorter conversations | `0` or the L1 value |
-| `--conversation-cache-disk-min-free-mib N` | Free-space floor | `4096` |
-| `--conversation-cache-disk-staging-mib N` | Restore/save staging buffer | `256` |
-| `--conversation-cache-disk-park-gain N` | Skip a rewrite until N new tokens | reuse L1 value |
+| `--conversation-spill-mib N` | Disk budget; `0` = off | `0` |
+| `--conversation-spill-dir DIR` | Cache directory | none; required when the budget > 0 |
+| `--conversation-spill-only` | Skip L1 parking; disk only | off |
+| `--conversation-spill-min-tokens N` | Do not write shorter conversations | `0` or the L1 value |
+| `--conversation-spill-min-free-mib N` | Free-space floor | `4096` |
+| `--conversation-spill-staging-mib N` | Restore/save staging buffer | `256` |
+| `--conversation-spill-park-gain N` | Skip a rewrite until N new tokens | reuse L1 value |
 
 Notes:
 
-- `--conversation-cache-disk` appears in `tools/test_conversation_cache_disabled.py`. Either implement it as an alias
-  for `--conversation-cache-spill-dir` or update the tool in the same PR. Pick one and keep it consistent.
+- `--conversation-spill-dir` appears in `tools/test_conversation_cache_disabled.py`. Either implement it as an alias
+  for `--conversation-spill-dir` or update the tool in the same PR. Pick one and keep it consistent.
 - The engine INFO line must report `conversation_disk_mib`, `conversation_disk_dir`, and `conversation_disk_slots` so
   the server and the disabled-cache comparison can see it. The test tool already expects `conversation_disk_mib`.
 - `strata launch`/the app can add a friendly option later; the first PR is engine-only.
@@ -819,7 +819,7 @@ Do not make the cache on by default in the first PR.
 
 ### Before writing the cache
 
-- [ ] Decide the flag names and the `--conversation-cache-disk` alias/tool update.
+- [ ] Decide the flag names and the `--conversation-spill-dir` alias/tool update.
 - [ ] Decide the v1 scope: single-GPU only, no parallel/batch/layer split.
 - [ ] Decide the streaming restore API shape (layer-at-a-time is the recommended minimum).
 - [ ] Decide the default directory and the privacy/ACL story.

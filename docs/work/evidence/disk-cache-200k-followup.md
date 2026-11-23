@@ -17,7 +17,7 @@ the config's `env` and popped from the server environment).
 | Question | Measured answer |
 |---|---|
 | A. Is +2,990 MiB real? | **Real, not a sampling artifact.** Clean A/B: live 194K 41,950.8 MiB; spill peak 44,840.7 (**+2,889.9**); restore peak 44,406.6 (**+2,455.8**); sustained 44,099.1 (**+2,148.3**). The parent peak 44,847.8 reproduced within 7.1 MiB; only its live reference was 92 MiB low. |
-| A. Is it the staging copy? | **No.** With `--conversation-cache-disk-staging-mib 512` the 194K spill still succeeded and the peak was 44,852.2 (**+2,901.4**, 11.5 MiB above the 1,024 MiB run). The explicit save copy fits in 512 MiB. |
+| A. Is it the staging copy? | **No.** With `--conversation-spill-staging-mib 512` the 194K spill still succeeded and the peak was 44,852.2 (**+2,901.4**, 11.5 MiB above the 1,024 MiB run). The explicit save copy fits in 512 MiB. |
 | B. L1 enabled, L1 refuses, disk takes it? | **Yes, both triggers.** B1 (RAM floor 16,000 MiB): saves 3, restores 2, reuse 99.95%, errors 0. B2 (L1 2,048 MiB): saves 3, restores 2, reuse 99.95%, errors 0. B2 is the cleaner product path: L1 keeps the 1.4K/1.7K SUBs, disk holds the 194K. |
 | C. Restored TTFT without the hash? | **4.141 s** HTTP for MAIN 2 (prompt read 3,903 ms, of which restore 1,791.8 ms). **Passes ≤10 s.** The parent's 14.77 s was the `STRATA_STATE_HASH` diagnostic. |
 | 512 MiB host bound | **Fail**, by **2,377.9 MiB** at the spill peak (2,889.9 − 512). Even the retained working set after the turn is 2,148.3 MiB over live. |
@@ -138,7 +138,7 @@ had `STRATA_STATE_HASH=1`, this one does not). The peak itself is 7.1 MiB below 
 
 ### Is the peak the staging copy? No (512 MiB control)
 
-`followup-staging512.json` changes only `--conversation-cache-disk-staging-mib` from 1024 to 512. The log still
+`followup-staging512.json` changes only `--conversation-spill-staging-mib` from 1024 to 512. The log still
 shows a successful spill:
 
 ```

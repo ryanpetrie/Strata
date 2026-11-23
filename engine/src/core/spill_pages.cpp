@@ -1,4 +1,4 @@
-#include "strata/core/conversation_pages.hpp"
+#include "strata/core/spill_pages.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -38,7 +38,9 @@ namespace fs = std::filesystem;
 
 constexpr char kPoolMagic[8] = {'S', 'T', 'R', 'P', 'A', 'G', 'E', '1'};
 constexpr char kIndexMagic[8] = {'S', 'T', 'R', 'P', 'I', 'D', 'X', '1'};
-constexpr uint32_t kFormatVersion = 1;
+// The spill pool's own format version.  Bump it whenever the page/index layout changes: open() discards (never
+// migrates) a pool of another version, because a pool is a cache (docs/work/local-spill-delta.md).
+constexpr uint32_t kFormatVersion = kSpillPoolFormatVersion;
 constexpr uint32_t kPageHeaderMagic = 0x31454750;   // "PGE1"
 constexpr uint64_t kPoolHeaderBytes = 4096;
 constexpr uint64_t kPageHeaderBytes = 16;
@@ -419,6 +421,20 @@ bool ConversationPagePool::open(bool writable, std::string& error) {
     if (!f.open(pool_path_, writable ? L"r+b" : L"rb", error)) return false;
     char head[kPoolHeaderBytes] = {};
     if (!f.seek(0, error) || !f.read(head, sizeof head, error)) return false;
+    // A pool written by another format version is a cache, not user data: discard it and start empty.  A read-only
+    // open of an old pool is a miss (its pages cannot be trusted by this build).
+    {
+        uint32_t version = 0;
+        if (std::memcmp(head, kPoolMagic, sizeof kPoolMagic) == 0) std::memcpy(&version, head + 8, 4);
+        if (version != 0 && version != kFormatVersion) {
+            f.close();
+            if (!writable) { error = "the page pool has another format version"; return false; }
+            std::error_code vec;
+            fs::remove(fs::path(pool_path_), vec);
+            fs::remove(fs::path(index_path_), vec);
+            return open(writable, error);
+        }
+    }
     if (!parse_pool_header(head, sizeof head, generation_, error)) return false;
     impl_->generation = generation_;
     impl_->pool_bytes = size;

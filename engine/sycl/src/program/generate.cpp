@@ -8366,7 +8366,7 @@ int main(int argc, char **argv) try {
                 // a longer snapshot of the same conversation makes the older ones useless, in RAM and on the SSD tier alike
                 // (never spilled, and a spilled one is deleted with its index file)
                 if (spill.enabled()) {
-                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec);
+                    const auto on_ssd = spill.drop_superseded(src.ids, src.imgs, src.cvec, strata::core::kLoraNone);
                     gone.insert(gone.end(), on_ssd.begin(), on_ssd.end());
                 }
                 for (const size_t n : gone)

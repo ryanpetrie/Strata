@@ -489,8 +489,8 @@ function renderConvDisk(c) {
     ? "The K/V is kept as content-addressed pages in one shared pool, so a turn writes only the pages that changed."
     : "Each conversation is one plaintext file";
   $("cc-disk-note").textContent = `${shape}${where}, in a folder private to your user. ` +
-    "It is opt-in: add \"--conversation-cache-disk-mib\", \"32768\" and \"--conversation-cache-spill-dir\", \"<folder>\" " +
-    "to the run config's args (docs/DISK_CACHE.md).";
+    "It is on by default in a normal serve: cap it with \"--conversation-spill-mib\", \"32768\" and choose the folder " +
+    "with \"--conversation-spill-dir\", \"<folder>\" in the run config's args; \"0\" turns it off (docs/DISK_CACHE.md).";
 }
 
 function renderTotals(t) {

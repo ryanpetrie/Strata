@@ -15,13 +15,16 @@
 
 #include "strata/core/conversation_cache.hpp"
 #include "strata/core/conversation_file.hpp"
+#include "strata/core/spill_pages.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstring>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -261,6 +264,46 @@ private:
     bool persistent_ = false;
 };
 
+// ---------------------------------------------------------------------------------------------------------------
+// Local additions (branch local/spill-unify; docs/work/local-spill-delta.md).  Everything below this line is
+// optional and default-off: the tier behaves exactly as upstream when the engine uses put()/take_serial()/best()
+// with their upstream arguments.
+//
+// The local branch's separate disk tier (ConversationDiskStore) was folded in here, keeping four things it did
+// better: a streaming save from live K/V sources (put_streaming), a streaming restore with bounded staging
+// (take_layers), the content-addressed page pool as the spill file's backend (spill_pages.hpp), and its product
+// surface (stats(), the page/eviction counters, guard(), the timed flush that feeds the background writer).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The page backend's settings (the `--conversation-spill-pages*` flags).  `enabled` false keeps upstream's
+/// whole-file behaviour: one session file per entry, no pool, no extra folder.
+struct SpillPageOptions {
+    bool enabled = false;
+    uint64_t compact_min_bytes = 2ull << 30;   // all three guards must pass before a compaction reclaims dead pages
+    uint64_t compact_min_pages = 256;
+    double compact_fragmentation = 0.25;
+};
+
+/// What one save wrote, for the engine's log line: `file_bytes` is the entry's logical size (the head plus the K/V
+/// it names), `bytes_written` the new bytes on the disk (a shared page is not written again).
+struct SpillSaveReport {
+    uint64_t file_bytes = 0;
+    uint64_t bytes_written = 0;
+    uint64_t bytes_reused = 0;
+    uint64_t pages_written = 0, pages_reused = 0;
+};
+
+/// The spill tier's counters (the server's Monitor card reads them from the engine's INFO fields).
+struct SpillStats {
+    uint64_t saves = 0, save_failures = 0, save_refusals = 0;
+    uint64_t restores = 0, restore_failures = 0;
+    uint64_t evictions = 0, clearances = 0;
+    uint64_t bytes_written = 0, bytes_read = 0;
+    uint64_t last_save_ms = 0, last_restore_ms = 0, last_restore_bytes = 0;
+    uint64_t pages_written = 0, pages_reused = 0;        // this run, all saves
+    uint64_t compactions = 0, bytes_compacted = 0, last_compaction_ms = 0, last_compacted_bytes = 0;
+};
+
 /// The SSD tier's entries: parked conversations written as session files into this process's namespace, oldest first.
 /// What stays in RAM per entry is only what matching needs: the token ids and picture keys of its live state and of each
 /// checkpoint (no running state, no K/V).  put() deletes the oldest entries when the budget needs the room, and never
@@ -279,6 +322,15 @@ public:
         uint64_t used = 0;                               // last use (written, matched-and-read): the least recently used goes first
         ConversationCheckpoint live;                     // ids and images only
         std::vector<ConversationCheckpoint> checkpoints;   // ids and images only
+        // local: the adapter state the cells were computed with, the third part of every cache key
+        // (ConversationLora, conversation_cache.hpp).  Matching on it is what stops the tier handing base-model
+        // cells to an adapted request when the RAM cache correctly refused them (the bug the disk tier fixed).
+        ConversationLora lora = kLoraNone;
+        // local: a paged entry keeps its K/V in the shared pool (spill_pages.hpp) and `file` is a head: a session
+        // file with no K/V layers.  `bytes` is logical (the head plus the K/V it names), as the disk tier counted it.
+        bool paged = false;
+        uint64_t kv_bytes = 0;
+        std::vector<ConversationPageLayer> layout;
     };
 
     /// `persist`: the tier lives in the stable folder of persist->model and keeps its entries across restarts: those of the files
@@ -286,14 +338,29 @@ public:
     /// that folder is deleted.  The folders of other fingerprints go.  Reads leave the entries in place; a per-process folder
     /// (persist null, or the stable one held by another engine) behaves as before.
     bool open(const std::filesystem::path& root, uint64_t cap, std::string& error, size_t* cleaned = nullptr,
-              const SessionFileIdentity* persist = nullptr, size_t* adopted = nullptr) {
+              const SessionFileIdentity* persist = nullptr, size_t* adopted = nullptr,
+              const SpillPageOptions* page_options = nullptr) {
         std::lock_guard<std::mutex> lk(mu_);
         entries_.clear();
+        pages_.reset();
+        page_error_.clear();
+        guarded_ = 0;
+        page_opts_ = page_options ? *page_options : SpillPageOptions{};
         budget_ = SpillBudget{cap, 0, 0};
         tick_ = 0;
         next_serial_ = 1;
         if (adopted) *adopted = 0;
         const bool ok = ns_.open(root, error, cleaned, persist ? &persist->model : nullptr);
+        if (ok && page_opts_.enabled) {
+            // The K/V backend lives inside this process's namespace folder (`<dir>/pool`), so it goes with it.
+            auto pool = std::make_unique<ConversationPagePool>((ns_.dir() / "pool").string());
+            std::string perr;
+            if (pool->open(true, perr)) {
+                pages_ = std::move(pool);
+            } else {
+                page_error_ = perr.empty() ? "the page pool could not be opened" : perr;   // whole-file entries still work
+            }
+        }
         if (ok && ns_.persistent()) {
             const size_t n = adopt_locked(*persist);
             if (adopted) *adopted = n;
@@ -318,6 +385,7 @@ public:
     /// than the whole tier, or the write failed; nothing of this call is then left on the disk.  The file is written outside the
     /// lock, under a budget reserved for it.
     bool put(const SavedConversation& image, const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr) {
+        const auto t0 = std::chrono::steady_clock::now();
         const uint64_t need = (uint64_t) image.bytes() + (uint64_t(1) << 20);   // the payload and the file's own tables
         uint64_t serial = 0;
         std::filesystem::path f;
@@ -325,25 +393,21 @@ public:
             std::lock_guard<std::mutex> lk(mu_);
             if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
             if (need > budget_.cap) { error = "larger than the whole SSD tier"; return false; }
-            while (!budget_.reserve(need)) {
-                if (entries_.empty()) { error = "no room in the SSD tier"; return false; }
-                size_t victim = SIZE_MAX;   // an entry this one extends goes first (it would go anyway), then the least recently used
-                for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
-                    if (superseded_by(entries_[i], image)) victim = i;
-                drop_locked(victim != SIZE_MAX ? victim : lru_locked());
-            }
+            if (!make_room_locked(need, image, error)) { ++stats_.save_refusals; return false; }
             serial = next_serial_++;
             f = ns_.file_for(serial);
         }
         size_t written = 0;
-        const bool ok = session_file_write(f.string(), image, id, written, error);
+        SessionWriteOptions wo;
+        wo.min_free_bytes = min_free_;
+        const bool ok = session_file_write(f.string(), image, id, written, error, wo);
         if (!ok) {
             std::error_code ec;
             std::filesystem::remove(f, ec);
         }
         Entry e;
         if (ok) {
-            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec;
+            e.serial = serial; e.file = f; e.bytes = written; e.cvec = image.cvec; e.lora = image.lora;
             e.live = stub(image.live);
             for (const auto& c : image.checkpoints) e.checkpoints.push_back(stub(c));
         }
@@ -356,26 +420,35 @@ public:
             error = "the entry's index file could not be written";
             return false;
         }
-        if (!ok) return false;
+        if (!ok) { ++stats_.save_failures; return false; }
         e.used = ++tick_;
         // the same conversation grown: an entry whose tokens are a prefix of this one's is served by this one in full
         for (size_t i = entries_.size(); i-- > 0;)
             if (superseded_by(entries_[i], image)) drop_locked(i);
         entries_.push_back(std::move(e));
         while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());   // (a file larger than its estimate)
+        trim_locked();
+        ++stats_.saves;
+        stats_.bytes_written += written;
+        stats_.last_save_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - t0).count();
         if (serial_out) *serial_out = serial;
         return true;
     }
 
     /// The entry and the prefix it gives `prompt`, by the RAM cache's rule (ConversationCache::best): its live state or a
     /// checkpoint, same pictures, same steering; ties prefer the newest.  Reach it by `serial` (find / take_serial).
+    /// `lora` is the RAM cache's third key (local addition; the upstream call means kLoraNone, which is what a tier
+    /// written by a build without adapters holds): an entry whose cells were computed under another adapter state is
+    /// never a match, in either direction.
     template <class Token>
-    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec) const {
+    ConversationCache::Match best(const std::vector<Token>& prompt, const std::vector<ConversationImageKey>& images, bool cvec,
+                                  ConversationLora lora = kLoraNone) const {
         std::lock_guard<std::mutex> lk(mu_);
         ConversationCache::Match m;
         for (size_t i = entries_.size(); i-- > 0;) {
             const Entry& e = entries_[i];
-            if (e.cvec != cvec) continue;
+            if (e.cvec != cvec || e.lora != lora) continue;
             auto consider = [&](const ConversationCheckpoint& c, bool live) {
                 const int64_t n = conversation_prefix(c, prompt, images);
                 if (n > m.tokens) m = {i, n, live, e.serial};
@@ -439,12 +512,15 @@ public:
     }
     /// A snapshot of the same conversation is being parked, grown past these tokens: deletes the entries (file and index file)
     /// whose live tokens are a prefix of `image_live` (same steering and pictures) - they would never be read again.  Returns the
-    /// token counts of the deleted entries.
-    std::vector<size_t> drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec) {
+    /// token counts of the deleted entries.  `lora` is the RAM cache's third key (local addition, defaulted): an entry whose
+    /// cells were computed under another adapter state is never superseded by this one, as superseded_by() refuses it.
+    std::vector<size_t> drop_superseded(const std::vector<int32_t>& ids, const std::vector<ConversationImageKey>& imgs, bool cvec,
+                                       ConversationLora lora = kLoraNone) {
         SavedConversation image_live;   // (tokens and pictures only)
         image_live.live.ids = ids;
         image_live.live.imgs = imgs;
         image_live.cvec = cvec;
+        image_live.lora = lora;
         std::lock_guard<std::mutex> lk(mu_);
         std::vector<size_t> out;
         for (size_t i = entries_.size(); i-- > 0;)
@@ -455,14 +531,213 @@ public:
     size_t clear() {
         std::lock_guard<std::mutex> lk(mu_);
         const size_t n = entries_.size();
+        guarded_ = 0;   // (#879 wins over a restore in flight: the state it reads must not be kept either)
         while (!entries_.empty()) drop_locked(entries_.size() - 1);
+        stats_.clearances += n;
         return n;
     }
     void close() {
         std::lock_guard<std::mutex> lk(mu_);
         if (!ns_.persistent()) while (!entries_.empty()) drop_locked(entries_.size() - 1);   // (a stable folder keeps its entries)
         entries_.clear();
+        pages_.reset();
+        guarded_ = 0;
         ns_.close();
+    }
+
+    // ---- local additions: the streaming save, the layered restore, the page backend, telemetry (see the note above) ----
+
+    /// The streaming save: `head` carries everything but the K/V (`head.kv` must be empty) and `sources` supply each
+    /// layer as the file is written, so a conversation this host could not capture whole is still spilled - the disk
+    /// tier's strongest case.  With the page pool attached the K/V goes to the pool as content-addressed pages (only
+    /// the pages that changed are written) and `head` becomes a small session file beside them; without it the file
+    /// is written whole, exactly as put() writes it.  put(image) stays the whole-image wrapper and is unchanged.
+    bool put_streaming(const SavedConversation& head, const std::vector<SessionKvSource>& sources,
+                       const SessionFileIdentity& id, std::string& error, uint64_t* serial_out = nullptr,
+                       SpillSaveReport* report = nullptr) {
+        const auto t0 = std::chrono::steady_clock::now();
+        uint64_t kv = 0;
+        for (const auto& s : sources)
+            for (uint64_t n : s.sizes) kv += n;
+        const uint64_t need = (uint64_t) head.bytes() + kv + (uint64_t(1) << 20);
+        uint64_t serial = 0;
+        std::filesystem::path f;
+        bool paged = false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (!enabled_locked()) { error = "the SSD tier is off"; return false; }
+            if (need > budget_.cap) { error = "larger than the whole SSD tier"; ++stats_.save_refusals; return false; }
+            if (!make_room_locked(need, head, error)) { ++stats_.save_refusals; return false; }
+            serial = next_serial_++;
+            f = ns_.file_for(serial);
+            paged = pages_ != nullptr;
+        }
+        SpillSaveReport rep;
+        Entry e;
+        bool ok = false;
+        SessionWriteOptions wo;
+        wo.min_free_bytes = min_free_;
+        if (paged) {
+            size_t head_bytes = 0;
+            ok = session_file_write(f.string(), head, id, head_bytes, error, wo);   // the head: no K/V layers
+            if (ok) {
+                ConversationPageWriteResult wr;
+                ok = conversation_pages_write(*pages_, sources, wr, error) && pages_->persist(error) &&
+                     write_page_index(f, id, wr.layout.layers, error);
+                if (ok) {
+                    rep.file_bytes = (uint64_t) head_bytes + wr.layout.kv_bytes();
+                    rep.bytes_written = (uint64_t) head_bytes + wr.bytes_written;
+                    rep.bytes_reused = wr.bytes_reused;
+                    rep.pages_written = wr.pages_written;
+                    rep.pages_reused = wr.pages_reused;
+                    e.paged = true;
+                    e.kv_bytes = wr.layout.kv_bytes();
+                    e.layout = std::move(wr.layout.layers);
+                }
+            }
+        } else {
+            size_t written = 0;
+            ok = session_file_write(f.string(), head, sources, id, written, error, wo);
+            rep.file_bytes = rep.bytes_written = (uint64_t) written;
+        }
+        if (!ok) {
+            std::error_code ec;
+            std::filesystem::remove(f, ec);
+            std::filesystem::remove(pages_path(f), ec);
+            std::lock_guard<std::mutex> lk(mu_);
+            budget_.finish(need, 0);
+            ++stats_.save_failures;
+            return false;
+        }
+        e.serial = serial;
+        e.file = f;
+        e.bytes = rep.file_bytes;
+        e.cvec = head.cvec;
+        e.lora = head.lora;
+        e.live = stub(head.live);
+        for (const auto& c : head.checkpoints) e.checkpoints.push_back(stub(c));
+        std::lock_guard<std::mutex> lk(mu_);
+        budget_.finish(need, rep.file_bytes);   // logical bytes: the head plus the K/V this entry names (as the disk tier)
+        if (ns_.persistent() && !meta_write(f, e, id)) {
+            std::error_code ec;
+            std::filesystem::remove(f, ec);
+            std::filesystem::remove(pages_path(f), ec);
+            budget_.drop(rep.file_bytes);
+            error = "the entry's index file could not be written";
+            ++stats_.save_failures;
+            return false;
+        }
+        if (e.paged)
+            for (const auto& l : e.layout)
+                for (const auto& part : l.parts)
+                    for (const auto& ref : part) pages_->reference(ref.hash, ref.bytes);
+        e.used = ++tick_;
+        for (size_t i = entries_.size(); i-- > 0;)
+            if (superseded_by(entries_[i], head)) drop_locked(i);
+        entries_.push_back(std::move(e));
+        while (budget_.over() && entries_.size() > 1) drop_locked(lru_locked());
+        trim_locked();
+        ++stats_.saves;
+        stats_.bytes_written += rep.bytes_written;
+        stats_.pages_written += rep.pages_written;
+        stats_.pages_reused += rep.pages_reused;
+        stats_.last_save_ms = (uint64_t) std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - t0).count();
+        if (serial_out) *serial_out = serial;
+        if (report) *report = rep;
+        return true;
+    }
+
+    /// The streaming restore: opens entry `serial` as a layer-at-a-time reader (a session file, or the page pool), so
+    /// peak host staging is the metadata, one layer and one page - never the whole conversation.  The entry STAYS
+    /// (its use is bumped; a later save that extends it supersedes it): the reader is still reading it, and a paged
+    /// entry's next save then writes only the pages that changed.  A failed open counts a failed restore and the
+    /// caller drops the entry (drop_serial); take_serial() stays upstream's whole-image read.
+    bool take_layers(uint64_t serial, const SessionFileIdentity& id, const SessionReadLimits& limits,
+                     std::unique_ptr<ConversationKvLayers>& out, std::string& error) {
+        Entry e;
+        bool persistent = false;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            const size_t i = index_locked(serial);
+            if (i == SIZE_MAX) { error = "no such SSD entry"; return false; }
+            entries_[i].used = ++tick_;
+            e = entries_[i];
+            persistent = ns_.persistent();
+            if (persistent) {
+                std::error_code ec;
+                std::filesystem::last_write_time(meta_path(e.file), std::filesystem::file_time_type::clock::now(), ec);
+            }
+        }
+        if (e.paged) {
+            if (!pages_) { error = "the page pool of this entry is not open"; return false; }
+            ConversationPageLayout layout;
+            layout.layers = std::move(e.layout);
+            auto r = std::make_unique<ConversationPageReader>();
+            if (!r->open(e.file.string(), layout, *pages_, id, limits, error)) {
+                note_restore_failure();
+                return false;
+            }
+            out = std::move(r);
+        } else {
+            auto r = std::make_unique<SessionFileStream>();
+            if (!r->open(e.file.string(), id, limits, error)) {
+                note_restore_failure();
+                return false;
+            }
+            out = std::move(r);
+        }
+        (void) persistent;
+        return true;
+    }
+
+    /// The entry a restore is reading right now: a save never evicts it (it reports "no room" when only it is left).
+    /// 0 clears the guard.  The disk tier's DiskRestoreMark, kept by the same name and rule.
+    void guard(uint64_t serial) { std::lock_guard<std::mutex> lk(mu_); guarded_ = serial; }
+    void unguard() { std::lock_guard<std::mutex> lk(mu_); guarded_ = 0; }
+    uint64_t guarded() const { std::lock_guard<std::mutex> lk(mu_); return guarded_; }
+
+    SpillStats stats() const { std::lock_guard<std::mutex> lk(mu_); return stats_; }
+    void note_restore(uint64_t ms, uint64_t bytes) {
+        std::lock_guard<std::mutex> lk(mu_);
+        ++stats_.restores;
+        stats_.last_restore_ms = ms;
+        stats_.last_restore_bytes = bytes;
+        stats_.bytes_read += bytes;
+    }
+    void note_restore_failure() { std::lock_guard<std::mutex> lk(mu_); ++stats_.restore_failures; }
+    /// The free-space preflight a save uses (the session writer's `min_free_bytes`); 0 keeps upstream's (none).
+    void set_min_free_bytes(uint64_t n) { std::lock_guard<std::mutex> lk(mu_); min_free_ = n; }
+
+    /// At most N entries (--conversation-spill-slots; 0 = no count limit).  Trims the least recently used entries at
+    /// once and after every save: the disk tier's slot cap, which upstream's bytes-only budget does not have.
+    void set_max_entries(size_t n) { std::lock_guard<std::mutex> lk(mu_); max_entries_ = n; trim_locked(); }
+    bool paged() const { std::lock_guard<std::mutex> lk(mu_); return pages_ != nullptr; }
+    const std::string& page_open_error() const { return page_error_; }
+    ConversationPagePool* pool() { std::lock_guard<std::mutex> lk(mu_); return pages_.get(); }
+    uint64_t pool_bytes() const { std::lock_guard<std::mutex> lk(mu_); return pages_ ? pages_->stats().pool_bytes : 0; }
+    uint64_t pool_dead_bytes() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return pages_ ? pages_->stats().dead_bytes : 0;
+    }
+    bool compact_needed() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return pages_ && pages_->compact_needed(page_opts_.compact_min_bytes, page_opts_.compact_min_pages,
+                                               page_opts_.compact_fragmentation);
+    }
+    /// Reclaims the pool's dead pages when all three guards pass; entries never change (a page is found by its hash).
+    bool compact(std::string& error) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!pages_) { error = "the page pool is off"; return false; }
+        if (!pages_->compact(page_opts_.compact_min_bytes, page_opts_.compact_min_pages,
+                             page_opts_.compact_fragmentation, error))
+            return false;
+        const auto s = pages_->stats();
+        ++stats_.compactions;
+        stats_.bytes_compacted = s.bytes_compacted;
+        stats_.last_compaction_ms = s.last_compaction_ms;
+        stats_.last_compacted_bytes = s.last_compacted_bytes;
+        return true;
     }
 
 private:
@@ -475,15 +750,41 @@ private:
     bool persistent_now() const { std::lock_guard<std::mutex> lk(mu_); return ns_.persistent(); }
     static std::filesystem::path meta_path(std::filesystem::path f) { return f.replace_extension(".meta"); }
     size_t lru_locked() const {
-        size_t b = 0;
-        for (size_t i = 1; i < entries_.size(); ++i)
-            if (entries_[i].used < entries_[b].used) b = i;
+        size_t b = SIZE_MAX;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].serial == guarded_) continue;   // (a restore is reading it)
+            if (b == SIZE_MAX || entries_[i].used < entries_[b].used) b = i;
+        }
         return b;
+    }
+    /// Evicts until `need` fits (mu_ held): an entry the new image extends goes first (it would go anyway), then the
+    /// least recently used.  Never the entry a restore is reading (guard).  False: only guarded entries are left.
+    bool make_room_locked(uint64_t need, const SavedConversation& image, std::string& error) {
+        while (!budget_.reserve(need)) {
+            size_t victim = SIZE_MAX;
+            for (size_t i = 0; i < entries_.size() && victim == SIZE_MAX; ++i)
+                if (superseded_by(entries_[i], image)) victim = i;
+            if (victim == SIZE_MAX) victim = lru_locked();
+            if (victim == SIZE_MAX) { error = "no room in the SSD tier"; return false; }
+            ++stats_.evictions;
+            drop_locked(victim);
+        }
+        return true;
+    }
+    /// The slot cap (--conversation-spill-slots; mu_ held and the guard respected, as for any eviction).
+    void trim_locked() {
+        while (max_entries_ > 0 && entries_.size() > max_entries_) {
+            const size_t victim = lru_locked();
+            if (victim == SIZE_MAX) break;
+            ++stats_.evictions;
+            drop_locked(victim);
+        }
     }
     /// `e` is a prefix (equal or shorter) of `image`'s live tokens, same steering and pictures: `image` serves every resume `e` could
     static bool superseded_by(const Entry& e, const SavedConversation& image) {
         const size_t n = e.live.ids.size();
-        if (n == 0 || e.cvec != image.cvec || n > image.live.ids.size() ||
+        if (n == 0 || e.cvec != image.cvec || e.lora != image.lora ||   // (an adapter state is its own conversation)
+            n > image.live.ids.size() ||
             !std::equal(e.live.ids.begin(), e.live.ids.end(), image.live.ids.begin())) return false;
         for (const auto& k : e.live.imgs) {   // its pictures are the first ones of the image's
             bool found = false;
@@ -504,9 +805,12 @@ private:
         for (const auto& k : c.imgs) { put_pod(b, k.start); put_pod(b, k.hash); }
     }
     static bool meta_write(const std::filesystem::path& f, const Entry& e, const SessionFileIdentity& id) {
-        std::string b = "SPM1";
+        // SPM2 (local): the adapter state and the paged flag/bytes joined the index, so a restart's adoption filters on
+        // the same key matching does.  An SPM1 index file is refused and deleted at adoption: this folder is a cache.
+        std::string b = "SPM2";
         put_pod(b, id.model); put_pod(b, id.config);
-        put_pod(b, (uint8_t) e.cvec); put_pod(b, e.bytes);
+        put_pod(b, (uint8_t) e.cvec); put_pod(b, (uint8_t) e.paged); put_pod(b, (uint8_t) e.lora); put_pod(b, (uint8_t) 0);
+        put_pod(b, e.bytes); put_pod(b, (uint64_t) e.kv_bytes);
         put_ckpt(b, e.live);
         put_pod(b, (uint64_t) e.checkpoints.size());
         for (const auto& c : e.checkpoints) put_ckpt(b, c);
@@ -573,17 +877,30 @@ private:
                     std::fclose(fp);
                 } else good = false;
                 Rd r{b};
-                good = good && b.compare(0, 4, "SPM1") == 0;
+                good = good && b.compare(0, 4, "SPM2") == 0;
                 if (good) {
                     r.at = 4;
                     const uint64_t model = r.pod<uint64_t>(), config = r.pod<uint64_t>();
                     f.e.cvec = r.pod<uint8_t>() != 0;
+                    f.e.paged = r.pod<uint8_t>() != 0;
+                    f.e.lora = (ConversationLora) r.pod<uint8_t>();
+                    (void) r.pod<uint8_t>();
                     f.e.bytes = r.pod<uint64_t>();
-                    good = !r.bad && model == id.model && config == id.config && fs::file_size(sess, e2) == f.e.bytes && !e2 &&
-                           get_ckpt(r, f.e.live, f.e.bytes);
+                    f.e.kv_bytes = r.pod<uint64_t>();
+                    const bool known_lora = f.e.lora == kLoraNone || f.e.lora == kLoraOn || f.e.lora == kLoraOff;
+                    good = !r.bad && known_lora && model == id.model && config == id.config &&
+                           fs::file_size(sess, e2) != 0 && !e2 && get_ckpt(r, f.e.live, f.e.bytes);
                     const uint64_t nc = good ? r.pod<uint64_t>() : 0;
                     for (uint64_t i = 0; good && i < nc; ++i) { ConversationCheckpoint c; good = get_ckpt(r, c, f.e.bytes); if (good) f.e.checkpoints.push_back(std::move(c)); }
                     good = good && !r.bad;
+                    // A paged entry needs its page list and the pool; a whole-file one names the session file's size.
+                    if (good && f.e.paged) {
+                        std::string why;
+                        good = pages_ != nullptr && read_page_index(sess, id, f.e.layout, why) &&
+                               layout_kv_bytes(f.e.layout) == f.e.kv_bytes;
+                    } else if (good) {
+                        good = fs::file_size(sess, e2) == f.e.bytes;
+                    }
                 }
                 if (good) { f.e.serial = serial; f.e.file = sess; f.t = fs::last_write_time(p, e2); good = !e2; }
             }
@@ -592,9 +909,10 @@ private:
         }
         for (const auto& p : all) {   // whatever is not an adopted entry's file (a .session without index, a leftover temporary)
             if (p.filename() == ".lock") continue;
+            if (p.filename() == "pool") continue;   // (the page pool: it follows its own entries and its version)
             uint64_t serial = 0;
-            const bool listed = (p.extension() == ".meta" || p.extension() == ".session") && serial_of(p, serial) &&
-                                std::find(seen.begin(), seen.end(), serial) != seen.end();
+            const bool listed = (p.extension() == ".meta" || p.extension() == ".session" || p.extension() == ".pages") &&
+                                serial_of(p, serial) && std::find(seen.begin(), seen.end(), serial) != seen.end();
             if (!listed) { std::error_code e2; fs::remove_all(p, e2); }
         }
         std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) { return a.t != b.t ? a.t < b.t : a.e.serial < b.e.serial; });
@@ -608,11 +926,23 @@ private:
         return entries_.size();
     }
     void drop_locked(size_t i) {
+        if (i >= entries_.size() || entries_[i].serial == guarded_) return;   // (a restore is reading it)
+        const Entry& e = entries_[i];
+        if (e.paged && pages_) release_pages(e);
         std::error_code ec;
-        std::filesystem::remove(meta_path(entries_.at(i).file), ec);
-        std::filesystem::remove(entries_.at(i).file, ec);
-        budget_.drop(entries_[i].bytes);
+        std::filesystem::remove(meta_path(e.file), ec);
+        std::filesystem::remove(e.file, ec);
+        if (e.paged) std::filesystem::remove(pages_path(e.file), ec);
+        budget_.drop(e.bytes);
         entries_.erase(entries_.begin() + (std::ptrdiff_t) i);
+    }
+    /// Drops this entry's claims on the pool's pages (the pages themselves stay until a compaction reclaims them).
+    void release_pages(const Entry& e) {
+        for (const auto& l : e.layout)
+            for (const auto& part : l.parts)
+                for (const auto& ref : part) pages_->release(ref.hash, ref.bytes);
+        std::string ignored;
+        pages_->persist(ignored);
     }
     static ConversationCheckpoint stub(const ConversationCheckpoint& c) {
         ConversationCheckpoint s;
@@ -620,11 +950,109 @@ private:
         s.imgs = c.imgs;
         return s;
     }
+
+    // ---- local: the page entry's sidecar -------------------------------------------------------------------------
+    // `conv-<serial>.pages` beside the head: magic "SPG1", the identity, the page list, a checksum.  Written by a
+    // temporary name and a rename after the head and the pool are complete, so a paged entry exists only when all
+    // three do.  It is the paged entry's own index - the meta (SPM2) carries only the flag and the logical size.
+    static std::filesystem::path pages_path(std::filesystem::path f) { return f.replace_extension(".pages"); }
+    static uint64_t layout_kv_bytes(const std::vector<ConversationPageLayer>& layers) {
+        uint64_t n = 0;
+        for (const auto& l : layers)
+            for (uint64_t s : l.sizes) n += s;
+        return n;
+    }
+    static void put_page_layout(std::string& b, const std::vector<ConversationPageLayer>& layers) {
+        put_pod(b, (uint64_t) layers.size());
+        for (const auto& l : layers) {
+            put_pod(b, (int64_t) l.format);
+            put_pod(b, (int64_t) l.cells); put_pod(b, (int64_t) l.heads); put_pod(b, (int64_t) l.head_dim);
+            put_pod(b, (int64_t) l.page_size); put_pod(b, (int64_t) l.pooled_rows); put_pod(b, (int64_t) l.idx_dim);
+            for (uint64_t s : l.sizes) put_pod(b, s);
+            for (const auto& part : l.parts) {
+                put_pod(b, (uint64_t) part.size());
+                for (const auto& r : part) { put_pod(b, r.hash); put_pod(b, (uint32_t) r.bytes); }
+            }
+        }
+    }
+    bool write_page_index(const std::filesystem::path& f, const SessionFileIdentity& id,
+                          const std::vector<ConversationPageLayer>& layers, std::string& error) const {
+        std::string b = "SPG1";
+        put_pod(b, id.model); put_pod(b, id.config);
+        put_page_layout(b, layers);
+        put_pod(b, session_hash64(b.data(), b.size(), 0));
+        const std::filesystem::path p = pages_path(f);
+        std::filesystem::path t = p;
+        t += ".tmp";
+        {
+            std::FILE* fp = std::fopen(t.string().c_str(), "wb");
+            if (!fp) { error = "the entry's page index cannot be created"; return false; }
+            const bool ok = std::fwrite(b.data(), 1, b.size(), fp) == b.size();
+            if (std::fclose(fp) != 0 || !ok) {
+                std::error_code ec; std::filesystem::remove(t, ec);
+                error = "the entry's page index cannot be written";
+                return false;
+            }
+        }
+        std::error_code ec;
+        std::filesystem::rename(t, p, ec);
+        if (ec) { std::filesystem::remove(t, ec); error = "the entry's page index cannot be published"; return false; }
+        return true;
+    }
+    static bool read_page_index(const std::filesystem::path& f, const SessionFileIdentity& id,
+                                 std::vector<ConversationPageLayer>& out, std::string& why) {
+        std::string b;
+        {
+            std::FILE* fp = std::fopen(pages_path(f).string().c_str(), "rb");
+            if (!fp) { why = "no page index"; return false; }
+            char buf[65536];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, fp)) > 0) { b.append(buf, n); if (b.size() > (size_t(1) << 26)) break; }
+            std::fclose(fp);
+        }
+        if (b.size() < 8 + 16 + 8 || b.compare(0, 4, "SPG1") != 0) { why = "not a page index"; return false; }
+        uint64_t sum = 0;
+        std::memcpy(&sum, b.data() + b.size() - 8, 8);
+        if (sum != session_hash64(b.data(), b.size() - 8, 0)) { why = "page index checksum mismatch"; return false; }
+        Rd r{b};
+        r.at = 4;
+        const uint64_t model = r.pod<uint64_t>(), config = r.pod<uint64_t>();
+        if (model != id.model || config != id.config) { why = "page index: another identity"; return false; }
+        const uint64_t nl = r.pod<uint64_t>();
+        if (r.bad || nl > 64) { why = "page index: bad layer count"; return false; }
+        out.clear();
+        for (uint64_t i = 0; i < nl; ++i) {
+            ConversationPageLayer l;
+            l.format = (int) r.pod<int64_t>();
+            l.cells = r.pod<int64_t>(); l.heads = r.pod<int64_t>(); l.head_dim = r.pod<int64_t>();
+            l.page_size = r.pod<int64_t>(); l.pooled_rows = r.pod<int64_t>(); l.idx_dim = r.pod<int64_t>();
+            for (uint64_t& s : l.sizes) s = r.pod<uint64_t>();
+            for (auto& part : l.parts) {
+                const uint64_t n = r.pod<uint64_t>();
+                if (r.bad || n > (b.size() / 12)) { why = "page index: bad page count"; return false; }
+                part.resize((size_t) n);
+                for (auto& ref : part) { ref.hash = r.pod<uint64_t>(); ref.bytes = r.pod<uint32_t>(); }
+            }
+            if (r.bad) { why = "page index: truncated"; return false; }
+            out.push_back(std::move(l));
+        }
+        if (r.at != b.size() - 8) { why = "page index: trailing bytes"; return false; }
+        return true;
+    }
+
     mutable std::mutex mu_;
     SpillNamespace ns_;
     SpillBudget budget_;
     std::vector<Entry> entries_;
     uint64_t next_serial_ = 1, tick_ = 0;
+    // local additions
+    std::unique_ptr<ConversationPagePool> pages_;   // null: whole-file entries only (page_options off or refused)
+    SpillPageOptions page_opts_;
+    std::string page_error_;
+    uint64_t guarded_ = 0;    // the entry a restore is reading: never evicted (guard())
+    uint64_t min_free_ = 0;   // the session writer's free-space preflight for a save
+    size_t max_entries_ = 0;  // the slot cap (set_max_entries; 0 = no count limit)
+    SpillStats stats_;
 };
 
 /// The best prefix a parked image gives `prompt`, by the RAM cache's rule (its live state or a checkpoint, same pictures, same

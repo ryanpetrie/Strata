@@ -80,8 +80,8 @@ restores gain nothing and large ones gain about 2×.
 
 ## End-to-end through the live serve (fast path on)
 
-A real serve on this PC (same build, RTX 4090), `--conversation-cache-disk-only --conversation-cache-disk-cow
---conversation-cache-disk-fast-path`, K/V device-resident (no `--kv`; `--kv-resident 0` is the default and means
+A real serve on this PC (same build, RTX 4090), `--conversation-spill-only --conversation-spill-pages
+--conversation-spill-dir-fast-path`, K/V device-resident (no `--kv`; `--kv-resident 0` is the default and means
 "all of it in VRAM"), spill dir on **D:** (the 980 PRO). Two conversations alternating so that each one is parked and
 restored; every restore is the fast path (`conversation_disk_fast_path=1` in the INFO line):
 
@@ -96,7 +96,7 @@ and the vision-free chat path, not the restore.)
 
 ### The same restore with the fast path off (portable), same pool, same conversation
 
-The engine was restarted with the same config and spill dir, `--conversation-cache-disk-fast-path` removed, and the
+The engine was restarted with the same config and spill dir, `--conversation-spill-dir-fast-path` removed, and the
 same driver run again:
 
 | Restore | fast path | portable | ratio |

@@ -1160,7 +1160,7 @@ int main() {
         check(d.put(image({1,2,3})) && d.put(image({4,5,6})) && d.put(image({7,8,9})) && sunk2.size() == 1 &&
               sunk2[0].live.ids == std::vector<int32_t>({1,2,3}), "different conversations: the evicted one still spills");
         check(d.put(image({4,5,6,7})) && d.size() == 2 && sunk2.size() == 1, "the extension replaces its own prefix, evicts no other");
-        check(d.parked_prefix_tokens(std::vector<int32_t>{7,8,9,1}, {}, {}, true) == 3, "park-gain sees the prefix entry");
+        check(d.parked_prefix_tokens(std::vector<int32_t>{7,8,9,1}, {}, {}, true, kLoraNone) == 3, "park-gain sees the prefix entry");
     }
     {   // P2: an evicted conversation goes to the sink (the SSD tier), whole; superseded copies and clear() do not
         const size_t one = image({1,2,3}).bytes();

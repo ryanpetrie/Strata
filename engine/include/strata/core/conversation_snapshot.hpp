@@ -1,7 +1,6 @@
 #pragma once
 
 #include "strata/core/conversation_cache.hpp"
-#include "strata/core/conversation_ds.hpp"
 #include "strata/core/conversation_file.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
@@ -288,6 +287,17 @@ ConversationRestore conversation_snapshot_restore_stream(SessionFileStream& read
 // pages are pool-file bytes with a device destination, staged in one call, every page hash-verified on the
 // device before it scatters (fail closed).  Empty means the portable path; false discards the session, the
 // same contract as a failed page read.
+//
+// Local (branch local/spill-unify): the DirectStorage implementation (conversation_ds.cpp) went with the local disk
+// tier, so no caller ever passes a fast write now and the portable path runs.  The declarations stay here so the
+// restore's signature and the portable code are untouched (docs/work/local-spill-delta.md).
+struct ConversationDsPage {
+    void* dst = nullptr;        // device address inside a live K/V pool part
+    uint64_t file_offset = 0;   // inside the pool file (a 4 KiB-aligned page record's data)
+    uint32_t bytes = 0;         // the page's saved length: the verified extent
+    uint32_t copy_bytes = 0;    // the scattered extent: <= bytes
+    uint64_t expect_hash = 0;   // session_hash64(page, bytes, 0)
+};
 using ConversationFastWrite = std::function<bool(const std::string& pool_path,
                                                  const std::vector<ConversationDsPage>& pages, std::string& error)>;
 

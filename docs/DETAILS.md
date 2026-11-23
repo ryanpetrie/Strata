@@ -912,80 +912,81 @@ unverified mappings, asynchronous snapshots and diagnostic captures use the orig
 if the image and working block cannot fit without an eviction. The block is temporary; it is not a limit on the engine's
 total host RAM.
 
-### Disk tier (L2)
+### Disk tier (the spill tier)
 
-An opt-in second tier beside the RAM cache: a conversation the RAM cache cannot keep is written to a folder on disk
-instead, so it still does not read its whole prompt again when it comes back. It is off by default, and with the flags
-absent the RAM cache alone behaves exactly as before.
+One disk tier beside the RAM cache: a conversation the RAM cache cannot keep - or evicts - is written to a folder on
+disk instead, so it still does not read its whole prompt again when it comes back. It is the spill tier
+(`conversation_spill.hpp`) and it is **on by default** in a normal serve: the RAM cache sizes itself above 0, and the
+tier takes what RAM refuses. `--conversation-spill-mib 0` turns it off, and with it off the RAM cache alone behaves
+exactly as before.
 
-The K/V can be kept as content-addressed 64 KiB pages in one shared pool (`--conversation-cache-disk-cow`, Phase 2). A
-conversation is then a small manifest, a small metadata head (the running state and the deepest checkpoint), and the list
-of pages it uses. A turn that advanced a little rewrites only the pages whose bytes changed: the rest are looked up by
-their hash and reused. Without the flag the disk tier keeps the earlier one-file-per-conversation format.
+Until 0.2.20 the branch also carried a separate disk store (`ConversationDiskStore`, flags `--conversation-cache-disk-*`).
+It was folded into the spill tier: its streaming save, its layer-at-a-time restore, its page pool and its telemetry are
+now the tier's own (see [work/local-spill-delta.md](work/local-spill-delta.md)), and its old flag names are hidden
+aliases that print a warning and map onto `--conversation-spill-*`.
+
+The K/V can be kept as content-addressed 64 KiB pages in one shared pool (`--conversation-spill-pages`). A
+conversation is then a small metadata head (the running state and the deepest checkpoint), the list of pages it uses,
+and the pages themselves. A turn that advanced a little rewrites only the pages whose bytes changed: the rest are
+looked up by their hash and reused. Without the flag the tier keeps one session file per conversation.
 
 | Option | Effect |
 | --- | --- |
-| `--conversation-cache-disk-mib N` | Disk budget in MiB. `0` (the default) is off: no folder, no model fingerprint, no I/O. |
-| `--conversation-cache-spill-dir DIR` (alias `--conversation-cache-disk DIR`) | The folder. Required when the budget is above 0; the engine refuses to start without it. |
-| `--conversation-cache-disk-only` | Do not park in RAM at all; use the disk tier for every conversation it wants. |
-| `--conversation-cache-disk-min-tokens N` | Do not write conversations shorter than N tokens. Default: the RAM cache's `--conversation-cache-min-tokens`. |
-| `--conversation-cache-disk-min-free-mib N` | Free space the drive must still have after a save; default 4096 (`0` = no check). |
-| `--conversation-cache-disk-staging-mib N` | Host memory a save or a restore may copy at once; default 1024. |
-| `--conversation-cache-disk-park-gain N` | Write a conversation again only after it advanced N tokens past its disk copy. Default: `--conversation-cache-park-gain`. |
-| `--conversation-cache-disk-slots N` | At most N conversations on disk; `0` (the default) means no count limit (the budget still applies). |
-| `--conversation-cache-disk-whole-file` | One session file per conversation (the earlier format). This is the default; it is explicit for scripts and comparisons. |
-| `--conversation-cache-disk-cow` | Keep the K/V as content-addressed pages in one shared pool (Phase 2). |
-| `--conversation-cache-disk-demote` | When the RAM cache evicts a conversation, write it to disk instead of dropping it. Needs `--conversation-cache-disk-cow`; off by default. |
-| `--conversation-cache-flush-min MIN` | Timed flush to the disk tier: between requests, and once more when the server stops, write the conversations that grew since their disk copy, so a clean stop re-reads at most one interval's turns. `0` (the default) is off: evictions stay the only writers. |
-| `--conversation-cache-flush-min-tokens N` | How far past its disk copy a conversation must have grown before an idle flush rewrites it; default 8192. The final round on stop skips only copies that are already exact. |
-| `--conversation-cache-disk-compact-min-mib N` | Dead page bytes before the pool is compacted; default 2048. |
-| `--conversation-cache-disk-compact-min-pages N` | Dead pages before the pool is compacted; default 256. |
+| `--conversation-spill-mib N` | The cap in MiB. Unset means min(32 GiB, a quarter of the free space); `0` turns the tier off. |
+| `--conversation-spill-dir DIR` | The folder. Default: `<data>/conversation-spill` when `--pack` is under `<data>/packs`; without either the tier stays off with one log line. |
+| `--conversation-spill-persist` | Keep the entries across a restart in a stable folder per model fingerprint (see the flag's own row above). Default: a per-process folder, removed when the engine ends. |
+| `--conversation-spill-only` | Do not park in RAM at all; use the disk tier for every conversation it wants, streaming the K/V from the live session. |
+| `--conversation-spill-min-tokens N` | Do not write conversations shorter than N tokens. Default: the RAM cache's `--conversation-cache-min-tokens`. |
+| `--conversation-spill-min-free-mib N` | Free space the drive must still have after a save; default 4096 (`0` = no check). |
+| `--conversation-spill-staging-mib N` | Host memory a save or a restore may copy at once; default 1024. |
+| `--conversation-spill-park-gain N` | Write a conversation again only after it advanced N tokens past its disk copy. Default: `--conversation-cache-park-gain`. |
+| `--conversation-spill-slots N` | At most N conversations on disk; `0` (the default) means no count limit (the budget still applies). |
+| `--conversation-spill-whole-file` | One session file per conversation. This is the default; it is explicit for scripts and comparisons. |
+| `--conversation-spill-pages` | Keep the K/V as content-addressed pages in one shared pool. |
+| `--conversation-spill-flush-min MIN` | Timed flush: between requests, and once more when the server stops, hand the conversations that grew since their copy to the tier's background writer, so a clean stop re-reads at most one interval's turns. `0` (the default) is off: evictions stay the only writers. |
+| `--conversation-spill-flush-min-tokens N` | How far past its copy a conversation must have grown before an idle flush rewrites it; default 8192. The final round on stop skips only copies that are already exact. |
+| `--conversation-spill-compact-min-mib N` | Dead page bytes before the pool is compacted; default 2048. |
+| `--conversation-spill-compact-min-pages N` | Dead pages before the pool is compacted; default 256. |
 
-- Each conversation is a manifest with its tokens, checkpoints and identity, a small metadata head in the session-file
-  format (no K/V layers), and its K/V pages in `pool/pages.bin`. The manifest is the commit point: a head or pages
-  without a manifest are garbage, and a manifest whose head is missing, truncated or from another model or
-  configuration is removed at startup, with any temporary file left by an interrupted save.
+- Every conversation the RAM cache evicts is written to the tier by a background writer (the eviction sink), so the
+  request that evicted it does not wait for the disk; a captured conversation the RAM floor refuses is written
+  synchronously instead. A conversation whose prompt is cheaper to read again than to round-trip through the disk (a
+  short one) is not written at all: the tier measures the engine's own prompt and disk speeds.
+- An entry is one session file (the whole-image format) or a metadata head beside its pages (the pool format), written
+  to a temporary name and renamed, so an entry exists only once it is complete.
 - Pages are named by the hash of their bytes and their length, so the same page is stored once however many
-  conversations use it. A page is found by its hash in `pool/pages.idx`; manifests never change when the pool is
-  compacted.
-- Least recently used conversations go first when the budget or the slot count is reached. A save is checked against
-  the free-space floor and the budget before any conversation is evicted, so a refusal leaves the RAM cache and the
-  disk files as they were. A save whose free space is short first tries a compaction of the pool's dead pages, then
-  refuses without evicting.
+  conversations use it. A page is found by its hash in `pool/pages.idx`; entries never change when the pool is
+  compacted. The pool file is versioned: a pool written by another format version is discarded at the next start
+  (a spill folder is a cache, not user data).
+- Least recently used conversations go first when the budget or the slot count is reached. The budget is reserved
+  before the write and the oldest entries are evicted to make the room; a write that then fails is removed, so no
+  half entry is ever listed.
 - Compaction rewrites only the pages some conversation still names, when all three guards pass (dead pages, dead bytes
-  and the dead share of the pool). The new pool is flushed and renamed into place; the manifests do not change.
+  and the dead share of the pool). The new pool is flushed and renamed into place; the entries do not change.
 - A restore reads the K/V one layer at a time, and each layer from its pages: host memory stays at the staging size
   plus one layer and one page, not the whole conversation. Every page's hash is checked as it is read; a corrupt or
-  missing page refuses the restore and the prompt is read from token 0.
-- The head holds the live state and the deepest checkpoint, as the session-file save does. Interior checkpoints are not
-  stored, so a new conversation cannot borrow an interior prefix from a disk entry; it can resume at the deepest one.
-  The RAM cache still borrows from its own entries as before.
-- A file is bound to the model files and to the settings a session file records (engine version, backend, KV format,
-  context, rope, control vector, a loaded adapter and the arithmetic switches). After one of them changes, the old
-  files are not read.
-- Each entry records the adapter state its cells were computed with - no adapter, an adapter that the request left
-  off, or an adapter that ran - and only a request of the same state may read it, the RAM cache's rule. Without it the
-  disk tier would hand base-model cells to an adapted request at the exact moment the RAM cache refuses one. A file
-  whose own record disagrees with its manifest is dropped as corrupt.
-- A `park=0` request (the decision endpoint, `"strata_checkpoint": false`) is never written.
-- Single GPU only. `--layer-split`, `--batch` and `--peer-device` turn the disk tier off with a log line, and the RAM
-  cache serves alone.
+  missing page refuses the restore and the prompt is read from token 0. The entry stays after a successful restore
+  (a later save writes only the pages that changed).
 
 Why a timed flush: the tier writes when the RAM cache evicts a conversation, but a conversation that was never
 evicted is lost when the server stops even if the disk tier has plenty of room. Measured 2026-11-12 (RTX 4090, whole-file
 tier, engine 0.1.59.1): a 207,893-token prompt read at 0 tokens reused in 83.8 s after a restart mid-session, against the
-same conversation restoring from disk in 2.9 s. `--conversation-cache-flush-min MIN` adds two writing points: between
+same conversation restoring from disk in 2.9 s. `--conversation-spill-flush-min MIN` adds two writing points: between
 requests - the loop has just read a line, so no request runs and every conversation is at rest - and once more when
-`QUIT` arrives, so a clean stop leaves fresh disk copies behind. An idle round skips copies that are already exact or
-grew less than `--conversation-cache-flush-min-tokens` (default 8192) and runs at most once per interval. The round on
-stop waives the growth threshold, flushes the parked conversations smallest first so a bounded round commits the cheap
-ones before a 200K one, and gives up starting new flushes after 10 s; the server gives `QUIT` 20 s before escalating,
-and a save already underway finishes. A stop that never sends `QUIT` (terminate, kill, power loss) still loses what
-RAM alone held - but never anything half-written: the manifest commits last and the next start sweeps the rest.
+`QUIT` arrives, so a clean stop leaves fresh disk copies behind. A flushed conversation is a copy of the parked image
+handed to the tier's background writer, so the round costs one host copy per conversation flushed. An idle round skips
+copies that are already exact or grew less than `--conversation-spill-flush-min-tokens` (default 8192) and runs at most
+once per interval. The round on stop waives the growth threshold, flushes the parked conversations smallest first so a
+bounded round commits the cheap ones before a 200K one, and gives up starting new flushes after 10 s; the server gives
+`QUIT` 20 s before escalating, and a write already underway finishes. A stop that never sends `QUIT` (terminate, kill,
+power loss) still loses what RAM alone held - but never anything half-written: an entry is renamed into place last and
+the next start sweeps the rest.
 - Files are plaintext: engine state and token identity, not an encrypted archive and not a chat export. The folder is
   created 0700 and files 0600 on Linux and macOS; on Windows they inherit the user profile's permissions. Keep the
   folder private to your user and do not share it.
-- The save is synchronous: the next request waits for the pages to be written.
+- A whole-image save is synchronous: the next request waits for the file to be written. A save from the live session
+  (the RAM cache's floor, `--conversation-spill-only`) is synchronous too, because its K/V sources read the live device
+  memory. The eviction sink is the one path that writes on the background writer.
 - The Monitor card shows the disk tier separately (see [DISK_CACHE.md](DISK_CACHE.md)), including the bytes written and
   reused by the last save and the pool's compactions.
 
@@ -1041,7 +1042,7 @@ curl -X POST "http://127.0.0.1:8080/slots/0?action=restore" -H "Content-Type: ap
   change later output.
 - The disk conversation cache uses the same identity rules and, for its small metadata head, the same session-file
   format (with no K/V layers); the K/V itself lives in its shared page pool by default, or in one session file per
-  conversation with `--conversation-cache-disk-whole-file`. It manages its own files; see
+  conversation with `--conversation-spill-whole-file`. It manages its own files; see
   [Disk tier (L2)](#disk-tier-l2) and [DISK_CACHE.md](DISK_CACHE.md).
 
 ### The web page (Chat, Images, Monitor, About)

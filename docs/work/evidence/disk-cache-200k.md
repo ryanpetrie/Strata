@@ -40,7 +40,7 @@ The reference config `C:\tools\strata\strata-unsloth-ud-iq4_xs.json` was copied 
 removed. `env` gained `STRATA_STATE_HASH=1` and `STRATA_SNAPSHOT_VERIFY=1` beside `STRATA_HC_Q8=1`.
 
 Engine args (200K disk-only run; the L1+L2 run differs only in `--conversation-cache-mib 8192` and no
-`--conversation-cache-disk-only`):
+`--conversation-spill-only`):
 
 ```
 --pack C:\tools\Strata-data\packs\unsloth-ud-iq4_xs
@@ -49,12 +49,12 @@ Engine args (200K disk-only run; the L1+L2 run differs only in `--conversation-c
 --spec 4 --mtp C:\tools\Strata-data\mtp\rt --max-context 262144 --kv int8 --kv-resident 32768
 --resident-budget-gib 36 --vision --vram-reserve-mib 1536 --pcie-frac 0.35 --spec-min-p 0.50 --pool-workers 7
 --conversation-cache-mib 0 --conversation-cache-slots 4 --conversation-cache-min-free-mib 2560
---conversation-cache-disk-only --conversation-cache-disk-mib 32768
---conversation-cache-spill-dir D:\strata-disk-cache-200k
---conversation-cache-disk-min-free-mib 4096 --conversation-cache-disk-staging-mib 1024
+--conversation-spill-only --conversation-spill-mib 32768
+--conversation-spill-dir D:\strata-disk-cache-200k
+--conversation-spill-min-free-mib 4096 --conversation-spill-staging-mib 1024
 ```
 
-**Deviation from the brief:** `--conversation-cache-disk-staging-mib` is 1024, not 512. At 512 the very first disk
+**Deviation from the brief:** `--conversation-spill-staging-mib` is 1024, not 512. At 512 the very first disk
 restore was refused (see “Track 1”); the value was raised to 1024 for every run after that. The measured host peaks
 in this report are with the 1024 limit.
 
@@ -100,13 +100,13 @@ spill directory.
 
 ### The 512 MiB staging refusal
 
-With the brief's `--conversation-cache-disk-staging-mib 512` the same smoke failed on MAIN turn 2, with the engine
+With the brief's `--conversation-spill-staging-mib 512` the same smoke failed on MAIN turn 2, with the engine
 falling back to a cold read (log kept as `disk-cache-smoke-engine.log`; report
 `disk-cache-smoke-report-staging512.json` in `build-cuda`):
 
 ```
 strata serve: conversation cache: spilled 11697 tokens to disk in 283.8 ms; file=395 MiB tier=disk entries=1 bytes=414810276
-strata serve: conversation cache: disk restore failed (session file: the disk restore needs 537 MiB of host staging, the limit is 512 MiB (--conversation-cache-disk-staging-mib)); reading the prompt
+strata serve: conversation cache: disk restore failed (session file: the disk restore needs 537 MiB of host staging, the limit is 512 MiB (--conversation-spill-staging-mib)); reading the prompt
 strata serve: prompt 11788 tokens = 0 reused + 11788 read in 11357 ms
 strata serve: conversation cache: spilled 1418 tokens to disk in 171.4 ms; file=245 MiB
 ```
@@ -263,8 +263,8 @@ even though `reused_kv_bytes=0` with disk-only. Command (deterministic settings 
 ```
 set STRATA_ROUTE_TAIL_SKIP=0 & set STRATA_PREFILL_CPU_SHARE=0 & set BATCH_TEST_LOG=build-cuda\parity-engine.log
 python tools\parking_test.py --exe build-cuda/strata.exe --config build-cuda/disk-cache-smoke.json --repeat 60 ^
-  --extra "--conversation-cache-disk-only --conversation-cache-mib 32768 ^
-  --conversation-cache-spill-dir D:\strata-disk-cache-parity --conversation-cache-disk-min-free-mib 4096 ^
+  --extra "--conversation-spill-only --conversation-cache-mib 32768 ^
+  --conversation-spill-dir D:\strata-disk-cache-parity --conversation-spill-min-free-mib 4096 ^
   --pcie-frac 0 --adapt-every 1000000"
 ```
 

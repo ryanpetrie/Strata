@@ -420,7 +420,8 @@ if(STRATA_SYCL_PARITY)   # (the option is declared above, next to STRATA_OWN_CPU
   add_test(NAME runtime_files_test COMMAND runtime_files_test)
   # Host-only: the conversation cache's SSD tier - its folder per engine process and its budget (conversation_spill.hpp).
   # No GPU, no model; the same source the CUDA/HIP engine builds under STRATA_BUILD_CONVERSATION_TESTS.
-  add_executable(conversation_spill_test ${STRATA_ROOT}/src/core/conversation_spill_test.cpp ${STRATA_ROOT}/src/core/conversation_file.cpp)
+  add_executable(conversation_spill_test ${STRATA_ROOT}/src/core/conversation_spill_test.cpp ${STRATA_ROOT}/src/core/conversation_file.cpp
+                 ${STRATA_ROOT}/src/core/spill_pages.cpp)
   target_include_directories(conversation_spill_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${STRATA_ROOT}/include)
   target_compile_features(conversation_spill_test PRIVATE cxx_std_17)
   target_link_libraries(conversation_spill_test PRIVATE Threads::Threads)

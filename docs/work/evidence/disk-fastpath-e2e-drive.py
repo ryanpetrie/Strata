@@ -1,7 +1,7 @@
 """disk-fastpath-e2e-drive.py - the Phase 3 fast path through the live serve, two conversations.
 
-Against an idle serve started with --conversation-cache-disk-only --conversation-cache-disk-cow
---conversation-cache-disk-fast-path and a device-resident K/V (no --kv / --kv-resident: the flag's help says 0 means
+Against an idle serve started with --conversation-spill-only --conversation-spill-pages
+--conversation-spill-dir-fast-path and a device-resident K/V (no --kv / --kv-resident: the flag's help says 0 means
 "all of it in VRAM").  One conversation stays live, so a park (and a restore) needs the other one:
 
   T1  A cold                                      (A live)
@@ -161,10 +161,10 @@ def main():
     log_path = config["log"]
     pool_dir = None
     for i, a in enumerate(config.get("args", [])):
-        if a == "--conversation-cache-spill-dir":
+        if a == "--conversation-spill-dir":
             pool_dir = config["args"][i + 1]
     if pool_dir is None:
-        raise SystemExit("the config names no --conversation-cache-spill-dir")
+        raise SystemExit("the config names no --conversation-spill-dir")
     pool_bin = str(pathlib.Path(pool_dir) / "pool" / "pages.bin")
 
     metrics = wait_idle(client)

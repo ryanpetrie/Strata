@@ -1,4 +1,12 @@
-// Content-addressed page pool for the disk tier (Phase 2: copy-on-write K/V).
+// Content-addressed page pool for the conversation spill tier (the K/V backend of ConversationSpill).
+//
+// Ported from the local branch's conversation_pages.hpp so that the spill tier has one storage engine for the
+// whole-file payload and for copy-on-write K/V pages (docs/work/local-spill-delta.md).  The class names are kept:
+// the only thing that moved is the file it lives in.
+//
+// On-disk format version: kSpillPoolFormatVersion.  A pool written by another version is a CACHE, not user data:
+// the writable open discards the files and makes an empty pool, and a read-only open is a miss.  A version bump
+// therefore never migrates, it forgets.
 //
 // A conversation's K/V is stored as pages in one append-only pool shared by every parked conversation.  A page is
 // identified by the hash of its bytes and its length, so a conversation that advanced a little rewrites only the pages
@@ -30,6 +38,8 @@
 #include <vector>
 
 namespace strata::core {
+
+inline constexpr uint32_t kSpillPoolFormatVersion = 2;
 
 // One K/V page.  64 KiB keeps the page directory small (about 1 MB for a 3 GiB conversation) while a 2K-token advance
 // rewrites only the tail page of each part plus the new pages.
@@ -118,10 +128,10 @@ public:
     uint64_t generation() const;
     const std::string& path() const { return pool_path_; }
 
-    // The Windows DirectStorage fast path (--conversation-cache-disk-fast-path): the storage stack opens the
-    // pool file while a write handle is held, and refuses it with a sharing violation.  Lend the held handle
-    // for one queued write (the file stays readable and append refuses while lent) and take it back when the
-    // fast read is over.  Where no write handle is held - or no fast path exists - this changes nothing.
+    // The Windows DirectStorage fast path that used to lend this pool's handle is gone with the local disk tier
+    // (docs/work/local-spill-delta.md); the calls stay so the pool's interface does not change, and they are no-ops
+    // while no write handle is held or the feature is absent.  Lending only kept the file readable for one queued
+    // write (append refused while lent).
     bool borrow_for_fast_read(std::string& error);
     void return_from_fast_read();
 

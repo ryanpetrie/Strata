@@ -13,7 +13,7 @@ engine held the GPU.
 
 ## Phase 3: the DirectStorage fast path (Windows + CUDA, opt-in)
 
-With `--conversation-cache-disk-fast-path` (needs `--conversation-cache-disk-mib` and `--conversation-cache-disk-cow`)
+With `--conversation-spill-dir-fast-path` (needs `--conversation-spill-mib` and `--conversation-spill-pages`)
 a paged restore's page bytes travel by GPU DMA instead of through the host: DirectStorage reads the ranges straight
 out of `pool/pages.bin` into a 2×32 MiB shared D3D12/CUDA staging ring, signals a shared D3D12 fence that CUDA waits on
 as an imported external semaphore, and a kernel re-hashes every staged page (`session_hash64`, the pool's own content
@@ -36,7 +36,7 @@ Implementation:
 | `include/strata/core/conversation_file.hpp` | `ConversationKvGeom`, `ConversationPageJob`, `ConversationKvLayers::next_page_jobs` (default: unsupported → portable). |
 | `include/strata/core/conversation_pages.hpp`, `src/core/conversation_pages.cpp` | `next_page_jobs` (the layer's pages as file jobs); Windows pool handles opened with `FILE_SHARE_DELETE` (DirectStorage's open needs it); `borrow_for_fast_read`/`return_from_fast_read` lend the pool handle around a fast write (`append` refuses while lent). |
 | `include/strata/core/conversation_snapshot.hpp`, `src/core/conversation_state.cpp` | `conversation_kv_fast_targets` (destinations + device check), `conversation_kv_fast_match` (manifest-vs-session), `conversation_kv_refresh_residency`; the fast branch in `conversation_snapshot_restore_layers` (all fast-vs-portable decisions settled **before** the reader is consumed; after staging, failures map to the portable path's own codes). |
-| `src/program/generate.cpp` | `--conversation-cache-disk-fast-path`, the startup probe and notices, the INFO field `conversation_disk_fast_path=0/1`, the failure counter, the `path=directstorage` token on the restore log line. |
+| `src/program/generate.cpp` | `--conversation-spill-dir-fast-path`, the startup probe and notices, the INFO field `conversation_disk_fast_path=0/1`, the failure counter, the `path=directstorage` token on the restore log line. |
 | `serve/server.py` | `disk_fast_path` in the Conversation-cache view. |
 | `src/core/ds_pages_test.cpp` | Kernel test (below). `src/core/ds_probe.cpp`, `src/core/ds_bench_main.cpp`: the manual probe and the benchmark tool. |
 | `third_party/directstorage/` | The MIT DirectStorage 1.3 SDK (NuGet `Microsoft.Direct3D.DirectStorage` 1.3.0): headers and the x64 redist DLLs, vendored unmodified, provenance in its README. Not link-bound. |
@@ -91,7 +91,7 @@ Implementation:
 
 ## Phase 2: the page pool (copy-on-write, opt-in)
 
-With `--conversation-cache-disk-cow` the disk tier stores K/V in one shared, append-only pool of content-addressed
+With `--conversation-spill-pages` the disk tier stores K/V in one shared, append-only pool of content-addressed
 64 KiB pages (`pool/pages.bin` + a rebuildable `pool/pages.idx`). Each conversation keeps a small manifest (tokens,
 checkpoints, identity) and a small metadata head in the session-file format with no K/V layers. The manifest lists the
 hash and length of each page, so:
@@ -113,13 +113,13 @@ Implementation:
 | `include/strata/core/conversation_disk.hpp`, `src/core/conversation_disk.cpp` | Manifest v2 (paged), `save_paged`, `open_paged`, page refcounts, startup scan, compaction stats, LRU and the free-space preflight. |
 | `include/strata/core/conversation_file.hpp` | `ConversationKvLayers`, the reader interface shared by a session file and the page pool. |
 | `include/strata/core/conversation_snapshot.hpp`, `src/core/conversation_state.cpp` | `conversation_snapshot_restore_layers` (the generic restore) and `conversation_kv_image_sources` (demotion from a parked L1 entry). |
-| `src/program/generate.cpp` | `--conversation-cache-disk-whole-file`, `--conversation-cache-disk-demote`, the compaction flags, the paged save and restore, the write/reuse log line, the demotion hook. |
+| `src/program/generate.cpp` | `--conversation-spill-whole-file`, `--conversation-spill-dir-demote`, the compaction flags, the paged save and restore, the write/reuse log line, the demotion hook. |
 | `include/strata/core/conversation_cache.hpp` | `set_demote`: an optional callback before `evict_oldest` drops an entry. |
 | `serve/server.py`, `serve/web/app.js` | Write/reuse, pool and compaction fields in `/metrics` and the Monitor card. |
 
-Flags added: `--conversation-cache-disk-cow` (opt in to the page pool), `--conversation-cache-disk-whole-file`
-(explicit earlier format; the default), `--conversation-cache-disk-demote` (needs `-cow`, off by default),
-`--conversation-cache-disk-compact-min-mib` (default 2048), `--conversation-cache-disk-compact-min-pages`
+Flags added: `--conversation-spill-pages` (opt in to the page pool), `--conversation-spill-whole-file`
+(explicit earlier format; the default), `--conversation-spill-dir-demote` (needs `-cow`, off by default),
+`--conversation-spill-compact-min-mib` (default 2048), `--conversation-spill-compact-min-pages`
 (default 256). The default path (the disk tier off) is unchanged: no pool, no pages, no new I/O. With the disk tier on
 but `-cow` absent, the Phase 1 one-file save/restore is used.
 
@@ -142,7 +142,7 @@ but `-cow` absent, the Phase 1 one-file save/restore is used.
 - HIP, SYCL and Metal were not built (no AMD/Mac hardware here).
 - Failure injection at the pool level (disk full mid-page, read-only pool, a page deleted between the scan and the
   read) is covered by the preflight and hash checks, not by an injected run.
-- L1 demotion (`--conversation-cache-disk-demote`) is implemented and its sources are unit-tested only through the
+- L1 demotion (`--conversation-spill-dir-demote`) is implemented and its sources are unit-tested only through the
   shared page writer; no engine run exercised it.
 
 ## Commits
@@ -152,7 +152,7 @@ but `-cow` absent, the Phase 1 one-file save/restore is used.
 | `d74859bd` | Phase A: CPU-only `ConversationDiskStore` — manifest, in-RAM index, matching/borrowing, LRU, budget, free-space preflight, atomic publish, startup scan, path safety, unit tests. |
 | `fe69eeee` | Phase B1: `SessionFileStream` — validates a session file and yields one K/V layer at a time, bounded host staging, payload hash checked in `finish()`. |
 | `6e30702c` | Phase B2: `conversation_snapshot_restore_stream` — restores a streamed file layer by layer, full and prefix (borrow) modes, tested against the whole-image restore on CUDA. |
-| `0543dc9c` | Phase C1: `--conversation-cache-disk-*` flags, startup identity/store, INFO fields, and the save path. The disk preflight runs before `make_room` can evict parked conversations. |
+| `0543dc9c` | Phase C1: `--conversation-spill-dir-*` flags, startup identity/store, INFO fields, and the save path. The disk preflight runs before `make_room` can evict parked conversations. |
 | `6924e4e1` | Phase C2: restore integration — early validation, L1 tie preference, donor protection, full/borrow adoption, fail-closed reset to a cold read. |
 | `d1d505bd` | Reader admission on the file's actual metadata (the old pre-parse bound over-charged checkpoints and refused a valid restore). |
 | `f2f60c34` | Phase D: `/metrics` and Monitor L1/L2 card, refusal reasons, disk eviction log, startup bytes/entries in INFO, tools and docs. |
@@ -261,7 +261,7 @@ room refuses and leaves it). Not yet measured end to end on the reference host.
 - **One deepest checkpoint per file.** Interior checkpoints are not stored, so interior borrowing from a disk entry
   is not available yet.
 - **Phase 2's page pool is implemented but unmeasured.** The one-file format is still available with
-  `--conversation-cache-disk-whole-file`; interior checkpoints are still not stored; DirectStorage/GDS is Phase 3.
+  `--conversation-spill-whole-file`; interior checkpoints are still not stored; DirectStorage/GDS is Phase 3.
 - **No-buffer I/O, failure injection (disk full/read-only), HIP/SYCL/Metal, and the default-off end-to-end comparison**
   remain. The unit suites cover the mechanisms.
 - The `build-cuda` directory must be configured for the card's architecture. On this 4090:

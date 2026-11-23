@@ -361,7 +361,7 @@ public:
         for (const auto& e : entries_) n = std::max<int64_t>(n, (int64_t) e.live.ids.size());
         return n;
     }
-    // Read every parked conversation (oldest first) with no LRU effect: --conversation-cache-flush-min's walk.
+    // Read every parked conversation (oldest first) with no LRU effect: --conversation-spill-flush-min's walk.
     // A visit may take its time (it spills the entry to the disk tier), but the reference is valid only during the
     // call and until the cache changes - and the visitor must not change it: for_each does not stop at the first hit.
     template<class F>

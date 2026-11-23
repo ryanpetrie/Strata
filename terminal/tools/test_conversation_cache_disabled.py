@@ -87,19 +87,19 @@ class DisabledCacheGateTest(unittest.TestCase):
 
     def test_cache_options_omitted_from_shared_arguments(self):
         cfg = {'args': ['--pack', '/model', '--conversation-cache-mib', '8192',
-                        '--conversation-cache-disk', '/cache', '--kv', 'int8']}
+                        '--conversation-spill-dir', '/cache', '--kv', 'int8']}
         args = common_args(cfg, 4)
         self.assertEqual(args[:4], ['--pack', '/model', '--kv', 'int8'])
         self.assertFalse(any(x.startswith('--conversation-cache-') for x in args))
 
     def test_the_disk_switch_does_not_swallow_the_next_option(self):
-        # --conversation-cache-disk-only, --...-whole-file and --...-demote take no value: the next argument is an
+        # --conversation-spill-only, --...-whole-file and --...-demote take no value: the next argument is an
         # option, not their value
-        cfg = {'args': ['--pack', '/model', '--conversation-cache-disk-only', '--kv', 'int8',
-                        '--conversation-cache-spill-dir', '/cache', '--conversation-cache-disk-mib', '32768',
-                        '--conversation-cache-disk-min-tokens', '4096', '--conversation-cache-disk-cow',
-                        '--conversation-cache-disk-whole-file', '--conversation-cache-disk-demote',
-                        '--conversation-cache-disk-compact-min-pages', '64']}
+        cfg = {'args': ['--pack', '/model', '--conversation-spill-only', '--kv', 'int8',
+                        '--conversation-spill-dir', '/cache', '--conversation-spill-mib', '32768',
+                        '--conversation-spill-min-tokens', '4096', '--conversation-spill-pages',
+                        '--conversation-spill-whole-file', '--conversation-spill-dir-demote',
+                        '--conversation-spill-compact-min-pages', '64']}
         args = common_args(cfg, 4)
         self.assertEqual(args[:4], ['--pack', '/model', '--kv', 'int8'])
         self.assertFalse(any(x.startswith('--conversation-cache-') for x in args))

@@ -29,15 +29,15 @@ def common(cfg, name, spill=None, log=None):
     cfg['host'] = '127.0.0.1'
     cfg['env'].pop('STRATA_STATE_HASH', None)
     if spill:
-        set_arg(cfg, '--conversation-cache-spill-dir', spill)
+        set_arg(cfg, '--conversation-spill-dir', spill)
     (out / name).write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
     print(name, 'ok')
 
 # A baseline: no RAM cache, no disk tier
 b = copy.deepcopy(base_disk)
-drop_arg(b, '--conversation-cache-disk-only', takes_value=False)
-for f in ('--conversation-cache-disk-mib', '--conversation-cache-spill-dir',
-          '--conversation-cache-disk-min-free-mib', '--conversation-cache-disk-staging-mib'):
+drop_arg(b, '--conversation-spill-only', takes_value=False)
+for f in ('--conversation-spill-mib', '--conversation-spill-dir',
+          '--conversation-spill-min-free-mib', '--conversation-spill-staging-mib'):
     drop_arg(b, f)
 set_arg(b, '--conversation-cache-mib', '0')
 common(b, 'followup-baseline.json', log='followup-baseline.log')

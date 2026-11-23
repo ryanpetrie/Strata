@@ -64,7 +64,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
                           src/kernels/cuda/gr.cu
                           src/kernels/cuda/gdn.cu
                           src/kernels/cuda/qsa.cu
-                          src/kernels/cuda/ds_pages.cu
                           src/kernels/cuda/elementwise.cu
                           src/kernels/cuda/bf16_gemv.cu
                           src/kernels/cuda/native_mmvq.cu
@@ -314,16 +313,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp src/core/mtp.cpp src/core/dflash2.cpp
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/nv_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp
-    src/core/conversation_disk.cpp src/core/conversation_pages.cpp src/core/conversation_ds.cpp)
+    src/core/spill_pages.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
-  # the DirectStorage fast path (Windows + CUDA): the vendored MIT header, and the compile switch that
-  # selects the real ConversationDs over the refusal stub in src/core/conversation_ds.cpp.  The runtime
-  # (dstorage.dll) is loaded dynamically; nothing links against DirectStorage.
-  if(WIN32 AND STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP)
-    target_include_directories(strata_engine PRIVATE third_party/directstorage/include)
-    target_compile_definitions(strata_engine PRIVATE STRATA_DS_FASTPATH=1)
-  endif()
   if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(host_graph_launch_test tests/core/host_graph_launch_test.cu)
     target_include_directories(host_graph_launch_test PRIVATE include)
@@ -458,12 +450,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_test(NAME conversation_snapshot_test_ckpt_vram_slots COMMAND conversation_snapshot_test)
     set_tests_properties(conversation_snapshot_test_ckpt_vram_slots PROPERTIES
       ENVIRONMENT "STRATA_TEST_BIG_GDN=1;STRATA_CKPT_ASYNC=1;STRATA_CKPT_VRAM_SLOTS=3" SKIP_RETURN_CODE 77 TIMEOUT 300)
-    # Phase 3 fast path: the DirectStorage verify/scatter kernel's hash must equal the host content
-    # hash and refuse a corrupt page on the device (GPU only; a skip where no card is present).
-    add_executable(ds_pages_test src/core/ds_pages_test.cpp)
-    target_link_libraries(ds_pages_test PRIVATE strata_engine)
-    add_test(NAME ds_pages_test COMMAND ds_pages_test)
-    set_tests_properties(ds_pages_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     # #6075: two threads saving checkpoints through the one background-copy buffer, forced to overlap; alone and with
     # recent states kept in VRAM
     add_executable(conversation_ckpt_race_test src/core/conversation_ckpt_race_test.cpp)
@@ -488,16 +474,6 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       target_link_libraries(conversation_transfer_test PRIVATE strata_engine)
       add_test(NAME conversation_transfer_test COMMAND conversation_transfer_test)
       set_tests_properties(conversation_transfer_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
-    endif()
-    # Phase 3 fast path: the DirectStorage capability/performance probe (Windows + CUDA only, manual run:
-    # it needs the dstorage redist and a card; it is never a ctest test)
-    if(WIN32 AND NOT STRATA_ENABLE_HIP)
-      add_executable(ds_probe src/core/ds_probe.cpp)
-      target_include_directories(ds_probe PRIVATE third_party/directstorage/include)
-      target_link_libraries(ds_probe PRIVATE strata_engine)
-      # the fast-vs-portable restore comparison on one pool file (manual run, same reasons as ds_probe)
-      add_executable(ds_bench src/core/ds_bench_main.cpp)
-      target_link_libraries(ds_bench PRIVATE strata_engine)
     endif()
   endif()
 
